@@ -3,3 +3,6 @@ dist
 node_modules
 .vscode-test/
 *.vsix
+.agent/
+__pycache__/
+.DS_Store

@@ -137,20 +137,28 @@ function nextId(prefix: string): string {
 function defaultArtifacts(): ArtifactReference[] {
 	return [
 		{
-			id: 'artifact-extension',
-			label: 'src/extension.ts',
-			path: 'src/extension.ts',
-			status: 'active',
-			summary: 'Extension entrypoint and command registration.',
+			id: 'artifact-orchestration-readme',
+			label: 'README.md',
+			path: 'orchestration/README.md',
+			status: 'accepted',
+			summary: 'Canonical runtime-facing orchestration overview.',
 			authoritative: true,
 		},
 		{
-			id: 'artifact-package',
-			label: 'package.json',
-			path: 'package.json',
+			id: 'artifact-intake-contract',
+			label: 'intake.json',
+			path: 'orchestration/contracts/intake.json',
 			status: 'referenced',
-			summary: 'Manifest contribution and command metadata.',
+			summary: 'Canonical intake artifact contract.',
 			authoritative: true,
+		},
+		{
+			id: 'artifact-draft',
+			label: 'request_draft.json',
+			path: 'orchestration/intake.md',
+			status: 'draft',
+			summary: 'Drafts remain informational until orchestration acceptance.',
+			authoritative: false,
 		},
 	];
 }
@@ -394,22 +402,17 @@ export function applyModelAction(
 				);
 			}
 
-			const acceptedSummary: AcceptedIntakeSummary = {
-				title: 'Accepted intake summary',
-				body: `${model.snapshot.task ?? 'Phase-1 execution window'} Keep visible: ${answer}.`,
-			};
-
 			const approval: RequestCard = {
 				id: nextId('approval'),
-				title: 'Approval requested',
-				body: 'Approve the accepted intake so execution can continue.',
+				title: 'Accept intake',
+				body: 'Approve the intake draft so orchestration can continue.',
 				requestedAt: now,
 			};
 
 			return {
 				snapshot: refreshSnapshot(model.snapshot, now, {
-					currentActor: 'governor',
-					currentStage: 'approval_requested',
+					currentActor: 'orchestration',
+					currentStage: 'ready_for_acceptance',
 					pendingApproval: approval,
 					transportState: 'connected',
 				}),
@@ -424,23 +427,16 @@ export function applyModelAction(
 					),
 					createFeedItem(
 						'shell_event',
-						'Clarification recorded',
-						'The intake shell updated the draft and handed it back for acceptance.',
+						'Draft ready for acceptance',
+						'The intake shell updated the draft and handed it back for orchestration acceptance.',
 						false,
 						now,
 						undefined,
 						{
 							kind: 'status',
 							state: 'completed',
-							summary: 'Intake accepted upstream',
+							summary: 'Ready for acceptance',
 						}
-					),
-					createFeedItem(
-						'system_status',
-						'Accepted intake received',
-						acceptedSummary.body,
-						true,
-						now
 					),
 					createFeedItem(
 						'approval_request',
@@ -451,7 +447,7 @@ export function applyModelAction(
 					),
 				],
 				activeClarification: undefined,
-				acceptedIntakeSummary: acceptedSummary,
+				acceptedIntakeSummary: undefined,
 			};
 		}
 
@@ -469,10 +465,9 @@ export function applyModelAction(
 			const artifacts = defaultArtifacts();
 
 			return {
-				...model,
 				snapshot: refreshSnapshot(model.snapshot, now, {
-					currentActor: 'executor',
-					currentStage: 'running',
+					currentActor: 'orchestration',
+					currentStage: 'intake_accepted',
 					pendingApproval: undefined,
 					recentArtifacts: artifacts,
 					transportState: 'connected',
@@ -481,40 +476,18 @@ export function applyModelAction(
 					...model.feed,
 					createFeedItem(
 						'system_status',
-						'Approval granted',
-						'Execution can continue with the accepted intake.',
+						'Intake accepted',
+						'Canonical intake is now available for downstream governor consumption.',
 						true,
 						now
 					),
-					createFeedItem(
-						'actor_event',
-						'Read src/executionWindowPanel.ts',
-						'Inspected the extension webview surface before continuing.',
-						true,
-						now,
-						undefined,
-						{
-							kind: 'read',
-							state: 'completed',
-							path: 'src/executionWindowPanel.ts',
-						}
-					),
-					createFeedItem(
-						'actor_event',
-						'Ran npm run check-types',
-						'Verified the current TypeScript surface.',
-						true,
-						now,
-						['Command output is collapsed by default in the execution feed.'],
-						{
-							kind: 'command',
-							state: 'completed',
-							command: 'npm run check-types',
-							elapsedMs: 1200,
-						}
-					),
 					...artifacts.map((artifact) => createArtifactFeedItem(artifact, now)),
 				],
+				activeClarification: undefined,
+				acceptedIntakeSummary: {
+					title: 'Accepted intake summary',
+					body: `${model.snapshot.task ?? 'Current task'} Accepted for downstream governor consumption.`,
+				},
 			};
 		}
 

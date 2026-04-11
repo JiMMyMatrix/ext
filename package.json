@@ -52,8 +52,10 @@
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
+    "check:orchestration": "bash orchestration/scripts/verify_architecture.sh",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:orchestration": "python3 -m unittest discover -s orchestration/tests -p 'test_*.py'"
   },
   "devDependencies": {
     "@types/vscode": "^1.115.0",

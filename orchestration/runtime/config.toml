@@ -1,0 +1,11 @@
+# Governor runtime template for the shipped orchestration surface.
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+
+[agents]
+max_threads = 4
+max_depth = 1
+
+[mcp_servers.orchestration_advisory]
+command = "python3"
+args = ["orchestration/runtime/advisory/mcp_server.py"]

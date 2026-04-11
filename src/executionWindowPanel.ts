@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import {
 	appendError,
-	applyModelAction,
 	createInitialModel,
 	getArtifactById,
 	type ExecutionWindowModel,
+	type ModelAction,
 } from './phase1Model';
+import { createExecutionTransport, type ExecutionTransport } from './executionTransport';
 
 export const OPEN_EXECUTION_WINDOW_COMMAND = 'ext.openExecutionWindow';
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
@@ -25,7 +26,7 @@ type WebviewMessage =
 
 export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	public static register(context: vscode.ExtensionContext): ExecutionWindowPanel {
-		const provider = new ExecutionWindowPanel();
+		const provider = new ExecutionWindowPanel(context);
 
 		context.subscriptions.push(
 			vscode.window.registerWebviewViewProvider(
@@ -44,20 +45,26 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	}
 
 	private model: ExecutionWindowModel;
+	private readonly transport: ExecutionTransport;
 	private view: vscode.WebviewView | undefined;
 	private readonly workspaceRoot: vscode.Uri | undefined;
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly webviewDisposables: vscode.Disposable[] = [];
 
-	private constructor() {
+	private constructor(context: vscode.ExtensionContext) {
 		this.workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 		this.model = createInitialModel();
+		this.transport = createExecutionTransport(context.extensionMode, this.workspaceRoot);
 	}
 
 	public async createOrShow() {
 		await this.executeQuietly(`workbench.view.extension.${EXECUTION_WINDOW_CONTAINER_ID}`);
 		await this.executeQuietly(`${EXECUTION_WINDOW_VIEW_ID}.focus`);
 		this.view?.show?.(true);
+		if (this.view) {
+			await this.refreshState();
+			return;
+		}
 		this.postState();
 	}
 
@@ -74,7 +81,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				void this.handleMessage(message as WebviewMessage);
 			})
 		);
-		this.postState();
+		void this.refreshState();
 	}
 
 	public dispose() {
@@ -106,39 +113,62 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		});
 	}
 
-	private applyAction(action: Parameters<typeof applyModelAction>[1]) {
-		this.model = applyModelAction(this.model, action);
+	private async refreshState() {
+		try {
+			this.model = await this.transport.load();
+		} catch (error) {
+			this.pushLocalError(
+				'Orchestration state unavailable',
+				error instanceof Error ? error.message : 'Failed to load orchestration state.'
+			);
+			return;
+		}
+
+		this.postState();
+	}
+
+	private async applyAction(action: ModelAction) {
+		try {
+			this.model = await this.transport.dispatch(action);
+		} catch (error) {
+			this.pushLocalError(
+				'Orchestration action failed',
+				error instanceof Error ? error.message : 'The orchestration action could not be applied.'
+			);
+			return;
+		}
+
 		this.postState();
 	}
 
 	private async handleMessage(message: WebviewMessage) {
 		switch (message.type) {
 			case 'ready':
-				this.postState();
+				await this.refreshState();
 				return;
 			case 'submit_prompt':
-				this.applyAction({
+				await this.applyAction({
 					type: 'submit_prompt',
 					text: message.text ?? '',
 				});
 				return;
 			case 'answer_clarification':
-				this.applyAction({
+				await this.applyAction({
 					type: 'answer_clarification',
 					text: message.text ?? '',
 				});
 				return;
 			case 'approve':
-				this.applyAction({ type: 'approve' });
+				await this.applyAction({ type: 'approve' });
 				return;
 			case 'decline_or_hold':
-				this.applyAction({ type: 'decline_or_hold' });
+				await this.applyAction({ type: 'decline_or_hold' });
 				return;
 			case 'interrupt_run':
-				this.applyAction({ type: 'interrupt_run' });
+				await this.applyAction({ type: 'interrupt_run' });
 				return;
 			case 'reconnect':
-				this.applyAction({ type: 'reconnect' });
+				await this.applyAction({ type: 'reconnect' });
 				return;
 			case 'open_artifact':
 				await this.handleArtifactAction(message.artifactId, 'open');

@@ -1,0 +1,11 @@
+# Governor (main session) configuration
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+
+[agents]
+max_threads = 4
+max_depth = 1
+
+[mcp_servers.spawn_bridge]
+command = "python3"
+args = ["mcp/spawn_bridge_server.py"]

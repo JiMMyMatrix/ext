@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Intake Contract",
+  "description": "Canonical intake artifact contract for the orchestration layer.",
+  "type": "object",
+  "definitions": {
+    "clarificationRequest": {
+      "type": "object",
+      "required": ["id", "title", "body", "requestedAt"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "placeholder": { "type": "string" },
+        "requestedAt": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "clarificationHistoryEntry": {
+      "type": "object",
+      "required": ["question", "askedAt", "answer", "answeredAt"],
+      "properties": {
+        "question": { "type": "string" },
+        "askedAt": { "type": "string" },
+        "answer": { "type": "string" },
+        "answeredAt": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "request_draft.json": {
+      "type": "object",
+      "required": [
+        "intake_ref",
+        "shell_state",
+        "raw_request_ref",
+        "draft_summary",
+        "normalized_goal",
+        "constraints",
+        "clarification_history"
+      ],
+      "properties": {
+        "intake_ref": { "type": "string" },
+        "shell_state": {
+          "type": "string",
+          "enum": ["clarification_needed", "ready_for_acceptance"]
+        },
+        "raw_request_ref": { "type": "string" },
+        "draft_summary": { "type": "string" },
+        "normalized_goal": { "type": "string" },
+        "constraints": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "clarification_history": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/clarificationHistoryEntry" }
+        },
+        "clarification_request": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/definitions/clarificationRequest" }
+          ]
+        },
+        "lane_hint": {
+          "oneOf": [{ "type": "null" }, { "type": "string" }]
+        },
+        "task_hint": {
+          "oneOf": [{ "type": "null" }, { "type": "string" }]
+        }
+      },
+      "additionalProperties": false
+    },
+    "accepted_intake.json": {
+      "type": "object",
+      "required": [
+        "intake_ref",
+        "raw_request_ref",
+        "request_draft_ref",
+        "accepted_at",
+        "accepted_summary",
+        "goal",
+        "constraints",
+        "lane"
+      ],
+      "properties": {
+        "intake_ref": { "type": "string" },
+        "raw_request_ref": { "type": "string" },
+        "request_draft_ref": { "type": "string" },
+        "accepted_at": { "type": "string" },
+        "accepted_summary": { "type": "string" },
+        "goal": { "type": "string" },
+        "constraints": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "lane": { "type": "string" },
+        "branch": {
+          "oneOf": [{ "type": "null" }, { "type": "string" }]
+        },
+        "task": {
+          "oneOf": [{ "type": "null" }, { "type": "string" }]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["request_draft.json", "accepted_intake.json"],
+  "additionalProperties": false
+}

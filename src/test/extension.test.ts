@@ -40,14 +40,14 @@ suite('Execution Window UX', () => {
 			now: '2026-04-10T10:00:10.000Z',
 		});
 
-		assert.strictEqual(acceptedModel.snapshot.currentActor, 'governor');
-		assert.strictEqual(acceptedModel.snapshot.currentStage, 'approval_requested');
-		assert.ok(acceptedModel.acceptedIntakeSummary);
+		assert.strictEqual(acceptedModel.snapshot.currentActor, 'orchestration');
+		assert.strictEqual(acceptedModel.snapshot.currentStage, 'ready_for_acceptance');
+		assert.strictEqual(acceptedModel.acceptedIntakeSummary, undefined);
 		assert.ok(acceptedModel.snapshot.pendingApproval);
 		assert.strictEqual(acceptedModel.activeClarification, undefined);
 	});
 
-	test('approve adds recent artifacts and activity rows for the feed', () => {
+	test('approve turns the draft into accepted intake artifacts', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
@@ -63,19 +63,14 @@ suite('Execution Window UX', () => {
 			now: '2026-04-10T10:00:15.000Z',
 		});
 
-		assert.strictEqual(runningModel.snapshot.currentActor, 'executor');
-		assert.strictEqual(runningModel.snapshot.currentStage, 'running');
+		assert.strictEqual(runningModel.snapshot.currentActor, 'orchestration');
+		assert.strictEqual(runningModel.snapshot.currentStage, 'intake_accepted');
+		assert.ok(runningModel.acceptedIntakeSummary);
 		assert.ok(runningModel.snapshot.recentArtifacts.length >= 2);
-		assert.ok(getArtifactById(runningModel, 'artifact-extension'));
+		assert.ok(getArtifactById(runningModel, 'artifact-orchestration-readme'));
 		assert.ok(
 			runningModel.feed.some(
-				(item) => item.activity?.kind === 'read' && item.activity.path
-			)
-		);
-		assert.ok(
-			runningModel.feed.some(
-				(item) =>
-					item.activity?.kind === 'command' && item.activity.command
+				(item) => item.type === 'artifact_reference' && item.artifact.path
 			)
 		);
 	});
