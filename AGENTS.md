@@ -25,8 +25,9 @@ as the runtime doc entrypoint, and use
 as the canonical orchestration command surface.
 
 ## Critical Runtime Rules
-- The orchestration layer exists to enforce harness rules, not to become a
-  second governor.
+- The orchestration layer supplements the Codex runtime substrate with
+  project-specific gates, artifacts, and role constraints. It must not become a
+  second governor or a replacement runtime.
 - High-risk harness rules should be aligned across policy docs, prompts/skills,
   runtime constraints, and fail-closed code.
 - Dispatch-first discipline is mandatory for substantive governed work.
@@ -42,8 +43,10 @@ as the canonical orchestration command surface.
 ## Runtime Authority
 - VS Code Extension UX is human-facing only.
 - Intake handles raw natural-language intake and bounded clarification only.
-- Orchestration owns harness-rule enforcement, intake acceptance, lane binding,
-  stop/continue control, and actor launch execution.
+- Codex runtime substrate remains the primary chat/runtime/tool execution
+  surface.
+- Orchestration owns the supplemental project layer: intake acceptance, lane
+  binding, stop/continue gates, actor launch control, and artifact discipline.
 - Governor is the single work-plane decision owner.
 - Executor is the single substantive writer.
 - Reviewer is read-only and advisory only.

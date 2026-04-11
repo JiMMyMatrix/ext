@@ -7,12 +7,14 @@ the VS Code Codex extension.
 That is acceptable for the UX layer.
 
 ## Important Boundary
-The backend architecture must still follow the custom harness-driven design in
-this repository.
+The backend architecture must still follow the custom project design in this
+repository.
 
 So:
 - frontend may imitate Codex closely
 - backend behavior must not inherit Codex's default workflow assumptions
+- Codex runtime remains the primary chat/runtime/tool substrate
+- orchestration remains a supplemental project layer above that substrate
 
 ## UX Role
 - human-facing execution window only

@@ -45,7 +45,7 @@ The orchestration layer may provide:
   certainty from local state
 
 ## Command Boundary
-The extension should talk to the orchestration harness through:
+The extension should talk to the project orchestration layer through:
 - `python3 orchestration/scripts/orchestrate.py session ...`
 
 It should not depend on individual orchestration implementation scripts as its

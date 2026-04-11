@@ -11,11 +11,43 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onChatParticipant:ext.codex",
     "onCommand:ext.openExecutionWindow",
     "onView:ext.executionWindowView"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "chatParticipants": [
+      {
+        "id": "ext.codex",
+        "fullName": "Codex",
+        "name": "codex",
+        "description": "Ask Codex to work with the project's runtime rules.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "status",
+            "description": "Show the current orchestration state."
+          },
+          {
+            "name": "approve",
+            "description": "Approve the pending request."
+          },
+          {
+            "name": "hold",
+            "description": "Hold the pending request."
+          },
+          {
+            "name": "interrupt",
+            "description": "Interrupt the current run."
+          },
+          {
+            "name": "reconnect",
+            "description": "Reconnect and refresh orchestration state."
+          }
+        ]
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {

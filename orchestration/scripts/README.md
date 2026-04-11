@@ -1,6 +1,7 @@
 # Orchestration Scripts
 
-This directory contains the shipped orchestration harness implementation.
+This directory contains the shipped orchestration implementation that
+supplements the Codex runtime substrate.
 
 ## Canonical Public Entry Point
 - `orchestrate.py`
@@ -10,7 +11,8 @@ This directory contains the shipped orchestration harness implementation.
 Everything else in this directory is an implementation module, migration
 wrapper, validator, or internal helper behind that command surface.
 
-The code-first orchestration authority now lives in `orchestration/harness/`.
+The code-first orchestration implementation now lives in
+`orchestration/harness/`.
 Files in `orchestration/scripts/` should stay thin where practical.
 
 ## Intake

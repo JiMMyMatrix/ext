@@ -1,10 +1,12 @@
 import * as vscode from 'vscode';
+import { CodexChatParticipant } from './chatParticipant';
 import {
 	OPEN_EXECUTION_WINDOW_COMMAND,
 	ExecutionWindowPanel,
 } from './executionWindowPanel';
 
 export function activate(context: vscode.ExtensionContext) {
+	CodexChatParticipant.register(context);
 	const executionWindow = ExecutionWindowPanel.register(context);
 	const openExecutionWindow = vscode.commands.registerCommand(
 		OPEN_EXECUTION_WINDOW_COMMAND,
@@ -14,12 +16,6 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(openExecutionWindow);
-
-	if (context.extensionMode === vscode.ExtensionMode.Development) {
-		setTimeout(() => {
-			void executionWindow.createOrShow();
-		}, 250);
-	}
 }
 
 export function deactivate() {}

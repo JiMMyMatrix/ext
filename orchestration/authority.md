@@ -18,13 +18,16 @@
   intent
 
 ## Orchestration
+- Supplements the Codex runtime substrate with project-specific gates and
+  artifacts
 - Owns intake acceptance
 - Owns lane binding
 - Owns stop/continue control
 - Owns actor launch execution
 - Owns transition arbitration
-- Enforces harness rules
+- Enforces project-specific harness rules
 - Must not become a second governor
+- Must not become a replacement runtime for Codex App Server
 - Must not independently use advisor tools as its own authority path
 
 ## Governor

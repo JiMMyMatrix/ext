@@ -1,20 +1,22 @@
 # Orchestration Layer
 
 ## Purpose
-This directory houses the repo-local orchestration harness for the custom
+This directory houses the repo-local orchestration layer for the custom
 system.
 
-Its job is to enforce the user's harness rules clearly enough that the remote
-Codex agent follows them consistently.
+Its job is to supplement the Codex runtime substrate with the project-specific
+rules, artifacts, and gates needed to keep the remote Codex agent aligned with
+the user's harness rules.
 
 The orchestration layer is:
-- the harness-rule enforcement core
-- the intake acceptance and lane-binding surface
+- the project-specific intake acceptance and lane-binding surface
 - the stop/continue and actor-launch control plane
+- the artifact and role-boundary layer above the runtime substrate
 
 The orchestration layer is not:
 - a second governor
 - a generic planning brain
+- a replacement for Codex App Server or the Codex runtime substrate
 - a second workflow-truth system
 
 ## Canonical Runtime Surface
@@ -22,15 +24,15 @@ The canonical public runtime entrypoint is:
 
 - `python3 orchestration/scripts/orchestrate.py`
 
-The code-first authority behind that command lives in:
+The code-first implementation behind that command lives in:
 
 - `orchestration/harness/`
 
 The Markdown files in this directory are supporting spec and explanation.
-They are not the primary runtime authority surface.
+They are not the primary runtime substrate.
 
 ## Shipped Structure
-- `harness/`: code-first orchestration authority
+- `harness/`: code-first orchestration implementation
 - `contracts/`: canonical repo-local contracts
 - `scripts/`: the CLI wrapper, migration shims, and fail-closed adapters
 - `prompts/`: actor and intake instructions that reference only orchestration
@@ -40,7 +42,7 @@ They are not the primary runtime authority surface.
 ## Architecture
 Human
 -> VS Code Extension UX (local)
--> Orchestration Layer (remote)
+-> Orchestration Layer (remote supplement)
 -> Actor Layer
    - Governor
    - Executor
@@ -64,7 +66,9 @@ Human
 - The final goal is harness-rule compliance, not just workflow packaging.
 - The product is one unified whole, not a set of unrelated plugins.
 - The UI may closely imitate the VS Code Codex extension.
-- The backend architecture remains custom and harness-driven.
+- The Codex runtime substrate remains primary.
+- The backend architecture remains custom, but orchestration is supplemental to
+  the runtime substrate rather than a replacement for it.
 - Only the Governor may use advisor tools.
 - `request.json` remains dispatch truth only.
 - The workflow reference tree is development/reference material, not the
