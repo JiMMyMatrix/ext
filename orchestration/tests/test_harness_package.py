@@ -18,7 +18,7 @@ from orchestration.harness import (
     start_guard,
     transition,
 )
-from orchestration.harness.paths import load_json
+from orchestration.harness.paths import load_json, repo_relative, write_json
 
 
 class HarnessPackageTests(unittest.TestCase):
@@ -82,6 +82,114 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertTrue(
                 any(item["type"] == "actor_event" for item in model["feed"])
             )
+
+    def test_session_governor_dialogue_reads_accepted_intake_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Implement the sidebar while preserving inline artifact actions.",
+                repo_root=repo_root,
+            )
+            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
+
+            model = session.dispatch_session_action("approve", repo_root=repo_root)
+            actor_event_count = len([item for item in model["feed"] if item["type"] == "actor_event"])
+
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="What is the current progress?",
+                repo_root=repo_root,
+            )
+
+            actor_events = [item for item in model["feed"] if item["type"] == "actor_event"]
+            self.assertEqual(len(actor_events), actor_event_count + 1)
+            latest = actor_events[-1]
+            self.assertIn("accepted intake", latest["body"])
+            self.assertTrue(str(latest.get("source_artifact_ref", "")).endswith("accepted_intake.json"))
+
+    def test_session_governor_dialogue_reads_dispatch_and_transition_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Implement the sidebar while preserving inline artifact actions.",
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action("approve", repo_root=repo_root)
+            lane = model["snapshot"]["lane"]
+
+            dispatch_ref = "lane/intake/dispatch-001"
+            from orchestration.harness import dispatch
+
+            emit_result = dispatch.emit_main(
+                [
+                    "--dispatch-ref",
+                    dispatch_ref,
+                    "--objective",
+                    "Summarize current lane progress for the sidebar.",
+                    "--lane",
+                    lane,
+                    "--root",
+                    str(repo_root),
+                ]
+            )
+            self.assertEqual(emit_result, 0)
+
+            dispatch_dir = repo_root / ".agent" / "dispatches" / Path(dispatch_ref)
+            result_path = dispatch_dir / "result.json"
+            decision_path = dispatch_dir / "governor_decision.json"
+            write_json(
+                result_path,
+                {
+                    "dispatch_ref": dispatch_ref,
+                    "status": "completed",
+                    "scope_respected": True,
+                    "runtime_behavior_changed": False,
+                    "summary": "Completed successfully.",
+                    "artifacts": [],
+                    "blocker": None,
+                },
+            )
+            write_json(
+                decision_path,
+                {
+                    "dispatch_ref": dispatch_ref,
+                    "result_ref": repo_relative(result_path, repo_root),
+                    "review_ref": None,
+                    "decision": "accept",
+                    "reason": "Looks good.",
+                    "recommended_next_action": "governor_may_accept",
+                },
+            )
+            transition.record_transition(
+                repo_root,
+                transition.build_transition_payload(
+                    repo_root=repo_root,
+                    lane=lane,
+                    source="governor_finalize_dispatch",
+                    transition="continue_internal",
+                    next_action_kind="emit_dispatch",
+                    next_action_ref=dispatch_ref,
+                    next_action_summary="Continue dispatch flow.",
+                    dispatch_ref=dispatch_ref,
+                    decision_ref=repo_relative(decision_path, repo_root),
+                    evidence_refs=[repo_relative(result_path, repo_root)],
+                ),
+            )
+
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="What is the current progress?",
+                repo_root=repo_root,
+            )
+            actor_events = [item for item in model["feed"] if item["type"] == "actor_event"]
+            latest = actor_events[-1]
+            self.assertIn(dispatch_ref, latest["body"])
+            self.assertIn("Result status is completed", latest["body"])
+            self.assertIn("Governor decision is accept", latest["body"])
+            self.assertEqual(latest["source_artifact_ref"], repo_relative(decision_path, repo_root))
+            self.assertTrue(any("Proposed transition:" in detail for detail in latest.get("details", [])))
 
     def test_session_analysis_prompt_returns_structured_clarification_options(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

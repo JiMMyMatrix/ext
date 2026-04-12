@@ -8,6 +8,7 @@ from typing import Any
 
 from orchestration.harness.intake import (
 	accept_intake,
+	accepted_intake_path,
 	answer_intake_clarification,
 	raw_request_path,
 	request_draft_path,
@@ -24,6 +25,7 @@ from orchestration.harness.paths import (
 	utc_now,
 	write_json,
 )
+from orchestration.harness.transition import load_transition
 
 
 def _next_id(prefix: str) -> str:
@@ -151,11 +153,128 @@ def _classify_turn(prompt: str) -> str:
 	return "governed_work_intent"
 
 
-def _build_governor_dialogue(model: dict[str, Any], prompt: str) -> tuple[str, list[str]]:
+def _load_request_draft_summary(
+	session: dict[str, Any], *, repo_root: str | Path | None = None
+) -> tuple[dict[str, Any] | None, str | None]:
+	intake_ref = session["meta"].get("activeIntakeRef")
+	if not isinstance(intake_ref, str) or not intake_ref:
+		return None, None
+	draft_path = request_draft_path(intake_ref, repo_root=repo_root)
+	if not draft_path.exists():
+		return None, None
+	return load_json(draft_path), repo_relative(draft_path, repo_root)
+
+
+def _load_accepted_intake_summary(
+	session: dict[str, Any], *, repo_root: str | Path | None = None
+) -> tuple[dict[str, Any] | None, str | None]:
+	intake_ref = session["meta"].get("activeIntakeRef")
+	if not isinstance(intake_ref, str) or not intake_ref:
+		return None, None
+	accepted_path = accepted_intake_path(intake_ref, repo_root=repo_root)
+	if not accepted_path.exists():
+		return None, None
+	return load_json(accepted_path), repo_relative(accepted_path, repo_root)
+
+
+def _latest_dispatch_summary(
+	lane: str | None, *, repo_root: str | Path | None = None
+) -> dict[str, Any] | None:
+	if not isinstance(lane, str) or not lane.strip():
+		return None
+
+	queue_root = resolve_paths(repo_root).agent_root / "dispatches"
+	if not queue_root.exists():
+		return None
+
+	best: tuple[float, dict[str, Any]] | None = None
+	for state_path in queue_root.rglob("state.json"):
+		dispatch_dir = state_path.parent
+		request_path = dispatch_dir / "request.json"
+		if not request_path.exists():
+			continue
+		try:
+			request = load_json(request_path)
+			state = load_json(state_path)
+		except Exception:
+			continue
+		if request.get("lane") != lane:
+			continue
+
+		result_path = dispatch_dir / "result.json"
+		decision_path = dispatch_dir / "governor_decision.json"
+		result = load_json(result_path) if result_path.exists() else None
+		decision = load_json(decision_path) if decision_path.exists() else None
+		mtime = max(
+			path.stat().st_mtime
+			for path in [request_path, state_path, result_path, decision_path]
+			if path.exists()
+		)
+		payload = {
+			"dispatch_ref": request.get("dispatch_ref"),
+			"objective": request.get("objective"),
+			"state_status": state.get("status"),
+			"state_ref": repo_relative(state_path, repo_root),
+			"request_ref": repo_relative(request_path, repo_root),
+			"result_status": result.get("status") if isinstance(result, dict) else None,
+			"result_blocker": result.get("blocker") if isinstance(result, dict) else None,
+			"result_ref": repo_relative(result_path, repo_root) if result_path.exists() else None,
+			"decision": decision.get("decision") if isinstance(decision, dict) else None,
+			"decision_reason": decision.get("reason") if isinstance(decision, dict) else None,
+			"decision_ref": repo_relative(decision_path, repo_root) if decision_path.exists() else None,
+		}
+		if best is None or mtime > best[0]:
+			best = (mtime, payload)
+
+	return best[1] if best else None
+
+
+def _transition_summary(lane: str | None, *, repo_root: str | Path | None = None) -> dict[str, Any] | None:
+	if not isinstance(lane, str) or not lane.strip():
+		return None
+	try:
+		payload = load_transition(resolve_paths(repo_root).repo_root, lane)
+	except SystemExit:
+		return None
+	if not isinstance(payload, dict):
+		return None
+	return {
+		"transition": payload.get("transition"),
+		"requested_stop_reason": payload.get("requested_stop_reason"),
+		"next_action_kind": (payload.get("next_action") or {}).get("kind")
+		if isinstance(payload.get("next_action"), dict)
+		else None,
+		"next_action_ref": (payload.get("next_action") or {}).get("ref")
+		if isinstance(payload.get("next_action"), dict)
+		else None,
+		"ref": repo_relative(
+			resolve_paths(repo_root).repo_root / ".agent" / "governor" / lane / "proposed_transition.json",
+			repo_root,
+		),
+	}
+
+
+def _build_governor_dialogue(
+	session: dict[str, Any], prompt: str, *, repo_root: str | Path | None = None
+) -> tuple[str, list[str], str | None]:
+	model = session["model"]
 	snapshot = model["snapshot"]
 	task = snapshot.get("task")
 	stage = snapshot.get("currentStage") or "idle"
 	actor = snapshot.get("currentActor") or "orchestration"
+	lane = snapshot.get("lane")
+	request_draft, request_draft_ref = _load_request_draft_summary(session, repo_root=repo_root)
+	accepted_intake, accepted_intake_ref = _load_accepted_intake_summary(session, repo_root=repo_root)
+	dispatch_summary = _latest_dispatch_summary(lane, repo_root=repo_root)
+	transition_summary = _transition_summary(lane, repo_root=repo_root)
+	primary_ref = (
+		(dispatch_summary or {}).get("decision_ref")
+		or (dispatch_summary or {}).get("result_ref")
+		or (dispatch_summary or {}).get("state_ref")
+		or accepted_intake_ref
+		or request_draft_ref
+		or (transition_summary or {}).get("ref")
+	)
 
 	if model.get("activeClarification"):
 		body = (
@@ -166,6 +285,25 @@ def _build_governor_dialogue(model: dict[str, Any], prompt: str) -> tuple[str, l
 		body = (
 			"Current progress: orchestration is waiting for explicit acceptance before the request can move into Governor-led work. "
 			"Use Approve or Full access when you want that request to continue."
+		)
+	elif dispatch_summary:
+		body = (
+			f"Current progress: the latest dispatch is {dispatch_summary['dispatch_ref']} "
+			f"with state {dispatch_summary.get('state_status') or 'unknown'}."
+		)
+		if dispatch_summary.get("result_status"):
+			body += f" Result status is {dispatch_summary['result_status']}."
+		if dispatch_summary.get("decision"):
+			body += f" Governor decision is {dispatch_summary['decision']}."
+	elif accepted_intake:
+		body = (
+			f"Current progress: the accepted intake is bound to {accepted_intake.get('lane') or lane or 'the current lane'} "
+			f"for {accepted_intake.get('task') or accepted_intake.get('goal') or task or 'the current task'}."
+		)
+	elif request_draft:
+		body = (
+			f"Current progress: intake has a draft for {request_draft.get('task_hint') or request_draft.get('normalized_goal') or task or 'the current request'}, "
+			f"and it is currently {request_draft.get('shell_state') or stage}."
 		)
 	elif snapshot.get("runState") == "running":
 		body = (
@@ -190,7 +328,33 @@ def _build_governor_dialogue(model: dict[str, Any], prompt: str) -> tuple[str, l
 	]
 	if task:
 		details.append(f"Current task: {task}")
-	return body, details
+	if request_draft_ref and request_draft:
+		details.append(f"Request draft: {request_draft_ref} ({request_draft.get('shell_state')})")
+	if accepted_intake_ref and accepted_intake:
+		details.append(
+			f"Accepted intake: {accepted_intake_ref} (lane={accepted_intake.get('lane')}, task={accepted_intake.get('task') or accepted_intake.get('goal')})"
+		)
+	if dispatch_summary:
+		details.append(
+			f"Latest dispatch: {dispatch_summary.get('dispatch_ref')} status={dispatch_summary.get('state_status')} ({dispatch_summary.get('state_ref')})"
+		)
+		if dispatch_summary.get("result_status") and dispatch_summary.get("result_ref"):
+			details.append(
+				f"Latest result: status={dispatch_summary['result_status']} ({dispatch_summary['result_ref']})"
+			)
+		if dispatch_summary.get("decision") and dispatch_summary.get("decision_ref"):
+			details.append(
+				f"Latest governor decision: {dispatch_summary['decision']} ({dispatch_summary['decision_ref']})"
+			)
+	if transition_summary:
+		details.append(
+			f"Proposed transition: {transition_summary.get('transition')} ({transition_summary.get('ref')})"
+		)
+		if transition_summary.get("next_action_kind"):
+			details.append(
+				f"Next internal action: {transition_summary['next_action_kind']} -> {transition_summary.get('next_action_ref') or 'none'}"
+			)
+	return body, details, primary_ref
 
 
 def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str, Any]:
@@ -386,7 +550,11 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 
 	turn_type = _classify_turn(prompt)
 	if turn_type == "governor_dialogue":
-		body, details = _build_governor_dialogue(model, prompt)
+		body, details, primary_ref = _build_governor_dialogue(
+			session,
+			prompt,
+			repo_root=repo_root,
+		)
 		model["feed"].append(
 			_feed_item(
 				"user_message",
@@ -407,6 +575,7 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 				details=details,
 				source_layer="governor",
 				source_actor="governor",
+				source_artifact_ref=primary_ref,
 				turn_type=turn_type,
 			)
 		)
