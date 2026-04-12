@@ -33,6 +33,86 @@ CLARIFICATION_PLACEHOLDER = (
 )
 
 
+def _clarification_request_for_prompt(prompt: str, intake_ref: str) -> dict[str, Any]:
+	now = utc_now()
+	lower = prompt.lower()
+
+	if any(token in lower for token in ("analyze", "analyse", "review", "inspect", "explore")) and any(
+		token in lower for token in ("folder", "repo", "repository", "project", "codebase", "directory")
+	):
+		return {
+			"id": f"clarification-{intake_ref}",
+			"title": CLARIFICATION_TITLE,
+			"body": "What kind of analysis do you want for this folder?",
+			"placeholder": "Optional: add a short detail if none of these fit exactly.",
+			"requestedAt": now,
+			"kind": "analysis_focus",
+			"options": [
+				{
+					"id": "analysis-architecture",
+					"label": "Architecture",
+					"answer": "Focus on architecture, structure, and subsystem boundaries.",
+					"description": "Look at structure, boundaries, and responsibilities.",
+				},
+				{
+					"id": "analysis-risks",
+					"label": "Bugs and risks",
+					"answer": "Focus on bugs, regressions, and architectural risks.",
+					"description": "Look for concrete risks and likely failures.",
+				},
+				{
+					"id": "analysis-plan",
+					"label": "Implementation plan",
+					"answer": "Focus on implementation opportunities and the next practical plan.",
+					"description": "Turn the folder analysis into an actionable next-step plan.",
+				},
+			],
+			"allowFreeText": True,
+		}
+
+	if any(token in lower for token in ("build", "implement", "change", "refactor", "update", "fix")):
+		return {
+			"id": f"clarification-{intake_ref}",
+			"title": CLARIFICATION_TITLE,
+			"body": "What should this change preserve while I work?",
+			"placeholder": CLARIFICATION_PLACEHOLDER,
+			"requestedAt": now,
+			"kind": "implementation_guardrail",
+			"options": [
+				{
+					"id": "guardrail-scope",
+					"label": "Keep scope minimal",
+					"answer": "Keep the scope minimal and avoid broad side effects.",
+					"description": "Prefer the smallest safe change.",
+				},
+				{
+					"id": "guardrail-ui",
+					"label": "Preserve visible UX",
+					"answer": "Preserve the current visible UX and control flow unless I ask for a redesign.",
+					"description": "Avoid changing the human-facing interaction model.",
+				},
+				{
+					"id": "guardrail-artifacts",
+					"label": "Preserve artifact flow",
+					"answer": "Preserve the current artifact and orchestration flow while making the change.",
+					"description": "Keep current orchestration and artifact behavior intact.",
+				},
+			],
+			"allowFreeText": True,
+		}
+
+	return {
+		"id": f"clarification-{intake_ref}",
+		"title": CLARIFICATION_TITLE,
+		"body": CLARIFICATION_BODY,
+		"placeholder": CLARIFICATION_PLACEHOLDER,
+		"requestedAt": now,
+		"kind": "constraint",
+		"options": None,
+		"allowFreeText": True,
+	}
+
+
 def intake_dir(intake_ref: str, *, repo_root: str | Path | None = None) -> Path:
 	return resolve_paths(repo_root).intakes_root / intake_ref
 
@@ -50,7 +130,6 @@ def accepted_intake_path(intake_ref: str, *, repo_root: str | Path | None = None
 
 
 def _build_initial_draft(prompt: str, intake_ref: str, *, repo_root: str | Path | None = None) -> dict[str, Any]:
-	now = utc_now()
 	constraints = constraint_hints_from_text(prompt)
 	needs_clarification = len(constraints) == 0
 
@@ -62,17 +141,7 @@ def _build_initial_draft(prompt: str, intake_ref: str, *, repo_root: str | Path 
 		"normalized_goal": trim_text(prompt),
 		"constraints": constraints,
 		"clarification_history": [],
-		"clarification_request": (
-			{
-				"id": f"clarification-{intake_ref}",
-				"title": CLARIFICATION_TITLE,
-				"body": CLARIFICATION_BODY,
-				"placeholder": CLARIFICATION_PLACEHOLDER,
-				"requestedAt": now,
-			}
-			if needs_clarification
-			else None
-		),
+		"clarification_request": _clarification_request_for_prompt(prompt, intake_ref) if needs_clarification else None,
 		"lane_hint": None,
 		"task_hint": summarize(prompt, 60),
 	}

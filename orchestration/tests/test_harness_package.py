@@ -65,6 +65,101 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["snapshot"]["currentStage"], "ready_for_acceptance")
             self.assertIsNotNone(model["snapshot"]["pendingApproval"])
 
+    def test_session_governor_dialogue_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="What is the current progress?",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["currentActor"], "intake_shell")
+            self.assertEqual(model["snapshot"]["currentStage"], "idle")
+            self.assertIsNone(model["activeClarification"])
+            self.assertIsNone(model["snapshot"]["pendingApproval"])
+            self.assertFalse((repo_root / ".agent" / "intakes").exists())
+            self.assertTrue(
+                any(item["type"] == "actor_event" for item in model["feed"])
+            )
+
+    def test_session_analysis_prompt_returns_structured_clarification_options(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Analyze this folder.",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["currentStage"], "clarification_needed")
+            self.assertEqual(model["activeClarification"]["kind"], "analysis_focus")
+            self.assertEqual(len(model["activeClarification"]["options"]), 3)
+            self.assertTrue(model["activeClarification"]["allowFreeText"])
+
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text=model["activeClarification"]["options"][0]["answer"],
+                repo_root=repo_root,
+            )
+            self.assertEqual(model["snapshot"]["currentStage"], "ready_for_acceptance")
+            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
+
+    def test_session_full_access_sets_session_mode_and_running_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            session.dispatch_session_action(
+                "submit_prompt",
+                text="Build a compact execution window.",
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Keep inline artifact actions visible.",
+                repo_root=repo_root,
+            )
+            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
+
+            model = session.dispatch_session_action(
+                "full_access",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["accessMode"], "full_access")
+            self.assertEqual(model["snapshot"]["runState"], "running")
+            self.assertEqual(model["snapshot"]["currentActor"], "governor")
+            self.assertIsNone(model["snapshot"]["pendingApproval"])
+            self.assertIn("Full access", model["acceptedIntakeSummary"]["body"])
+
+    def test_session_auto_accepts_later_requests_after_full_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            session.dispatch_session_action(
+                "submit_prompt",
+                text="Build a compact execution window.",
+                repo_root=repo_root,
+            )
+            session.dispatch_session_action(
+                "answer_clarification",
+                text="Keep inline artifact actions visible.",
+                repo_root=repo_root,
+            )
+            session.dispatch_session_action(
+                "full_access",
+                repo_root=repo_root,
+            )
+
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Implement a quieter Chat transcript while keeping the VS Code Chat host, preserving inline artifact actions, and replacing visible hold and reconnect controls with cleaner approval affordances.",
+                repo_root=repo_root,
+            )
+
+            self.assertIsNone(model["snapshot"]["pendingApproval"])
+            self.assertEqual(model["snapshot"]["accessMode"], "full_access")
+            self.assertEqual(model["snapshot"]["runState"], "running")
+            self.assertTrue((repo_root / ".agent" / "intakes").exists())
+
     def test_cli_routes_session_commands_through_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
@@ -81,6 +176,23 @@ class HarnessPackageTests(unittest.TestCase):
                     os.environ["ORCHESTRATION_REPO_ROOT"] = previous
 
             self.assertEqual(result, 0)
+
+    def test_session_feed_items_include_internal_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Analyze this folder.",
+                repo_root=repo_root,
+            )
+
+            clarification_items = [
+                item for item in model["feed"] if item["type"] == "clarification_request"
+            ]
+            self.assertEqual(len(clarification_items), 1)
+            self.assertEqual(clarification_items[0]["source_layer"], "intake")
+            self.assertEqual(clarification_items[0]["source_actor"], "intake_shell")
+            self.assertEqual(clarification_items[0]["turn_type"], "governed_work_intent")
 
     def test_transition_module_records_and_loads_transition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

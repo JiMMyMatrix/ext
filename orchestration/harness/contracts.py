@@ -81,6 +81,10 @@ def validate_request_draft(payload: dict[str, Any], *, require_ready: bool = Fal
 		raise ValueError("request_draft.json constraints must be a list")
 	if not isinstance(payload["clarification_history"], list):
 		raise ValueError("request_draft.json clarification_history must be a list")
+	if payload.get("clarification_request") is not None and not isinstance(
+		payload["clarification_request"], dict
+	):
+		raise ValueError("request_draft.json clarification_request must be an object when present")
 	if require_ready and payload["shell_state"] != "ready_for_acceptance":
 		raise ValueError("request_draft.json must be ready_for_acceptance before acceptance")
 

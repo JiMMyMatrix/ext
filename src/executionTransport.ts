@@ -57,8 +57,8 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 				return this.run('session', 'answer-clarification', action.text);
 			case 'approve':
 				return this.run('session', 'approve');
-			case 'decline_or_hold':
-				return this.run('session', 'decline-or-hold');
+			case 'full_access':
+				return this.run('session', 'full-access');
 			case 'interrupt_run':
 				return this.run('session', 'interrupt');
 			case 'reconnect':

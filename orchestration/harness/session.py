@@ -39,13 +39,21 @@ def _feed_item(
 	now: str,
 	details: list[str] | None = None,
 	activity: dict[str, Any] | None = None,
+	source_layer: str | None = None,
+	source_actor: str | None = None,
+	source_artifact_ref: str | None = None,
+	turn_type: str | None = None,
 ) -> dict[str, Any]:
+	default_provenance = _default_feed_provenance(item_type)
 	payload: dict[str, Any] = {
 		"id": _next_id(item_type),
 		"type": item_type,
 		"timestamp": now,
 		"title": title,
 		"authoritative": authoritative,
+		"source_layer": source_layer or default_provenance["source_layer"],
+		"source_actor": source_actor or default_provenance["source_actor"],
+		"turn_type": turn_type or default_provenance["turn_type"],
 	}
 	if body is not None:
 		payload["body"] = body
@@ -53,6 +61,8 @@ def _feed_item(
 		payload["details"] = details
 	if activity:
 		payload["activity"] = activity
+	if source_artifact_ref:
+		payload["source_artifact_ref"] = source_artifact_ref
 	return payload
 
 
@@ -75,6 +85,10 @@ def _artifact_feed_item(artifact: dict[str, Any], now: str) -> dict[str, Any]:
 		"title": artifact["label"],
 		"body": artifact.get("summary"),
 		"authoritative": artifact["authoritative"],
+		"source_layer": "orchestration",
+		"source_actor": "orchestration",
+		"source_artifact_ref": artifact["path"],
+		"turn_type": "system",
 		"artifact": artifact,
 		"activity": {
 			"kind": "artifact",
@@ -89,6 +103,96 @@ def _request_card(title: str, body: str, now: str) -> dict[str, Any]:
 	return {"id": _next_id("request"), "title": title, "body": body, "requestedAt": now}
 
 
+def _default_feed_provenance(item_type: str) -> dict[str, str]:
+	if item_type == "user_message":
+		return {
+			"source_layer": "dialog_controller",
+			"source_actor": "human",
+			"turn_type": "system",
+		}
+	if item_type in {"shell_event", "clarification_request"}:
+		return {
+			"source_layer": "intake",
+			"source_actor": "intake_shell",
+			"turn_type": "system",
+		}
+	if item_type == "actor_event":
+		return {
+			"source_layer": "governor",
+			"source_actor": "governor",
+			"turn_type": "governor_dialogue",
+		}
+	return {
+		"source_layer": "orchestration",
+		"source_actor": "orchestration",
+		"turn_type": "system",
+	}
+
+
+def _classify_turn(prompt: str) -> str:
+	lower = prompt.lower()
+	dialogue_tokens = (
+		"progress",
+		"status",
+		"where are we",
+		"what are you doing",
+		"what is the current",
+		"what's the current",
+		"why",
+		"explain",
+		"help me understand",
+		"what do you think",
+		"should we",
+		"which option",
+		"compare",
+	)
+	if any(token in lower for token in dialogue_tokens):
+		return "governor_dialogue"
+	return "governed_work_intent"
+
+
+def _build_governor_dialogue(model: dict[str, Any], prompt: str) -> tuple[str, list[str]]:
+	snapshot = model["snapshot"]
+	task = snapshot.get("task")
+	stage = snapshot.get("currentStage") or "idle"
+	actor = snapshot.get("currentActor") or "orchestration"
+
+	if model.get("activeClarification"):
+		body = (
+			"Current progress: intake is waiting on one clarification before the request can continue. "
+			"Answer the clarification or choose one of the suggested options to move forward."
+		)
+	elif snapshot.get("pendingApproval"):
+		body = (
+			"Current progress: orchestration is waiting for explicit acceptance before the request can move into Governor-led work. "
+			"Use Approve or Full access when you want that request to continue."
+		)
+	elif snapshot.get("runState") == "running":
+		body = (
+			f"Current progress: Governor-led work is running{f' for {task}' if task else ''}. "
+			"Stop is available if you need to interrupt the current run."
+		)
+	elif model.get("acceptedIntakeSummary"):
+		body = (
+			f"The latest accepted intake is {task or 'ready'}, and the session is currently idle. "
+			"Send a new governed request when you want the workflow to move again."
+		)
+	else:
+		body = (
+			"No governed work is active yet. Send a bounded request when you want to start, "
+			"or ask a progress or idea question like this one anytime."
+		)
+
+	details = [
+		f"Prompt: {summarize(prompt, 72)}",
+		f"Current actor: {actor}",
+		f"Current stage: {stage}",
+	]
+	if task:
+		details.append(f"Current task: {task}")
+	return body, details
+
+
 def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str, Any]:
 	branch = git_branch_name(repo_root)
 	return {
@@ -98,6 +202,8 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 			"task": None,
 			"currentActor": "intake_shell",
 			"currentStage": "idle",
+			"accessMode": "approval_required",
+			"runState": "idle",
 			"transportState": "connected",
 			"pendingApproval": None,
 			"pendingInterrupt": None,
@@ -108,7 +214,7 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 			_feed_item(
 				"system_status",
 				"Ready when you are",
-				"Ask Codex to work on this repo.",
+				"Ask Corgi to work on this repo.",
 				authoritative=True,
 				now=now,
 			)
@@ -118,12 +224,35 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 	}
 
 
+def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Path | None = None) -> None:
+	session.setdefault("meta", {})
+	session["meta"].setdefault("activeIntakeRef", None)
+	model = session.setdefault("model", _initial_model(now, repo_root=repo_root))
+	snapshot = model.setdefault("snapshot", {})
+	snapshot.setdefault("lane", None)
+	snapshot.setdefault("branch", git_branch_name(repo_root))
+	snapshot.setdefault("task", None)
+	snapshot.setdefault("currentActor", "intake_shell")
+	snapshot.setdefault("currentStage", "idle")
+	snapshot.setdefault("accessMode", "approval_required")
+	snapshot.setdefault("runState", "idle")
+	snapshot.setdefault("transportState", "connected")
+	snapshot.setdefault("pendingApproval", None)
+	snapshot.setdefault("pendingInterrupt", None)
+	snapshot.setdefault("recentArtifacts", [])
+	snapshot.setdefault("snapshotFreshness", {"receivedAt": now})
+	model.setdefault("feed", [])
+	model.setdefault("activeClarification", None)
+	model.setdefault("acceptedIntakeSummary", None)
+
+
 def load_session(repo_root: str | Path | None = None) -> dict[str, Any]:
 	now = utc_now()
 	session_path = resolve_paths(repo_root).ui_session_path
 	payload = load_json(session_path, default=None)
 	if payload is None:
 		return {"model": _initial_model(now, repo_root=repo_root), "meta": {"activeIntakeRef": None}}
+	_normalize_session(payload, now, repo_root=repo_root)
 	return payload
 
 
@@ -140,11 +269,111 @@ def public_model(session: dict[str, Any]) -> dict[str, Any]:
 	return session["model"]
 
 
+def _current_access_mode(model: dict[str, Any]) -> str:
+	return model["snapshot"].get("accessMode") or "approval_required"
+
+
 def _append_error(model: dict[str, Any], title: str, body: str, now: str) -> None:
 	model["feed"].append(
 		_feed_item("error", title, body, authoritative=True, now=now)
 	)
 	_refresh_snapshot(model, now)
+
+
+def _supersede_pending_approval(model: dict[str, Any], now: str) -> None:
+	pending = model["snapshot"].get("pendingApproval")
+	if not pending:
+		return
+	model["snapshot"]["pendingApproval"] = None
+	model["feed"].append(
+		_feed_item(
+			"system_status",
+			"Pending approval superseded",
+			"A new request replaced the previous approval checkpoint.",
+			authoritative=True,
+			now=now,
+		)
+	)
+
+
+def _accept_pending_intake(
+	session: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	enable_full_access: bool = False,
+	turn_type: str = "system",
+) -> bool:
+	model = session["model"]
+	intake_ref = session["meta"].get("activeIntakeRef")
+	pending_approval = model["snapshot"].get("pendingApproval")
+	if not intake_ref or not pending_approval:
+		_append_error(model, "No approval is active", "There is no approval to apply.", now)
+		return False
+
+	branch = model["snapshot"].get("branch") or git_branch_name(repo_root)
+	lane = model["snapshot"].get("lane") or default_lane(branch)
+	task = model["snapshot"].get("task")
+	envelope = accept_intake(intake_ref, lane=lane, branch=branch, task=task, repo_root=repo_root)
+
+	artifacts = [
+		_artifact(
+			repo_relative(raw_request_path(intake_ref, repo_root=repo_root), repo_root),
+			summary="Canonical raw human input.",
+			authoritative=True,
+			status="recorded",
+		),
+		_artifact(
+			repo_relative(request_draft_path(intake_ref, repo_root=repo_root), repo_root),
+			summary="Intake shell draft. Informational only.",
+			authoritative=False,
+			status="draft",
+		),
+		_artifact(
+			envelope["accepted_intake_ref"],
+			summary="Canonical accepted intake for downstream governor consumption.",
+			authoritative=True,
+			status="accepted",
+		),
+	]
+
+	access_mode = "full_access" if enable_full_access else _current_access_mode(model)
+	summary = envelope["accepted_summary"]
+	if access_mode == "full_access":
+		summary = f"{summary} Full access is enabled for this session."
+
+	model["acceptedIntakeSummary"] = {
+		"title": "Accepted intake summary",
+		"body": summary,
+	}
+	model["snapshot"]["pendingApproval"] = None
+	model["snapshot"]["pendingInterrupt"] = None
+	model["snapshot"]["lane"] = envelope["lane"]
+	model["snapshot"]["branch"] = envelope["branch"]
+	model["snapshot"]["task"] = envelope["task"]
+	model["snapshot"]["recentArtifacts"] = artifacts
+	model["snapshot"]["accessMode"] = access_mode
+	model["feed"].append(
+		_feed_item(
+			"system_status",
+			"Full access enabled" if access_mode == "full_access" else "Intake accepted",
+			summary,
+			authoritative=True,
+			now=now,
+			turn_type=turn_type,
+		)
+	)
+	for artifact in artifacts:
+		model["feed"].append(_artifact_feed_item(artifact, now))
+	_refresh_snapshot(
+		model,
+		now,
+		currentActor="governor" if access_mode == "full_access" else "orchestration",
+		currentStage="running" if access_mode == "full_access" else "intake_accepted",
+		runState="running" if access_mode == "full_access" else "idle",
+		transportState="connected",
+	)
+	return True
 
 
 def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str | Path | None = None) -> None:
@@ -155,11 +384,48 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 		_append_error(model, "Prompt required", "Enter a prompt before sending it.", now)
 		return
 
+	turn_type = _classify_turn(prompt)
+	if turn_type == "governor_dialogue":
+		body, details = _build_governor_dialogue(model, prompt)
+		model["feed"].append(
+			_feed_item(
+				"user_message",
+				"Governor question",
+				prompt,
+				authoritative=False,
+				now=now,
+				turn_type=turn_type,
+			)
+		)
+		model["feed"].append(
+			_feed_item(
+				"actor_event",
+				"Governor response",
+				body,
+				authoritative=True,
+				now=now,
+				details=details,
+				source_layer="governor",
+				source_actor="governor",
+				turn_type=turn_type,
+			)
+		)
+		_refresh_snapshot(model, now, transportState="connected")
+		return
+
+	_supersede_pending_approval(model, now)
 	envelope = start_intake(prompt, repo_root=repo_root)
 	session["meta"]["activeIntakeRef"] = envelope["intake_ref"]
 
 	model["feed"].append(
-		_feed_item("user_message", "Prompt submitted", prompt, authoritative=False, now=now)
+		_feed_item(
+			"user_message",
+			"Prompt submitted",
+			prompt,
+			authoritative=False,
+			now=now,
+			turn_type=turn_type,
+		)
 	)
 	model["feed"].append(
 		_feed_item(
@@ -173,6 +439,7 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 				"Intake acceptance remains orchestration-owned.",
 			],
 			activity={"kind": "status", "state": "completed", "summary": "Draft updated"},
+			turn_type=turn_type,
 		)
 	)
 	model["acceptedIntakeSummary"] = None
@@ -192,6 +459,7 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 				clarification["body"],
 				authoritative=True,
 				now=now,
+				turn_type=turn_type,
 			)
 		)
 		_refresh_snapshot(
@@ -199,21 +467,36 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 			now,
 			currentActor="intake_shell",
 			currentStage="clarification_needed",
+			runState="idle",
 			transportState="connected",
 		)
 		return
 
 	model["activeClarification"] = None
+	if _current_access_mode(model) == "full_access":
+		model["snapshot"]["pendingApproval"] = _request_card(
+			"Accept intake",
+			"Approve this accepted intake draft or grant full access so orchestration can continue.",
+			now,
+		)
+		_accept_pending_intake(
+			session,
+			now,
+			repo_root=repo_root,
+			turn_type=turn_type,
+		)
+		return
+
 	model["snapshot"]["pendingApproval"] = _request_card(
 		"Accept intake",
-		"Approve this accepted intake draft so orchestration can continue.",
+		"Approve this accepted intake draft or grant full access so orchestration can continue.",
 		now,
 	)
 	model["feed"].append(
 		_feed_item(
 			"approval_request",
 			"Accept intake",
-			"Orchestration is waiting for approval before canonical acceptance.",
+			"Orchestration is waiting for approval or full access before canonical acceptance.",
 			authoritative=True,
 			now=now,
 		)
@@ -223,6 +506,7 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 		now,
 		currentActor="orchestration",
 		currentStage="ready_for_acceptance",
+		runState="idle",
 		transportState="connected",
 	)
 
@@ -257,7 +541,14 @@ def handle_answer_clarification(
 
 	envelope = answer_intake_clarification(intake_ref, answer, repo_root=repo_root)
 	model["feed"].append(
-		_feed_item("user_message", "Clarification answered", answer, authoritative=False, now=now)
+		_feed_item(
+			"user_message",
+			"Clarification answered",
+			answer,
+			authoritative=False,
+			now=now,
+			turn_type="clarification_reply",
+		)
 	)
 	model["feed"].append(
 		_feed_item(
@@ -267,93 +558,56 @@ def handle_answer_clarification(
 			authoritative=False,
 			now=now,
 			activity={"kind": "status", "state": "completed", "summary": "Ready for acceptance"},
-		)
-	)
-	model["feed"].append(
-		_feed_item(
-			"approval_request",
-			"Accept intake",
-			"Orchestration is waiting for approval before canonical acceptance.",
-			authoritative=True,
-			now=now,
+			turn_type="clarification_reply",
 		)
 	)
 	model["activeClarification"] = None
 	model["snapshot"]["pendingApproval"] = _request_card(
 		"Accept intake",
-		"Approve this accepted intake draft so orchestration can continue.",
+		"Approve this accepted intake draft or grant full access so orchestration can continue.",
 		now,
+	)
+	if _current_access_mode(model) == "full_access":
+		_accept_pending_intake(
+			session,
+			now,
+			repo_root=repo_root,
+			turn_type="clarification_reply",
+		)
+		return
+	model["feed"].append(
+		_feed_item(
+			"approval_request",
+			"Accept intake",
+			"Orchestration is waiting for approval or full access before canonical acceptance.",
+			authoritative=True,
+			now=now,
+			turn_type="clarification_reply",
+		)
 	)
 	_refresh_snapshot(
 		model,
 		now,
 		currentActor="orchestration",
 		currentStage=envelope["shell_state"],
+		runState="idle",
 		transportState="connected",
 	)
 
 
 def handle_approve(session: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
 	now = utc_now()
-	model = session["model"]
-	intake_ref = session["meta"].get("activeIntakeRef")
-	pending_approval = model["snapshot"].get("pendingApproval")
-	if not intake_ref or not pending_approval:
-		_append_error(model, "No approval is active", "There is no approval to apply.", now)
-		return
+	_accept_pending_intake(session, now, repo_root=repo_root, turn_type="approval_action")
 
-	branch = model["snapshot"].get("branch") or git_branch_name(repo_root)
-	lane = model["snapshot"].get("lane") or default_lane(branch)
-	task = model["snapshot"].get("task")
-	envelope = accept_intake(intake_ref, lane=lane, branch=branch, task=task, repo_root=repo_root)
 
-	artifacts = [
-		_artifact(
-			repo_relative(raw_request_path(intake_ref, repo_root=repo_root), repo_root),
-			summary="Canonical raw human input.",
-			authoritative=True,
-			status="recorded",
-		),
-		_artifact(
-			repo_relative(request_draft_path(intake_ref, repo_root=repo_root), repo_root),
-			summary="Intake shell draft. Informational only.",
-			authoritative=False,
-			status="draft",
-		),
-		_artifact(
-			envelope["accepted_intake_ref"],
-			summary="Canonical accepted intake for downstream governor consumption.",
-			authoritative=True,
-			status="accepted",
-		),
-	]
-
-	model["acceptedIntakeSummary"] = {
-		"title": "Accepted intake summary",
-		"body": envelope["accepted_summary"],
-	}
-	model["snapshot"]["pendingApproval"] = None
-	model["snapshot"]["lane"] = envelope["lane"]
-	model["snapshot"]["branch"] = envelope["branch"]
-	model["snapshot"]["task"] = envelope["task"]
-	model["snapshot"]["recentArtifacts"] = artifacts
-	model["feed"].append(
-		_feed_item(
-			"system_status",
-			"Intake accepted",
-			envelope["accepted_summary"],
-			authoritative=True,
-			now=now,
-		)
-	)
-	for artifact in artifacts:
-		model["feed"].append(_artifact_feed_item(artifact, now))
-	_refresh_snapshot(
-		model,
+def handle_full_access(session: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+	now = utc_now()
+	_accept_pending_intake(
+		session,
 		now,
-		currentActor="orchestration",
-		currentStage="intake_accepted",
-		transportState="connected",
+		repo_root=repo_root,
+		enable_full_access=True,
+		turn_type="approval_action",
 	)
 
 
@@ -379,6 +633,7 @@ def handle_decline_or_hold(session: dict[str, Any], *, repo_root: str | Path | N
 		now,
 		currentActor="orchestration",
 		currentStage="on_hold",
+		runState="idle",
 		transportState="connected",
 	)
 
@@ -386,18 +641,35 @@ def handle_decline_or_hold(session: dict[str, Any], *, repo_root: str | Path | N
 def handle_interrupt(session: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
 	now = utc_now()
 	model = session["model"]
+	if model["snapshot"].get("runState") != "running":
+		_append_error(
+			model,
+			"Nothing is running",
+			"Stop is only available while governed work is actively running.",
+			now,
+		)
+		return
+	if model["snapshot"].get("pendingInterrupt"):
+		_append_error(
+			model,
+			"Stop already requested",
+			"A stop request is already waiting for orchestration handling.",
+			now,
+		)
+		return
 	model["snapshot"]["pendingInterrupt"] = _request_card(
-		"Interrupt requested",
-		"Interrupt has been requested and is waiting for orchestration handling.",
+		"Stop requested",
+		"Stop has been requested and is waiting for orchestration handling.",
 		now,
 	)
 	model["feed"].append(
 		_feed_item(
 			"interrupt_request",
-			"Interrupt requested",
-			"Interrupt has been requested and is waiting for orchestration handling.",
+			"Stop requested",
+			"Stop has been requested and is waiting for orchestration handling.",
 			authoritative=True,
 			now=now,
+			turn_type="stop_action",
 		)
 	)
 	_refresh_snapshot(
@@ -405,6 +677,7 @@ def handle_interrupt(session: dict[str, Any], *, repo_root: str | Path | None = 
 		now,
 		currentActor="orchestration",
 		currentStage="interrupt_requested",
+		runState="running",
 		transportState="connected",
 	)
 
@@ -437,6 +710,8 @@ def dispatch_session_action(
 		handle_answer_clarification(session, text or "", repo_root=repo_root)
 	elif command == "approve":
 		handle_approve(session, repo_root=repo_root)
+	elif command == "full_access":
+		handle_full_access(session, repo_root=repo_root)
 	elif command == "decline_or_hold":
 		handle_decline_or_hold(session, repo_root=repo_root)
 	elif command == "interrupt_run":
@@ -463,6 +738,7 @@ def build_parser() -> argparse.ArgumentParser:
 	answer.add_argument("--text", required=True)
 
 	subparsers.add_parser("approve")
+	subparsers.add_parser("full_access")
 	subparsers.add_parser("decline_or_hold")
 	subparsers.add_parser("interrupt_run")
 	subparsers.add_parser("reconnect")

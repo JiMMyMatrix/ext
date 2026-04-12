@@ -16,14 +16,14 @@ export const CODEX_CHAT_PARTICIPANT_ID = 'ext.codex';
 type ChatCommand =
 	| 'status'
 	| 'approve'
-	| 'hold'
-	| 'interrupt'
-	| 'reconnect';
+	| 'full-access'
+	| 'stop';
 
 interface ChatResultMetadata {
 	hasClarification?: boolean;
 	hasApproval?: boolean;
 	hasInterrupt?: boolean;
+	canStop?: boolean;
 	transportState: TransportState;
 	stale?: boolean;
 }
@@ -42,12 +42,10 @@ export function resolveChatAction(
 			return undefined;
 		case 'approve':
 			return { type: 'approve' };
-		case 'hold':
-			return { type: 'decline_or_hold' };
-		case 'interrupt':
+		case 'full-access':
+			return { type: 'full_access' };
+		case 'stop':
 			return { type: 'interrupt_run' };
-		case 'reconnect':
-			return { type: 'reconnect' };
 	}
 
 	const text = prompt.trim();
@@ -75,6 +73,7 @@ export function buildChatResultMetadata(
 		hasClarification: Boolean(model.activeClarification),
 		hasApproval: Boolean(model.snapshot.pendingApproval),
 		hasInterrupt: Boolean(model.snapshot.pendingInterrupt),
+		canStop: isStopAvailable(model),
 		transportState: model.snapshot.transportState,
 		stale: isSnapshotStale(model.snapshot.snapshotFreshness),
 	};
@@ -93,30 +92,22 @@ export function buildChatFollowups(
 				command: 'approve',
 			},
 			{
-				label: 'Hold',
-				prompt: 'Hold the pending request.',
-				command: 'hold',
+				label: 'Full access',
+				prompt: 'Grant full access for the current session.',
+				command: 'full-access',
 			}
 		);
 	}
 
-	if (metadata.hasInterrupt) {
+	if (metadata.canStop) {
 		followups.push({
-			label: 'Interrupt',
-			prompt: 'Interrupt the current run.',
-			command: 'interrupt',
+			label: 'Stop',
+			prompt: 'Stop the current run.',
+			command: 'stop',
 		});
 	}
 
-	if (metadata.transportState !== 'connected' || metadata.stale) {
-		followups.push({
-			label: 'Reconnect',
-			prompt: 'Reconnect and refresh the orchestration state.',
-			command: 'reconnect',
-		});
-	}
-
-	if (!metadata.hasClarification && followups.length === 0) {
+	if (!metadata.hasClarification && !metadata.hasInterrupt && followups.length === 0) {
 		followups.push({
 			label: 'Status',
 			prompt: 'Show current status.',
@@ -242,11 +233,11 @@ function buildPrimaryMessage(model: ExecutionWindowModel): string | undefined {
 	}
 
 	if (model.snapshot.pendingApproval) {
-		return `${model.snapshot.pendingApproval.body}\n\nUse \`/approve\` or \`/hold\`.`;
+		return `${model.snapshot.pendingApproval.body}\n\nUse \`/approve\` or \`/full-access\`.`;
 	}
 
 	if (model.snapshot.pendingInterrupt) {
-		return `${model.snapshot.pendingInterrupt.body}\n\nUse \`/interrupt\` if you want to stop the run.`;
+		return model.snapshot.pendingInterrupt.body;
 	}
 
 	if (model.acceptedIntakeSummary) {
@@ -277,7 +268,15 @@ function buildStatusMessage(model: ExecutionWindowModel): string {
 	} else if (model.snapshot.pendingApproval) {
 		notes.push('Approval is waiting.');
 	} else if (model.snapshot.pendingInterrupt) {
-		notes.push('Interrupt is available.');
+		notes.push('Stop is pending.');
+	}
+
+	if (model.snapshot.accessMode === 'full_access') {
+		notes.push('Full access is enabled.');
+	}
+
+	if (model.snapshot.runState === 'running' && !model.snapshot.pendingInterrupt) {
+		notes.push('Governed work is running.');
 	}
 
 	if (notes.length === 0) {
@@ -298,4 +297,11 @@ function latestNarrativeItem(feed: FeedItem[]): FeedItem | undefined {
 				item.type !== 'approval_request' &&
 				item.type !== 'interrupt_request'
 		);
+}
+
+function isStopAvailable(model: ExecutionWindowModel): boolean {
+	return (
+		model.snapshot.runState === 'running' &&
+		!model.snapshot.pendingInterrupt
+	);
 }

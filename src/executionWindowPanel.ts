@@ -8,7 +8,6 @@ import {
 } from './phase1Model';
 import { createExecutionTransport, type ExecutionTransport } from './executionTransport';
 
-export const OPEN_EXECUTION_WINDOW_COMMAND = 'ext.openExecutionWindow';
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
 export const EXECUTION_WINDOW_VIEW_ID = 'ext.executionWindowView';
 
@@ -17,9 +16,8 @@ type WebviewMessage =
 	| { type: 'submit_prompt'; text?: string }
 	| { type: 'answer_clarification'; text?: string }
 	| { type: 'approve' }
-	| { type: 'decline_or_hold' }
+	| { type: 'full_access' }
 	| { type: 'interrupt_run' }
-	| { type: 'reconnect' }
 	| { type: 'open_artifact'; artifactId?: string }
 	| { type: 'reveal_artifact_path'; artifactId?: string }
 	| { type: 'copy_artifact_path'; artifactId?: string };
@@ -57,25 +55,14 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		this.transport = createExecutionTransport(context.extensionMode, this.workspaceRoot);
 	}
 
-	public async createOrShow() {
-		await this.executeQuietly(`workbench.view.extension.${EXECUTION_WINDOW_CONTAINER_ID}`);
-		await this.executeQuietly(`${EXECUTION_WINDOW_VIEW_ID}.focus`);
-		this.view?.show?.(true);
-		if (this.view) {
-			await this.refreshState();
-			return;
-		}
-		this.postState();
-	}
-
 	public resolveWebviewView(webviewView: vscode.WebviewView) {
 		this.disposeWebviewListeners();
 		this.view = webviewView;
-		this.view.title = 'Codex';
+		this.view.title = 'Corgi';
 		this.view.webview.options = {
 			enableScripts: true,
 		};
-		this.view.webview.html = this.getHtml(this.view.webview);
+		this.view.webview.html = getExecutionWindowHtml(this.view.webview.cspSource);
 		this.webviewDisposables.push(
 			this.view.webview.onDidReceiveMessage((message) => {
 				void this.handleMessage(message as WebviewMessage);
@@ -95,14 +82,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private disposeWebviewListeners() {
 		while (this.webviewDisposables.length) {
 			this.webviewDisposables.pop()?.dispose();
-		}
-	}
-
-	private async executeQuietly(command: string) {
-		try {
-			await vscode.commands.executeCommand(command);
-		} catch {
-			// Focus commands can be unavailable in some test hosts.
 		}
 	}
 
@@ -161,14 +140,11 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			case 'approve':
 				await this.applyAction({ type: 'approve' });
 				return;
-			case 'decline_or_hold':
-				await this.applyAction({ type: 'decline_or_hold' });
+			case 'full_access':
+				await this.applyAction({ type: 'full_access' });
 				return;
 			case 'interrupt_run':
 				await this.applyAction({ type: 'interrupt_run' });
-				return;
-			case 'reconnect':
-				await this.applyAction({ type: 'reconnect' });
 				return;
 			case 'open_artifact':
 				await this.handleArtifactAction(message.artifactId, 'open');
@@ -198,7 +174,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		if (!artifact) {
 			this.pushLocalError(
 				'Artifact unavailable',
-				`The artifact "${artifactId}" could not be found in the current execution window state.`
+				`The artifact "${artifactId}" could not be found in the current Corgi state.`
 			);
 			return;
 		}
@@ -251,19 +227,19 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		this.postState();
 	}
 
-	private getHtml(webview: vscode.Webview): string {
-		const nonce = getNonce();
+}
 
+export function getExecutionWindowHtml(cspSource: string, nonce: string = getNonce()): string {
 		return `<!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
 	<meta
 		http-equiv="Content-Security-Policy"
-		content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"
+		content="default-src 'none'; img-src ${cspSource} data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"
 	/>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-	<title>Codex</title>
+	<title>Corgi</title>
 	<style>
 		:root {
 			color-scheme: light dark;
@@ -641,7 +617,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			<form class="composer" id="composerForm">
 				<textarea
 					id="composerInput"
-					placeholder="Ask Codex to work on this repo..."
+					placeholder="Ask Corgi to work on this repo..."
 				></textarea>
 				<div class="composer-footer">
 					<div class="composer-hint" id="composerHint">Enter to send, Shift+Enter for newline</div>
@@ -650,7 +626,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			</form>
 		</footer>
 	</div>
-	<div class="loading" id="loadingState">Loading Codex...</div>
+	<div class="loading" id="loadingState">Loading Corgi...</div>
 	<script nonce="${nonce}">
 		const vscode = acquireVsCodeApi();
 		const persisted = vscode.getState() ?? {
@@ -707,31 +683,32 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			return Date.now() - receivedAt > 45000;
 		}
 
-		function needsReconnect(snapshot) {
-			return snapshot.transportState !== 'connected' || isSnapshotStale(snapshot);
-		}
-
-		function canInterrupt(snapshot) {
+		function canStop(snapshot) {
 			if (snapshot.pendingInterrupt) {
 				return false;
 			}
 
-			return snapshot.currentActor === 'executor' && snapshot.currentStage === 'running';
+			return snapshot.runState === 'running';
 		}
 
 		function composerMode() {
 			if (model?.activeClarification) {
+				const hasOptions =
+					Array.isArray(model.activeClarification.options) &&
+					model.activeClarification.options.length > 0;
 				return {
 					placeholder:
 						model.activeClarification.placeholder ||
-						'Answer the clarification so Codex can continue.',
-					hint: 'Answering clarification. Enter to send.',
+						'Answer the clarification so Corgi can continue.',
+					hint: hasOptions
+						? 'Choose an option below or type a short answer. Enter to send.'
+						: 'Answering clarification. Enter to send.',
 					buttonLabel: 'Answer',
 				};
 			}
 
 			return {
-				placeholder: 'Ask Codex to work on this repo...',
+				placeholder: 'Ask Corgi to work on this repo...',
 				hint: 'Enter to send, Shift+Enter for newline',
 				buttonLabel: 'Send',
 			};
@@ -745,15 +722,19 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			const snapshot = model.snapshot;
 			const stale = isSnapshotStale(snapshot);
 			const statusLabel =
-				snapshot.transportState === 'connected' && !stale
-					? 'Ready'
-					: 'Reconnect';
+				snapshot.pendingInterrupt
+					? 'Stop pending'
+					: snapshot.runState === 'running'
+						? 'Running'
+						: snapshot.transportState === 'connected' && !stale
+							? 'Ready'
+							: 'Attention';
 
 			headerContent.innerHTML =
 				'<div class="header-row">' +
 					'<div class="brand">' +
 						'<div class="brand-mark">C</div>' +
-						'<h1 class="header-title">Codex</h1>' +
+						'<h1 class="header-title">Corgi</h1>' +
 					'</div>' +
 					'<div class="header-status">' +
 						'<span class="status-dot ' + (stale ? 'is-stale' : '') + '"></span>' +
@@ -771,10 +752,31 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			const cards = [];
 
 			if (model.activeClarification) {
+				const clarificationOptions = Array.isArray(model.activeClarification.options)
+					? model.activeClarification.options
+					: [];
+				const optionButtons =
+					clarificationOptions.length > 0
+						? '<div class="card-actions">' +
+							clarificationOptions
+								.map(
+									(option) =>
+										'<button type="button" class="secondary" data-clarification-answer="' +
+										escapeHtml(option.answer) +
+										'" title="' +
+										escapeHtml(option.description || option.answer) +
+										'">' +
+										escapeHtml(option.label) +
+										'</button>'
+								)
+								.join('') +
+						  '</div>'
+						: '';
 				cards.push(
 					'<section class="action-card">' +
 						'<h2>' + escapeHtml(model.activeClarification.title) + '</h2>' +
 						'<p>' + escapeHtml(model.activeClarification.body) + '</p>' +
+						optionButtons +
 					'</section>'
 				);
 			}
@@ -786,7 +788,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 						'<p>' + escapeHtml(snapshot.pendingApproval.body) + '</p>' +
 						'<div class="card-actions">' +
 							'<button type="button" data-action="approve">Approve</button>' +
-							'<button type="button" class="secondary" data-action="decline_or_hold">Hold</button>' +
+							'<button type="button" class="secondary" data-action="full_access">Full access</button>' +
 						'</div>' +
 					'</section>'
 				);
@@ -799,25 +801,13 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 						'<p>' + escapeHtml(snapshot.pendingInterrupt.body) + '</p>' +
 					'</section>'
 				);
-			} else if (canInterrupt(snapshot)) {
+			} else if (canStop(snapshot)) {
 				cards.push(
 					'<section class="action-card">' +
 						'<h2>Running</h2>' +
-						'<p>Codex is working. You can request an interrupt if needed.</p>' +
+						'<p>Corgi is working. You can stop the run if needed.</p>' +
 						'<div class="card-actions">' +
-							'<button type="button" class="secondary" data-action="interrupt_run">Interrupt</button>' +
-						'</div>' +
-					'</section>'
-				);
-			}
-
-			if (needsReconnect(snapshot)) {
-				cards.push(
-					'<section class="action-card">' +
-						'<h2>Reconnect</h2>' +
-						'<p>The latest snapshot is stale or the transport is degraded.</p>' +
-						'<div class="card-actions">' +
-							'<button type="button" class="secondary" data-action="reconnect">Reconnect</button>' +
+							'<button type="button" class="secondary" data-action="interrupt_run">Stop</button>' +
 						'</div>' +
 					'</section>'
 				);
@@ -982,7 +972,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				'<article class="message assistant ' +
 					(item.authoritative ? '' : 'is-informational') +
 				'">' +
-					'<div class="message-label">Codex</div>' +
+					'<div class="message-label">Corgi</div>' +
 					'<div class="message-body">' + escapeHtml(item.body || item.title) + '</div>' +
 					renderDetails(item) +
 				'</article>'
@@ -1090,6 +1080,17 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 		document.addEventListener('click', (event) => {
 			const target = event.target.closest('button[data-action]');
+			const clarificationTarget = event.target.closest('button[data-clarification-answer]');
+			if (clarificationTarget) {
+				const clarificationAnswer = clarificationTarget.dataset.clarificationAnswer;
+				if (clarificationAnswer) {
+					vscode.postMessage({
+						type: 'answer_clarification',
+						text: clarificationAnswer,
+					});
+				}
+				return;
+			}
 			if (!target) {
 				return;
 			}
@@ -1125,9 +1126,8 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 			if (
 				action === 'approve' ||
-				action === 'decline_or_hold' ||
-				action === 'interrupt_run' ||
-				action === 'reconnect'
+				action === 'full_access' ||
+				action === 'interrupt_run'
 			) {
 				vscode.postMessage({ type: action });
 			}
@@ -1154,7 +1154,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	</script>
 </body>
 </html>`;
-	}
 }
 
 function getNonce() {

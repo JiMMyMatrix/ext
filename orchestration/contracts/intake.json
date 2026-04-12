@@ -11,8 +11,30 @@
         "id": { "type": "string" },
         "title": { "type": "string" },
         "body": { "type": "string" },
+        "kind": { "type": "string" },
         "placeholder": { "type": "string" },
-        "requestedAt": { "type": "string" }
+        "requestedAt": { "type": "string" },
+        "options": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "array",
+              "items": { "$ref": "#/definitions/clarificationOption" }
+            }
+          ]
+        },
+        "allowFreeText": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "clarificationOption": {
+      "type": "object",
+      "required": ["id", "label", "answer"],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "answer": { "type": "string" },
+        "description": { "type": "string" }
       },
       "additionalProperties": false
     },

@@ -1,7 +1,7 @@
 {
   "name": "ext",
-  "displayName": "Execution Window UX",
-  "description": "Phase-1 execution window UX for a VS Code extension.",
+  "displayName": "Corgi",
+  "description": "Webview-first Corgi UX for a VS Code extension.",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.115.0"
@@ -10,49 +10,15 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onChatParticipant:ext.codex",
-    "onCommand:ext.openExecutionWindow",
     "onView:ext.executionWindowView"
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "chatParticipants": [
-      {
-        "id": "ext.codex",
-        "fullName": "Codex",
-        "name": "codex",
-        "description": "Ask Codex to work with the project's runtime rules.",
-        "isSticky": true,
-        "commands": [
-          {
-            "name": "status",
-            "description": "Show the current orchestration state."
-          },
-          {
-            "name": "approve",
-            "description": "Approve the pending request."
-          },
-          {
-            "name": "hold",
-            "description": "Hold the pending request."
-          },
-          {
-            "name": "interrupt",
-            "description": "Interrupt the current run."
-          },
-          {
-            "name": "reconnect",
-            "description": "Reconnect and refresh orchestration state."
-          }
-        ]
-      }
-    ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "extExecutionWindowSidebar",
-          "title": "Codex",
+          "title": "Corgi",
           "icon": "resources/execution-window.svg"
         }
       ]
@@ -62,16 +28,10 @@
         {
           "id": "ext.executionWindowView",
           "type": "webview",
-          "name": "Codex"
+          "name": "Corgi"
         }
       ]
-    },
-    "commands": [
-      {
-        "command": "ext.openExecutionWindow",
-        "title": "Open Codex"
-      }
-    ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -80,7 +40,7 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
-    "compile-tests": "tsc -p . --outDir out",
+    "compile-tests": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",

@@ -17,11 +17,17 @@ So:
 - orchestration remains a supplemental project layer above that substrate
 
 ## UX Role
-- human-facing execution window only
+- human-facing webview/sidebar first
+- Activity Bar icon as the primary product entry
 - concise transcript-oriented experience
 - compact composer
 - execution/activity visibility
-- approval/interrupt affordances when needed
+- structured clarification choices when the missing information is classifiable
+- approval/full-access affordances when needed
+- contextual stop affordance only while governed work is actively running
+- no visible hold or reconnect controls in the primary webview UX
+- Governor dialogue is allowed for progress, explanation, and idea discussion,
+  but remains read-only by default
 
 The UX must not become:
 - a second governor
