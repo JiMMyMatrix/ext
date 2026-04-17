@@ -45,7 +45,7 @@ function semanticContextFlags() {
 		used_accepted_intake_summary: false,
 		used_dialogue_summary: false,
 		had_active_clarification: false,
-		had_pending_approval: false,
+		had_pending_permission_request: false,
 		had_pending_interrupt: false,
 	};
 }
@@ -190,39 +190,40 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(DEFAULT_SEMANTIC_SIDECAR_MODEL, 'gpt-5.4-mini');
 	});
 
-	test('semantic routing maps approval intent only when approval is pending', () => {
-		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+	test('semantic routing maps stop intent only when a run is active', () => {
+		const runningModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
-			text: 'Build a compact execution window for phase 1.',
+			text: 'What is happening?',
 			now: '2026-04-10T10:00:05.000Z',
 		});
-		const approvalModel = applyModelAction(promptModel, {
-			type: 'answer_clarification',
-			text: 'Keep current actor and current stage visible.',
-			context_ref: promptModel.activeClarification?.contextRef,
-			now: '2026-04-10T10:00:10.000Z',
-		});
+		const activeRunModel = {
+			...runningModel,
+			snapshot: {
+				...runningModel.snapshot,
+				runState: 'running' as const,
+			},
+		};
 		const resolution = resolveSemanticRouting(
-			approvalModel,
-			'go ahead',
+			activeRunModel,
+			'stop',
 			semanticDecision({
 				route_type: 'explicit_action',
-				action_name: 'approve',
-				normalized_text: 'approve',
-				paraphrase: 'Approve the pending intake.',
+				action_name: 'interrupt_run',
+				normalized_text: 'stop',
+				paraphrase: 'Stop the current run.',
 			}),
 			undefined,
 			'semantic-summary:test',
 			{
 				...semanticContextFlags(),
-				had_pending_approval: true,
+				had_pending_interrupt: false,
 			}
 		);
 
 		assert.strictEqual(resolution.kind, 'dispatch');
 		if (resolution.kind === 'dispatch') {
-			assert.strictEqual(resolution.action.type, 'approve');
-			assert.strictEqual(resolution.action.text, 'go ahead');
+			assert.strictEqual(resolution.action.type, 'interrupt_run');
+			assert.strictEqual(resolution.action.text, 'stop');
 			assert.strictEqual(resolution.action.semantic_route_type, 'explicit_action');
 		}
 	});
@@ -333,15 +334,14 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('composerContext'));
 		assert.ok(html.includes('Current work: '));
 		assert.ok(html.includes('View source'));
-		assert.ok(html.includes('pendingSubmissionText'));
-		assert.ok(html.includes('pendingSubmissionTitle'));
-		assert.ok(html.includes('pendingSubmissionBody'));
-		assert.ok(html.includes('pendingSubmissionHint'));
-		assert.ok(html.includes('Reviewing your request'));
-		assert.ok(html.includes('Applying your clarification'));
-		assert.ok(html.includes('Applying approval'));
-		assert.ok(html.includes('Enabling full access'));
-		assert.ok(html.includes('Requesting stop'));
+		assert.ok(html.includes('foregroundRequest'));
+		assert.ok(html.includes('Model clarifying'));
+		assert.ok(html.includes('Waiting for clarification'));
+		assert.ok(html.includes('Waiting for permission: '));
+		assert.ok(html.includes('Execution started'));
+		assert.ok(html.includes('Permission needed'));
+		assert.ok(html.includes('set_permission_scope'));
+		assert.ok(html.includes('data-permission-scope'));
 		assert.ok(html.includes("composerSubmitButton.textContent = busy ? 'Sending...' : mode.buttonLabel;"));
 		assert.ok(!html.includes('request-marker'));
 		assert.ok(!html.includes('renderRequestMarker'));
@@ -389,7 +389,7 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(model.snapshot.currentActor, 'intake_shell');
 		assert.strictEqual(model.snapshot.currentStage, 'clarification_needed');
 		assert.ok(model.activeClarification);
-		assert.strictEqual(model.snapshot.pendingApproval, undefined);
+		assert.strictEqual(model.snapshot.pendingPermissionRequest, undefined);
 	});
 
 	test('broad analysis prompts offer clarification choices', () => {
@@ -405,7 +405,7 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(model.activeClarification?.allowFreeText, true);
 	});
 
-	test('governor dialogue stays read-only by default', () => {
+	test('governor dialogue requests observe permission before replying', () => {
 		const initialModel = createInitialModel('2026-04-10T10:00:00.000Z');
 		const model = applyModelAction(initialModel, {
 			type: 'submit_prompt',
@@ -413,14 +413,14 @@ suite('Corgi Webview UX', () => {
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
-		assert.strictEqual(model.snapshot.currentStage, initialModel.snapshot.currentStage);
-		assert.strictEqual(model.snapshot.currentActor, initialModel.snapshot.currentActor);
+		assert.strictEqual(model.snapshot.currentStage, 'permission_needed');
+		assert.strictEqual(model.snapshot.currentActor, 'orchestration');
 		assert.strictEqual(model.activeClarification, undefined);
-		assert.strictEqual(model.snapshot.pendingApproval, undefined);
-		assert.ok(model.feed.some((item) => item.type === 'actor_event'));
+		assert.ok(model.snapshot.pendingPermissionRequest);
+		assert.strictEqual(model.snapshot.pendingPermissionRequest?.recommendedScope, 'observe');
 	});
 
-	test('natural progress questions route to governor dialogue', () => {
+	test('natural progress questions also request observe permission first', () => {
 		const initialModel = createInitialModel('2026-04-10T10:00:00.000Z');
 		const model = applyModelAction(initialModel, {
 			type: 'submit_prompt',
@@ -428,13 +428,13 @@ suite('Corgi Webview UX', () => {
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
-		assert.strictEqual(model.snapshot.currentStage, initialModel.snapshot.currentStage);
+		assert.strictEqual(model.snapshot.currentStage, 'permission_needed');
 		assert.strictEqual(model.activeClarification, undefined);
-		assert.strictEqual(model.snapshot.pendingApproval, undefined);
-		assert.ok(model.feed.some((item) => item.type === 'actor_event'));
+		assert.ok(model.snapshot.pendingPermissionRequest);
+		assert.strictEqual(model.snapshot.pendingPermissionRequest?.recommendedScope, 'observe');
 	});
 
-	test('answer clarification produces accepted intake and approval', () => {
+	test('answer clarification produces a permission request', () => {
 		const draftModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
@@ -448,14 +448,14 @@ suite('Corgi Webview UX', () => {
 		});
 
 		assert.strictEqual(acceptedModel.snapshot.currentActor, 'orchestration');
-		assert.strictEqual(acceptedModel.snapshot.currentStage, 'ready_for_acceptance');
+		assert.strictEqual(acceptedModel.snapshot.currentStage, 'permission_needed');
 		assert.strictEqual(acceptedModel.acceptedIntakeSummary, undefined);
-		assert.ok(acceptedModel.snapshot.pendingApproval);
-		assert.strictEqual(acceptedModel.snapshot.accessMode, 'approval_required');
+		assert.ok(acceptedModel.snapshot.pendingPermissionRequest);
+		assert.strictEqual(acceptedModel.snapshot.permissionScope, 'unset');
 		assert.strictEqual(acceptedModel.activeClarification, undefined);
 	});
 
-	test('approve turns the draft into accepted intake artifacts', () => {
+	test('plan permission turns the draft into accepted intake artifacts', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
@@ -468,20 +468,22 @@ suite('Corgi Webview UX', () => {
 			now: '2026-04-10T10:00:10.000Z',
 		});
 		const runningModel = applyModelAction(approvalModel, {
-			type: 'approve',
-			context_ref: approvalModel.snapshot.pendingApproval?.contextRef,
+			type: 'set_permission_scope',
+			permission_scope: 'plan',
+			context_ref: approvalModel.snapshot.pendingPermissionRequest?.contextRef,
 			now: '2026-04-10T10:00:15.000Z',
 		});
 
 		assert.strictEqual(runningModel.snapshot.currentActor, 'orchestration');
 		assert.strictEqual(runningModel.snapshot.currentStage, 'intake_accepted');
+		assert.strictEqual(runningModel.snapshot.permissionScope, 'plan');
 		assert.ok(runningModel.acceptedIntakeSummary);
 		assert.ok(runningModel.snapshot.recentArtifacts.length >= 2);
 		assert.ok(getArtifactById(runningModel, 'artifact-orchestration-readme'));
 		assert.ok(!runningModel.feed.some((item) => item.type === 'artifact_reference'));
 	});
 
-	test('full access accepts the draft and marks the session as running', () => {
+	test('execute permission accepts the draft and marks the session as running', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
@@ -494,16 +496,40 @@ suite('Corgi Webview UX', () => {
 			now: '2026-04-10T10:00:10.000Z',
 		});
 		const runningModel = applyModelAction(approvalModel, {
-			type: 'full_access',
-			context_ref: approvalModel.snapshot.pendingApproval?.contextRef,
+			type: 'set_permission_scope',
+			permission_scope: 'execute',
+			context_ref: approvalModel.snapshot.pendingPermissionRequest?.contextRef,
 			now: '2026-04-10T10:00:15.000Z',
 		});
 
-		assert.strictEqual(runningModel.snapshot.accessMode, 'full_access');
+		assert.strictEqual(runningModel.snapshot.permissionScope, 'execute');
 		assert.strictEqual(runningModel.snapshot.runState, 'running');
 		assert.strictEqual(runningModel.snapshot.currentActor, 'governor');
 		assert.strictEqual(runningModel.snapshot.currentStage, 'running');
-		assert.ok(runningModel.acceptedIntakeSummary?.body.includes('Full access'));
+		assert.ok(runningModel.acceptedIntakeSummary?.body.includes('Execute permission'));
+	});
+
+	test('declining a permission request leaves scope unchanged and blocks the request', () => {
+		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+			type: 'submit_prompt',
+			text: 'Build a compact execution window for phase 1.',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+		const permissionModel = applyModelAction(promptModel, {
+			type: 'answer_clarification',
+			text: 'Keep current actor and current stage visible.',
+			context_ref: promptModel.activeClarification?.contextRef,
+			now: '2026-04-10T10:00:10.000Z',
+		});
+		const declinedModel = applyModelAction(permissionModel, {
+			type: 'decline_permission',
+			context_ref: permissionModel.snapshot.pendingPermissionRequest?.contextRef,
+			now: '2026-04-10T10:00:15.000Z',
+		});
+
+		assert.strictEqual(declinedModel.snapshot.permissionScope, 'unset');
+		assert.strictEqual(declinedModel.snapshot.pendingPermissionRequest, undefined);
+		assert.strictEqual(declinedModel.snapshot.currentStage, 'permission_declined');
 	});
 
 	test('state-bound actions fail closed when the context token is stale', () => {
@@ -527,7 +553,7 @@ suite('Corgi Webview UX', () => {
 		assert.match(lastItem.body ?? '', /clarification changed/i);
 	});
 
-	test('new prompts supersede a pending approval instead of holding it', () => {
+	test('new prompts supersede a pending permission request instead of holding it', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
@@ -549,7 +575,7 @@ suite('Corgi Webview UX', () => {
 			supersededModel.feed.some(
 				(item) =>
 					item.type === 'system_status' &&
-					item.title === 'Pending approval superseded'
+					item.title === 'Pending permission request superseded'
 			)
 		);
 	});

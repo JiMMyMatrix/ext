@@ -329,9 +329,9 @@ def _build_governor_dialogue(
 			"Current progress: one clarification is still open. "
 			"Answer it or choose one of the suggested options to keep moving."
 		)
-	elif snapshot.get("pendingApproval"):
+	elif snapshot.get("pendingPermissionRequest"):
 		body = (
-			"Current progress: this request is ready, but it is waiting for your approval or full access before Corgi can continue."
+			f"Current progress: this request is ready, but it is waiting for a {snapshot['pendingPermissionRequest'].get('recommendedScope') or 'plan'} permission choice before Corgi can continue."
 		)
 	elif dispatch_summary:
 		body = (
@@ -408,15 +408,16 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 	branch = git_branch_name(repo_root)
 	return {
 		"snapshot": {
+			"sessionRef": _next_id("session"),
 			"lane": None,
 			"branch": branch,
 			"task": None,
 			"currentActor": "intake_shell",
 			"currentStage": "idle",
-			"accessMode": "approval_required",
+			"permissionScope": "unset",
 			"runState": "idle",
 			"transportState": "connected",
-			"pendingApproval": None,
+			"pendingPermissionRequest": None,
 			"pendingInterrupt": None,
 			"recentArtifacts": [],
 			"snapshotFreshness": {"receivedAt": now},
@@ -441,15 +442,29 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	session["meta"].setdefault("processedRequestIds", {})
 	model = session.setdefault("model", _initial_model(now, repo_root=repo_root))
 	snapshot = model.setdefault("snapshot", {})
+	snapshot.setdefault("sessionRef", _next_id("session"))
 	snapshot.setdefault("lane", None)
 	snapshot.setdefault("branch", git_branch_name(repo_root))
 	snapshot.setdefault("task", None)
 	snapshot.setdefault("currentActor", "intake_shell")
 	snapshot.setdefault("currentStage", "idle")
-	snapshot.setdefault("accessMode", "approval_required")
+	if "permissionScope" not in snapshot:
+		legacy_access_mode = snapshot.get("accessMode")
+		snapshot["permissionScope"] = (
+			"execute" if legacy_access_mode == "full_access" else "unset"
+		)
 	snapshot.setdefault("runState", "idle")
 	snapshot.setdefault("transportState", "connected")
-	snapshot.setdefault("pendingApproval", None)
+	if "pendingPermissionRequest" not in snapshot:
+		legacy_pending = snapshot.get("pendingApproval")
+		if isinstance(legacy_pending, dict):
+			snapshot["pendingPermissionRequest"] = {
+				**legacy_pending,
+				"recommendedScope": "plan",
+				"allowedScopes": ["observe", "plan", "execute"],
+			}
+		else:
+			snapshot["pendingPermissionRequest"] = None
 	snapshot.setdefault("pendingInterrupt", None)
 	snapshot.setdefault("recentArtifacts", [])
 	snapshot.setdefault("snapshotFreshness", {"receivedAt": now})
@@ -460,9 +475,13 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 		model["activeClarification"].setdefault(
 			"contextRef", model["activeClarification"].get("id")
 		)
-	if isinstance(snapshot.get("pendingApproval"), dict):
-		snapshot["pendingApproval"].setdefault(
-			"contextRef", snapshot["pendingApproval"].get("id")
+	if isinstance(snapshot.get("pendingPermissionRequest"), dict):
+		snapshot["pendingPermissionRequest"].setdefault(
+			"contextRef", snapshot["pendingPermissionRequest"].get("id")
+		)
+		snapshot["pendingPermissionRequest"].setdefault("recommendedScope", "plan")
+		snapshot["pendingPermissionRequest"].setdefault(
+			"allowedScopes", ["observe", "plan", "execute"]
 		)
 	if isinstance(snapshot.get("pendingInterrupt"), dict):
 		snapshot["pendingInterrupt"].setdefault(
@@ -561,8 +580,8 @@ def _append_user_turn(
 	)
 
 
-def _current_access_mode(model: dict[str, Any]) -> str:
-	return model["snapshot"].get("accessMode") or "approval_required"
+def _current_permission_scope(model: dict[str, Any]) -> str:
+	return model["snapshot"].get("permissionScope") or "unset"
 
 
 def _append_error(
@@ -637,18 +656,72 @@ def _context_matches(expected_context_ref: str | None, provided_context_ref: str
 	return provided_context_ref == expected_context_ref
 
 
-def _supersede_pending_approval(
+def _session_ref_matches(model: dict[str, Any], provided_session_ref: str | None) -> bool:
+	expected = model["snapshot"].get("sessionRef")
+	if not expected:
+		return True
+	return provided_session_ref == expected
+
+
+def _permission_rank(scope: str | None) -> int:
+	if scope == "observe":
+		return 1
+	if scope == "plan":
+		return 2
+	if scope == "execute":
+		return 3
+	return 0
+
+
+def _scope_satisfies(current_scope: str | None, required_scope: str | None) -> bool:
+	return _permission_rank(current_scope) >= _permission_rank(required_scope)
+
+
+def _permission_request(recommended_scope: str, now: str) -> dict[str, Any]:
+	request_id = _next_id("permission")
+	return {
+		"id": request_id,
+		"contextRef": request_id,
+		"title": "Permission needed",
+		"body": f"Choose {recommended_scope} if you want Corgi to continue this request.",
+		"recommendedScope": recommended_scope,
+		"allowedScopes": ["observe", "plan", "execute"],
+		"requestedAt": now,
+	}
+
+
+def _recommended_permission_scope(prompt: str) -> str:
+	lower = prompt.lower().strip()
+	if any(
+		lower == token or lower.startswith(f"{token} ")
+		for token in (
+			"implement",
+			"build",
+			"create",
+			"refactor",
+			"fix",
+			"debug",
+			"update",
+			"change",
+			"write",
+		)
+	):
+		return "execute"
+	return "plan"
+
+
+def _supersede_pending_permission_request(
 	model: dict[str, Any], now: str, *, request_id: str | None = None
 ) -> None:
-	pending = model["snapshot"].get("pendingApproval")
+	pending = model["snapshot"].get("pendingPermissionRequest")
 	if not pending:
 		return
-	model["snapshot"]["pendingApproval"] = None
+	model["snapshot"]["pendingPermissionRequest"] = None
 	model["feed"].append(
 		_feed_item(
 			"system_status",
-			"Pending approval superseded",
-			"A new request replaced the previous approval checkpoint.",
+			"Pending permission request superseded",
+			"A new request replaced the previous permission checkpoint.",
 			authoritative=True,
 			now=now,
 			in_response_to_request_id=request_id,
@@ -661,7 +734,7 @@ def _accept_pending_intake(
 	now: str,
 	*,
 	repo_root: str | Path | None = None,
-	enable_full_access: bool = False,
+	permission_scope: str,
 	request_id: str | None = None,
 	turn_type: str = "system",
 	semantic_input_version: str | None = None,
@@ -675,12 +748,12 @@ def _accept_pending_intake(
 ) -> bool:
 	model = session["model"]
 	intake_ref = session["meta"].get("activeIntakeRef")
-	pending_approval = model["snapshot"].get("pendingApproval")
-	if not intake_ref or not pending_approval:
+	pending_permission = model["snapshot"].get("pendingPermissionRequest")
+	if not intake_ref or not pending_permission:
 		_append_error(
 			model,
-			"No approval is active",
-			"There is no approval to apply.",
+			"No permission request is active",
+			"There is no permission request to apply.",
 			now,
 			in_response_to_request_id=request_id,
 		)
@@ -712,26 +785,27 @@ def _accept_pending_intake(
 		),
 	]
 
-	access_mode = "full_access" if enable_full_access else _current_access_mode(model)
 	summary = envelope["accepted_summary"]
-	if access_mode == "full_access":
-		summary = f"{summary} Full access is enabled for this session."
+	if permission_scope == "execute":
+		summary = f"{summary} Execute permission is active for this session."
 
 	model["acceptedIntakeSummary"] = {
 		"title": "Accepted intake summary",
 		"body": summary,
 	}
-	model["snapshot"]["pendingApproval"] = None
+	model["snapshot"]["pendingPermissionRequest"] = None
 	model["snapshot"]["pendingInterrupt"] = None
 	model["snapshot"]["lane"] = envelope["lane"]
 	model["snapshot"]["branch"] = envelope["branch"]
 	model["snapshot"]["task"] = envelope["task"]
 	model["snapshot"]["recentArtifacts"] = artifacts
-	model["snapshot"]["accessMode"] = access_mode
+	model["snapshot"]["permissionScope"] = permission_scope
 	model["feed"].append(
 		_feed_item(
 			"system_status",
-			"Full access enabled" if access_mode == "full_access" else "Accepted and ready",
+			"Permission confirmed: Execute"
+			if permission_scope == "execute"
+			else "Accepted and ready",
 			summary,
 			authoritative=True,
 			now=now,
@@ -752,9 +826,9 @@ def _accept_pending_intake(
 	_refresh_snapshot(
 		model,
 		now,
-		currentActor="governor" if access_mode == "full_access" else "orchestration",
-		currentStage="running" if access_mode == "full_access" else "intake_accepted",
-		runState="running" if access_mode == "full_access" else "idle",
+		currentActor="governor" if permission_scope == "execute" else "orchestration",
+		currentStage="running" if permission_scope == "execute" else "intake_accepted",
+		runState="running" if permission_scope == "execute" else "idle",
 		transportState="connected",
 	)
 	return True
@@ -765,6 +839,7 @@ def handle_submit_prompt(
 	text: str,
 	*,
 	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
 	request_id: str | None = None,
 	turn_type: str | None = None,
 	normalized_text: str | None = None,
@@ -778,6 +853,15 @@ def handle_submit_prompt(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
+	if session_ref is not None and not _session_ref_matches(model, session_ref):
+		_append_error(
+			model,
+			"Session changed",
+			"The active session changed before this request was applied. Refresh and try again.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
 	prompt = trim_text(text)
 	if not prompt:
 		_append_error(
@@ -792,6 +876,56 @@ def handle_submit_prompt(
 	semantic_prompt = trim_text(normalized_text) or prompt
 	resolved_turn_type = turn_type or _classify_turn(semantic_prompt)
 	if resolved_turn_type == "governor_dialogue":
+		if not _scope_satisfies(_current_permission_scope(model), "observe"):
+			_append_user_turn(
+				model,
+				now,
+				title="Governor question",
+				body=prompt,
+				turn_type=resolved_turn_type,
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=paraphrase,
+				semantic_normalized_text=semantic_prompt,
+				in_response_to_request_id=request_id,
+			)
+			permission_request = _permission_request("observe", now)
+			model["snapshot"]["pendingPermissionRequest"] = permission_request
+			model["feed"].append(
+				_feed_item(
+					"permission_request",
+					permission_request["title"],
+					permission_request["body"],
+					authoritative=True,
+					now=now,
+					**_semantic_provenance(
+						turn_type=resolved_turn_type,
+						semantic_input_version=semantic_input_version,
+						semantic_summary_ref=semantic_summary_ref,
+						semantic_context_flags=semantic_context_flags,
+						semantic_route_type=semantic_route_type,
+						semantic_confidence=semantic_confidence,
+						semantic_block_reason=semantic_block_reason,
+						semantic_paraphrase=paraphrase,
+						semantic_normalized_text=semantic_prompt,
+						in_response_to_request_id=request_id,
+					),
+				)
+			)
+			_refresh_snapshot(
+				model,
+				now,
+				currentActor="orchestration",
+				currentStage="permission_needed",
+				runState="idle",
+				transportState="connected",
+			)
+			return
+
 		body, details, primary_ref = _build_governor_dialogue(
 			session,
 			semantic_prompt,
@@ -841,7 +975,7 @@ def handle_submit_prompt(
 		_refresh_snapshot(model, now, transportState="connected")
 		return
 
-	_supersede_pending_approval(model, now, request_id=request_id)
+	_supersede_pending_permission_request(model, now, request_id=request_id)
 	envelope = start_intake(prompt, normalized_text=semantic_prompt, repo_root=repo_root)
 	session["meta"]["activeIntakeRef"] = envelope["intake_ref"]
 
@@ -900,7 +1034,7 @@ def handle_submit_prompt(
 			or envelope["clarification_request"]["id"],
 		}
 		model["activeClarification"] = clarification
-		model["snapshot"]["pendingApproval"] = None
+		model["snapshot"]["pendingPermissionRequest"] = None
 		model["feed"].append(
 			_feed_item(
 				"clarification_request",
@@ -933,16 +1067,14 @@ def handle_submit_prompt(
 		return
 
 	model["activeClarification"] = None
-	if _current_access_mode(model) == "full_access":
-		model["snapshot"]["pendingApproval"] = _request_card(
-			"Approval needed",
-			"Approve this request, or grant full access for the session when you want Corgi to continue.",
-			now,
-		)
+	required_scope = _recommended_permission_scope(semantic_prompt)
+	if _scope_satisfies(_current_permission_scope(model), required_scope):
+		model["snapshot"]["pendingPermissionRequest"] = _permission_request(required_scope, now)
 		_accept_pending_intake(
 			session,
 			now,
 			repo_root=repo_root,
+			permission_scope=_current_permission_scope(model),
 			request_id=request_id,
 			turn_type=resolved_turn_type,
 			semantic_input_version=semantic_input_version,
@@ -956,16 +1088,12 @@ def handle_submit_prompt(
 		)
 		return
 
-	model["snapshot"]["pendingApproval"] = _request_card(
-		"Approval needed",
-		"Approve this request, or grant full access for the session when you want Corgi to continue.",
-		now,
-	)
+	model["snapshot"]["pendingPermissionRequest"] = _permission_request(required_scope, now)
 	model["feed"].append(
 		_feed_item(
-			"approval_request",
-			"Approval needed",
-			"Approve this request, or grant full access for the session when you want Corgi to continue.",
+			"permission_request",
+			"Permission needed",
+			model["snapshot"]["pendingPermissionRequest"]["body"],
 			authoritative=True,
 			now=now,
 			**_semantic_provenance(
@@ -986,7 +1114,7 @@ def handle_submit_prompt(
 		model,
 		now,
 		currentActor="orchestration",
-		currentStage="ready_for_acceptance",
+		currentStage="permission_needed",
 		runState="idle",
 		transportState="connected",
 	)
@@ -997,6 +1125,7 @@ def handle_answer_clarification(
 	text: str,
 	*,
 	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
 	request_id: str | None = None,
 	context_ref: str | None = None,
 	normalized_text: str | None = None,
@@ -1010,6 +1139,15 @@ def handle_answer_clarification(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
+	if session_ref is not None and not _session_ref_matches(model, session_ref):
+		_append_error(
+			model,
+			"Session changed",
+			"The active session changed before this clarification was applied. Refresh and try again.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
 	intake_ref = session["meta"].get("activeIntakeRef")
 	if not intake_ref or not model.get("activeClarification"):
 		_append_error(
@@ -1069,11 +1207,11 @@ def handle_answer_clarification(
 	model["feed"].append(
 		_feed_item(
 			"shell_event",
-			"Draft is ready for acceptance",
-			"Intake updated the draft and handed it back for orchestration acceptance.",
+			"Draft is ready for permission review",
+			"Intake updated the draft and handed it back for permission selection.",
 			authoritative=False,
 			now=now,
-			activity={"kind": "status", "state": "completed", "summary": "Ready for acceptance"},
+			activity={"kind": "status", "state": "completed", "summary": "Ready for permission"},
 			**_semantic_provenance(
 				turn_type="clarification_reply",
 				semantic_input_version=semantic_input_version,
@@ -1089,16 +1227,14 @@ def handle_answer_clarification(
 		)
 	)
 	model["activeClarification"] = None
-	model["snapshot"]["pendingApproval"] = _request_card(
-		"Approval needed",
-		"Approve this request, or grant full access for the session when you want Corgi to continue.",
-		now,
-	)
-	if _current_access_mode(model) == "full_access":
+	required_scope = _recommended_permission_scope(semantic_answer)
+	if _scope_satisfies(_current_permission_scope(model), required_scope):
+		model["snapshot"]["pendingPermissionRequest"] = _permission_request(required_scope, now)
 		_accept_pending_intake(
 			session,
 			now,
 			repo_root=repo_root,
+			permission_scope=_current_permission_scope(model),
 			request_id=request_id,
 			turn_type="clarification_reply",
 			semantic_input_version=semantic_input_version,
@@ -1111,11 +1247,12 @@ def handle_answer_clarification(
 			semantic_normalized_text=semantic_answer,
 		)
 		return
+	model["snapshot"]["pendingPermissionRequest"] = _permission_request(required_scope, now)
 	model["feed"].append(
 		_feed_item(
-			"approval_request",
-			"Approval needed",
-			"Approve this request, or grant full access for the session when you want Corgi to continue.",
+			"permission_request",
+			"Permission needed",
+			model["snapshot"]["pendingPermissionRequest"]["body"],
 			authoritative=True,
 			now=now,
 			**_semantic_provenance(
@@ -1136,18 +1273,20 @@ def handle_answer_clarification(
 		model,
 		now,
 		currentActor="orchestration",
-		currentStage=envelope["shell_state"],
+		currentStage="permission_needed",
 		runState="idle",
 		transportState="connected",
 	)
 
 
-def handle_approve(
+def handle_set_permission_scope(
 	session: dict[str, Any],
 	*,
 	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
 	request_id: str | None = None,
 	context_ref: str | None = None,
+	permission_scope: str | None = None,
 	text: str | None = None,
 	semantic_input_version: str | None = None,
 	semantic_summary_ref: str | None = None,
@@ -1160,14 +1299,23 @@ def handle_approve(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
+	if session_ref is not None and not _session_ref_matches(model, session_ref):
+		_append_error(
+			model,
+			"Session changed",
+			"The active session changed before this permission choice was applied. Refresh and try again.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
 	raw_text = trim_text(text or "")
 	if raw_text:
 		_append_user_turn(
 			model,
 			now,
-			title="Approval requested",
+			title="Permission selected",
 			body=raw_text,
-			turn_type="approval_action",
+			turn_type="permission_action",
 			semantic_input_version=semantic_input_version,
 			semantic_summary_ref=semantic_summary_ref,
 			semantic_context_flags=semantic_context_flags,
@@ -1179,15 +1327,24 @@ def handle_approve(
 			in_response_to_request_id=request_id,
 		)
 	expected_context_ref = (
-		model["snapshot"]["pendingApproval"].get("contextRef")
-		if isinstance(model["snapshot"].get("pendingApproval"), dict)
+		model["snapshot"]["pendingPermissionRequest"].get("contextRef")
+		if isinstance(model["snapshot"].get("pendingPermissionRequest"), dict)
 		else None
 	)
 	if not _context_matches(expected_context_ref, context_ref):
 		_append_error(
 			model,
-			"Approval changed",
-			"The approval request changed before this action was applied. Refresh and confirm the current approval card.",
+			"Permission changed",
+			"The permission request changed before this action was applied. Refresh and confirm the current permission surface.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
+	if permission_scope not in {"observe", "plan", "execute"}:
+		_append_error(
+			model,
+			"Permission scope required",
+			"Choose Observe, Plan, or Execute to continue.",
 			now,
 			in_response_to_request_id=request_id,
 		)
@@ -1196,8 +1353,9 @@ def handle_approve(
 		session,
 		now,
 		repo_root=repo_root,
+		permission_scope=permission_scope,
 		request_id=request_id,
-		turn_type="approval_action",
+		turn_type="permission_action",
 		semantic_input_version=semantic_input_version,
 		semantic_summary_ref=semantic_summary_ref,
 		semantic_context_flags=semantic_context_flags,
@@ -1209,114 +1367,56 @@ def handle_approve(
 	)
 
 
-def handle_full_access(
+def handle_decline_permission(
 	session: dict[str, Any],
 	*,
 	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
 	request_id: str | None = None,
 	context_ref: str | None = None,
-	text: str | None = None,
-	semantic_input_version: str | None = None,
-	semantic_summary_ref: str | None = None,
-	semantic_context_flags: dict[str, Any] | None = None,
-	semantic_route_type: str | None = None,
-	semantic_confidence: str | None = None,
-	semantic_block_reason: str | None = None,
-	semantic_paraphrase: str | None = None,
-	semantic_normalized_text: str | None = None,
 ) -> None:
 	now = utc_now()
 	model = session["model"]
-	raw_text = trim_text(text or "")
-	if raw_text:
-		_append_user_turn(
-			model,
-			now,
-			title="Full access requested",
-			body=raw_text,
-			turn_type="approval_action",
-			semantic_input_version=semantic_input_version,
-			semantic_summary_ref=semantic_summary_ref,
-			semantic_context_flags=semantic_context_flags,
-			semantic_route_type=semantic_route_type,
-			semantic_confidence=semantic_confidence,
-			semantic_block_reason=semantic_block_reason,
-			semantic_paraphrase=semantic_paraphrase,
-			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text,
-			in_response_to_request_id=request_id,
-		)
-	expected_context_ref = (
-		model["snapshot"]["pendingApproval"].get("contextRef")
-		if isinstance(model["snapshot"].get("pendingApproval"), dict)
-		else None
-	)
-	if not _context_matches(expected_context_ref, context_ref):
+	if session_ref is not None and not _session_ref_matches(model, session_ref):
 		_append_error(
 			model,
-			"Approval changed",
-			"The approval request changed before this action was applied. Refresh and confirm the current approval card.",
+			"Session changed",
+			"The active session changed before this permission request was declined. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
 		)
 		return
-	_accept_pending_intake(
-		session,
-		now,
-		repo_root=repo_root,
-		enable_full_access=True,
-		request_id=request_id,
-		turn_type="approval_action",
-		semantic_input_version=semantic_input_version,
-		semantic_summary_ref=semantic_summary_ref,
-		semantic_context_flags=semantic_context_flags,
-		semantic_route_type=semantic_route_type,
-		semantic_confidence=semantic_confidence,
-		semantic_block_reason=semantic_block_reason,
-		semantic_paraphrase=semantic_paraphrase,
-		semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
-	)
-
-
-def handle_decline_or_hold(
-	session: dict[str, Any],
-	*,
-	repo_root: str | Path | None = None,
-	request_id: str | None = None,
-	context_ref: str | None = None,
-) -> None:
-	now = utc_now()
-	model = session["model"]
-	if not model["snapshot"].get("pendingApproval"):
+	if not model["snapshot"].get("pendingPermissionRequest"):
 		_append_error(
 			model,
-			"Nothing to hold",
-			"There is no approval request to hold.",
+			"Nothing to decline",
+			"There is no permission request to decline.",
 			now,
 			in_response_to_request_id=request_id,
 		)
 		return
 
 	expected_context_ref = (
-		model["snapshot"]["pendingApproval"].get("contextRef")
-		if isinstance(model["snapshot"].get("pendingApproval"), dict)
+		model["snapshot"]["pendingPermissionRequest"].get("contextRef")
+		if isinstance(model["snapshot"].get("pendingPermissionRequest"), dict)
 		else None
 	)
 	if not _context_matches(expected_context_ref, context_ref):
 		_append_error(
 			model,
-			"Approval changed",
-			"The approval request changed before this action was applied. Refresh and confirm the current approval card.",
+			"Permission changed",
+			"The permission request changed before this action was applied. Refresh and confirm the current permission surface.",
 			now,
 			in_response_to_request_id=request_id,
 		)
 		return
 
-	model["snapshot"]["pendingApproval"] = None
+	model["snapshot"]["pendingPermissionRequest"] = None
 	model["feed"].append(
 		_feed_item(
 			"system_status",
-			"Intake placed on hold",
-			"Approval was declined or deferred. No canonical intake was written.",
+			"Permission request declined",
+			"Permission scope stayed unchanged, and this request will not continue.",
 			authoritative=True,
 			now=now,
 			in_response_to_request_id=request_id,
@@ -1326,7 +1426,7 @@ def handle_decline_or_hold(
 		model,
 		now,
 		currentActor="orchestration",
-		currentStage="on_hold",
+		currentStage="permission_declined",
 		runState="idle",
 		transportState="connected",
 	)
@@ -1336,6 +1436,7 @@ def handle_interrupt(
 	session: dict[str, Any],
 	*,
 	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
 	request_id: str | None = None,
 	context_ref: str | None = None,
 	text: str | None = None,
@@ -1350,6 +1451,15 @@ def handle_interrupt(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
+	if session_ref is not None and not _session_ref_matches(model, session_ref):
+		_append_error(
+			model,
+			"Session changed",
+			"The active session changed before this stop request was applied. Refresh and try again.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
 	raw_text = trim_text(text or "")
 	if model["snapshot"].get("runState") != "running":
 		_append_error(
@@ -1436,10 +1546,31 @@ def handle_reconnect(
 	session: dict[str, Any],
 	*,
 	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
 	request_id: str | None = None,
 ) -> None:
 	now = utc_now()
 	model = session["model"]
+	if session_ref is not None and model["snapshot"].get("sessionRef") and session_ref != model["snapshot"].get("sessionRef"):
+		model["snapshot"]["sessionRef"] = _next_id("session")
+		model["snapshot"]["permissionScope"] = "unset"
+		model["snapshot"]["pendingPermissionRequest"] = None
+		model["activeClarification"] = None
+		model["acceptedIntakeSummary"] = None
+		model["snapshot"]["pendingInterrupt"] = None
+		model["snapshot"]["recentArtifacts"] = []
+		model["feed"].append(
+			_feed_item(
+				"system_status",
+				"Switched session",
+				"Reconnect attached to a different session snapshot.",
+				authoritative=True,
+				now=now,
+				in_response_to_request_id=request_id,
+			)
+		)
+		_refresh_snapshot(model, now, transportState="connected")
+		return
 	if (
 		model["snapshot"].get("transportState") == "connected"
 		and not _is_snapshot_stale(model["snapshot"], now)
@@ -1470,8 +1601,10 @@ def dispatch_session_action(
 	*,
 	text: str | None = None,
 	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
 	request_id: str | None = None,
 	context_ref: str | None = None,
+	permission_scope: str | None = None,
 	turn_type: str | None = None,
 	normalized_text: str | None = None,
 	paraphrase: str | None = None,
@@ -1499,6 +1632,7 @@ def dispatch_session_action(
 			session,
 			text or "",
 			repo_root=repo_root,
+			session_ref=session_ref,
 			request_id=request_id,
 			turn_type=turn_type,
 			normalized_text=normalized_text,
@@ -1515,6 +1649,7 @@ def dispatch_session_action(
 			session,
 			text or "",
 			repo_root=repo_root,
+			session_ref=session_ref,
 			request_id=request_id,
 			context_ref=context_ref,
 			normalized_text=normalized_text,
@@ -1526,12 +1661,14 @@ def dispatch_session_action(
 			semantic_confidence=semantic_confidence,
 			semantic_block_reason=semantic_block_reason,
 		)
-	elif command == "approve":
-		handle_approve(
+	elif command == "set_permission_scope":
+		handle_set_permission_scope(
 			session,
 			repo_root=repo_root,
+			session_ref=session_ref,
 			request_id=request_id,
 			context_ref=context_ref,
+			permission_scope=permission_scope,
 			text=text,
 			semantic_input_version=semantic_input_version,
 			semantic_summary_ref=semantic_summary_ref,
@@ -1542,26 +1679,11 @@ def dispatch_session_action(
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=normalized_text,
 		)
-	elif command == "full_access":
-		handle_full_access(
+	elif command == "decline_permission":
+		handle_decline_permission(
 			session,
 			repo_root=repo_root,
-			request_id=request_id,
-			context_ref=context_ref,
-			text=text,
-			semantic_input_version=semantic_input_version,
-			semantic_summary_ref=semantic_summary_ref,
-			semantic_context_flags=semantic_context_flags,
-			semantic_route_type=semantic_route_type,
-			semantic_confidence=semantic_confidence,
-			semantic_block_reason=semantic_block_reason,
-			semantic_paraphrase=paraphrase,
-			semantic_normalized_text=normalized_text,
-		)
-	elif command == "decline_or_hold":
-		handle_decline_or_hold(
-			session,
-			repo_root=repo_root,
+			session_ref=session_ref,
 			request_id=request_id,
 			context_ref=context_ref,
 		)
@@ -1569,6 +1691,7 @@ def dispatch_session_action(
 		handle_interrupt(
 			session,
 			repo_root=repo_root,
+			session_ref=session_ref,
 			request_id=request_id,
 			context_ref=context_ref,
 			text=text,
@@ -1582,7 +1705,12 @@ def dispatch_session_action(
 			semantic_normalized_text=normalized_text,
 		)
 	elif command == "reconnect":
-		handle_reconnect(session, repo_root=repo_root, request_id=request_id)
+		handle_reconnect(
+			session,
+			repo_root=repo_root,
+			session_ref=session_ref,
+			request_id=request_id,
+		)
 	elif command != "state":
 		raise ValueError(f"unsupported session command: {command}")
 
@@ -1601,6 +1729,7 @@ def build_parser() -> argparse.ArgumentParser:
 	submit = subparsers.add_parser("submit_prompt")
 	submit.add_argument("--text", required=True)
 	submit.add_argument("--request-id")
+	submit.add_argument("--session-ref")
 	submit.add_argument("--context-ref")
 	submit.add_argument("--turn-type")
 	submit.add_argument("--normalized-text")
@@ -1615,6 +1744,7 @@ def build_parser() -> argparse.ArgumentParser:
 	answer = subparsers.add_parser("answer_clarification")
 	answer.add_argument("--text", required=True)
 	answer.add_argument("--request-id")
+	answer.add_argument("--session-ref")
 	answer.add_argument("--context-ref")
 	answer.add_argument("--turn-type")
 	answer.add_argument("--normalized-text")
@@ -1626,38 +1756,29 @@ def build_parser() -> argparse.ArgumentParser:
 	answer.add_argument("--semantic-confidence")
 	answer.add_argument("--semantic-block-reason")
 
-	approve = subparsers.add_parser("approve")
-	approve.add_argument("--text")
-	approve.add_argument("--request-id")
-	approve.add_argument("--context-ref")
-	approve.add_argument("--turn-type")
-	approve.add_argument("--normalized-text")
-	approve.add_argument("--paraphrase")
-	approve.add_argument("--semantic-input-version")
-	approve.add_argument("--semantic-summary-ref")
-	approve.add_argument("--semantic-context-flags-json")
-	approve.add_argument("--semantic-route-type")
-	approve.add_argument("--semantic-confidence")
-	approve.add_argument("--semantic-block-reason")
-	full_access = subparsers.add_parser("full_access")
-	full_access.add_argument("--text")
-	full_access.add_argument("--request-id")
-	full_access.add_argument("--context-ref")
-	full_access.add_argument("--turn-type")
-	full_access.add_argument("--normalized-text")
-	full_access.add_argument("--paraphrase")
-	full_access.add_argument("--semantic-input-version")
-	full_access.add_argument("--semantic-summary-ref")
-	full_access.add_argument("--semantic-context-flags-json")
-	full_access.add_argument("--semantic-route-type")
-	full_access.add_argument("--semantic-confidence")
-	full_access.add_argument("--semantic-block-reason")
-	decline = subparsers.add_parser("decline_or_hold")
+	set_scope = subparsers.add_parser("set_permission_scope")
+	set_scope.add_argument("--text")
+	set_scope.add_argument("--request-id")
+	set_scope.add_argument("--session-ref")
+	set_scope.add_argument("--context-ref")
+	set_scope.add_argument("--permission-scope", required=True)
+	set_scope.add_argument("--turn-type")
+	set_scope.add_argument("--normalized-text")
+	set_scope.add_argument("--paraphrase")
+	set_scope.add_argument("--semantic-input-version")
+	set_scope.add_argument("--semantic-summary-ref")
+	set_scope.add_argument("--semantic-context-flags-json")
+	set_scope.add_argument("--semantic-route-type")
+	set_scope.add_argument("--semantic-confidence")
+	set_scope.add_argument("--semantic-block-reason")
+	decline = subparsers.add_parser("decline_permission")
 	decline.add_argument("--request-id")
+	decline.add_argument("--session-ref")
 	decline.add_argument("--context-ref")
 	interrupt = subparsers.add_parser("interrupt_run")
 	interrupt.add_argument("--text")
 	interrupt.add_argument("--request-id")
+	interrupt.add_argument("--session-ref")
 	interrupt.add_argument("--context-ref")
 	interrupt.add_argument("--turn-type")
 	interrupt.add_argument("--normalized-text")
@@ -1670,6 +1791,7 @@ def build_parser() -> argparse.ArgumentParser:
 	interrupt.add_argument("--semantic-block-reason")
 	reconnect = subparsers.add_parser("reconnect")
 	reconnect.add_argument("--request-id")
+	reconnect.add_argument("--session-ref")
 	return parser
 
 
@@ -1683,8 +1805,10 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
 			args.command,
 			text=getattr(args, "text", None),
 			repo_root=repo_root,
+			session_ref=getattr(args, "session_ref", None),
 			request_id=getattr(args, "request_id", None),
 			context_ref=getattr(args, "context_ref", None),
+			permission_scope=getattr(args, "permission_scope", None),
 			turn_type=getattr(args, "turn_type", None),
 			normalized_text=getattr(args, "normalized_text", None),
 			paraphrase=getattr(args, "paraphrase", None),

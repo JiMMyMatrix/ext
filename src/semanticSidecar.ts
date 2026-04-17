@@ -21,7 +21,7 @@ const SEMANTIC_TIMEOUT_MS = 25_000;
 type SemanticControllerState = {
 	current_actor?: string;
 	current_stage?: string;
-	access_mode: string;
+	permission_scope: string;
 	run_state: string;
 };
 
@@ -34,9 +34,10 @@ type SemanticSummaryPayload = {
 		kind?: string;
 		options?: Array<{ label: string; answer: string }>;
 	};
-	pending_approval: null | {
+	pending_permission_request: null | {
 		title: string;
 		body: string;
+		recommended_scope?: string;
 	};
 	pending_interrupt: null | {
 		title: string;
@@ -112,7 +113,7 @@ const semanticSchema = {
 		},
 		action_name: {
 			type: 'string',
-			enum: ['approve', 'full_access', 'interrupt_run', 'none'],
+			enum: ['interrupt_run', 'none'],
 		},
 		normalized_text: {
 			type: 'string',
@@ -144,7 +145,7 @@ function recentDialogueSummary(model: ExecutionWindowModel): string[] {
 			(item) =>
 				item.type === 'actor_event' ||
 				item.type === 'system_status' ||
-				item.type === 'approval_request' ||
+				item.type === 'permission_request' ||
 				item.type === 'clarification_request'
 		)
 		.slice(-3)
@@ -167,7 +168,7 @@ export function buildSemanticSummary(
 		controller_state: {
 			current_actor: model.snapshot.currentActor,
 			current_stage: model.snapshot.currentStage,
-			access_mode: model.snapshot.accessMode,
+			permission_scope: model.snapshot.permissionScope,
 			run_state: model.snapshot.runState,
 		},
 		active_clarification: model.activeClarification
@@ -181,10 +182,11 @@ export function buildSemanticSummary(
 					})),
 			  }
 			: null,
-		pending_approval: model.snapshot.pendingApproval
+		pending_permission_request: model.snapshot.pendingPermissionRequest
 			? {
-					title: model.snapshot.pendingApproval.title,
-					body: model.snapshot.pendingApproval.body,
+					title: model.snapshot.pendingPermissionRequest.title,
+					body: model.snapshot.pendingPermissionRequest.body,
+					recommended_scope: model.snapshot.pendingPermissionRequest.recommendedScope,
 			  }
 			: null,
 		pending_interrupt: model.snapshot.pendingInterrupt
@@ -209,7 +211,7 @@ export function buildSemanticSummary(
 		used_accepted_intake_summary: Boolean(summary.accepted_intake_summary),
 		used_dialogue_summary: summary.recent_dialogue_summary.length > 0,
 		had_active_clarification: Boolean(summary.active_clarification),
-		had_pending_approval: Boolean(summary.pending_approval),
+		had_pending_permission_request: Boolean(summary.pending_permission_request),
 		had_pending_interrupt: Boolean(summary.pending_interrupt),
 	};
 
@@ -237,8 +239,8 @@ function semanticPrompt(input: SemanticRunnerInput): string {
 		'- "what happened?" => governor_dialogue',
 		'- "analyze the repo" => governed_work_intent',
 		'- with an active clarification, "architecture" => clarification_reply',
-		'- with approval pending, "go ahead" => explicit_action / approve',
-		'- "approve and tell me what happened" => block',
+		'- with a run in progress, "stop" => explicit_action / interrupt_run',
+		'- "stop and tell me what happened" => block',
 		'Return high confidence only when one route clearly dominates.',
 		'If unsure, return route_type=block and confidence=low.',
 		'Return JSON only, matching the provided schema.',
@@ -329,46 +331,6 @@ function explicitActionDecision(
 	const normalized = normalizedLower(text);
 	if (!normalized) {
 		return undefined;
-	}
-
-	if (model.snapshot.pendingApproval) {
-		if (
-			[
-				'approve',
-				'approved',
-				'go ahead',
-				'continue',
-				'yes',
-				'ok',
-				'okay',
-			].includes(normalized)
-		) {
-			return {
-				route_type: 'explicit_action',
-				action_name: 'approve',
-				normalized_text: text.trim(),
-				paraphrase: 'Approve the pending request.',
-				confidence: 'high',
-				reason: 'deterministic_explicit_approve',
-			};
-		}
-		if (
-			[
-				'full access',
-				'grant full access',
-				'enable full access',
-				'allow full access',
-			].includes(normalized)
-		) {
-			return {
-				route_type: 'explicit_action',
-				action_name: 'full_access',
-				normalized_text: text.trim(),
-				paraphrase: 'Grant full access for the current session.',
-				confidence: 'high',
-				reason: 'deterministic_explicit_full_access',
-			};
-		}
 	}
 
 	if (
@@ -499,10 +461,7 @@ function normalizeDecision(raw: unknown, rawText: string): SemanticDecision {
 			: 'block';
 
 	const safeActionName: SemanticActionName =
-		actionName === 'approve' ||
-		actionName === 'full_access' ||
-		actionName === 'interrupt_run' ||
-		actionName === 'none'
+		actionName === 'interrupt_run' || actionName === 'none'
 			? actionName
 			: 'none';
 
@@ -617,7 +576,7 @@ function clarificationPromptForAttempt(
 	attemptNumber: number
 ): string {
 	if (attemptNumber > SEMANTIC_CLARIFICATION_BUDGET) {
-		return 'I’m not confident enough to route that safely. Please restate it as one of these: ask for progress, answer the current clarification, approve/full access, or give a new work request.';
+		return 'I’m not confident enough to route that safely. Please restate it as one of these: ask for progress, answer the current clarification, stop the run, or give a new work request.';
 	}
 
 	if (model.activeClarification) {
@@ -626,10 +585,10 @@ function clarificationPromptForAttempt(
 			: 'Please answer the current clarification in one short phrase, or use one of the listed clarification choices.';
 	}
 
-	if (model.snapshot.pendingApproval) {
+	if (model.snapshot.pendingPermissionRequest) {
 		return attemptNumber === 1
-			? 'I’m not confident whether you want to approve, grant full access, or ask a follow-up question. Please restate it directly.'
-			: 'Please restate this as exactly one of: approve, full access, or a progress/explanation question.';
+			? 'I’m not confident whether this is a follow-up question or a new request while a permission choice is still pending. Please restate it directly.'
+			: 'Please restate this as exactly one of: answer the current permission choice with the buttons, or ask a progress/explanation question.';
 	}
 
 	if (model.snapshot.runState === 'running') {
@@ -694,29 +653,13 @@ export function resolveSemanticRouting(
 		if (decision.action_name === 'none') {
 			return {
 				kind: 'block',
-				body: 'I could not map that control request safely. Please restate it as approve, full access, or stop.',
+				body: 'I could not map that control request safely. Please restate it as stop, a progress question, or a new work request.',
 				semantic: metadata,
 				nextLoopState: {
 					attempts: 1,
 					exhausted: false,
 					lastQuestion:
-						'I could not map that control request safely. Please restate it as approve, full access, or stop.',
-				},
-			};
-		}
-		if (
-			(decision.action_name === 'approve' || decision.action_name === 'full_access') &&
-			!model.snapshot.pendingApproval
-		) {
-			return {
-				kind: 'block',
-				body: 'There is no pending approval right now. Ask for progress, start new work, or wait for an approval request.',
-				semantic: metadata,
-				nextLoopState: {
-					attempts: 1,
-					exhausted: false,
-					lastQuestion:
-						'There is no pending approval right now. Ask for progress, start new work, or wait for an approval request.',
+						'I could not map that control request safely. Please restate it as stop, a progress question, or a new work request.',
 				},
 			};
 		}
@@ -751,11 +694,7 @@ export function resolveSemanticRouting(
 		}
 
 		const mappedAction: ModelAction =
-			decision.action_name === 'approve'
-				? { type: 'approve', text: rawText, ...metadata }
-				: decision.action_name === 'full_access'
-					? { type: 'full_access', text: rawText, ...metadata }
-					: { type: 'interrupt_run', text: rawText, ...metadata };
+			{ type: 'interrupt_run', text: rawText, ...metadata };
 		return {
 			kind: 'dispatch',
 			action: mappedAction,
@@ -767,13 +706,13 @@ export function resolveSemanticRouting(
 		if (!model.activeClarification) {
 			return {
 				kind: 'block',
-				body: 'There is no active clarification to answer right now. Ask for progress, approve, or send a new work request instead.',
+				body: 'There is no active clarification to answer right now. Ask for progress or send a new work request instead.',
 				semantic: metadata,
 				nextLoopState: {
 					attempts: 1,
 					exhausted: false,
 					lastQuestion:
-						'There is no active clarification to answer right now. Ask for progress, approve, or send a new work request instead.',
+						'There is no active clarification to answer right now. Ask for progress or send a new work request instead.',
 				},
 			};
 		}

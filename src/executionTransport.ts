@@ -139,14 +139,14 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 				return this.run('session', 'submit-prompt', action);
 			case 'answer_clarification':
 				return this.run('session', 'answer-clarification', action);
-			case 'approve':
-				return this.run('session', 'approve', action);
-			case 'full_access':
-				return this.run('session', 'full-access', action);
+			case 'set_permission_scope':
+				return this.run('session', 'set-permission-scope', action);
+			case 'decline_permission':
+				return this.run('session', 'decline-permission', action);
 			case 'interrupt_run':
 				return this.run('session', 'interrupt', action);
 			case 'reconnect':
-				return this.run('session', 'reconnect');
+				return this.run('session', 'reconnect', action);
 		}
 	}
 
@@ -158,8 +158,14 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		if (action?.request_id) {
 			args.push('--request-id', action.request_id);
 		}
+		if (action?.session_ref) {
+			args.push('--session-ref', action.session_ref);
+		}
 		if (action?.context_ref) {
 			args.push('--context-ref', action.context_ref);
+		}
+		if (action?.type === 'set_permission_scope') {
+			args.push('--permission-scope', action.permission_scope);
 		}
 		if (action && action.type !== 'reconnect') {
 			if (action.semantic_route_type) {
@@ -172,7 +178,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 					case 'explicit_action':
 						args.push(
 							'--turn-type',
-							action.type === 'interrupt_run' ? 'stop_action' : 'approval_action'
+							action.type === 'interrupt_run' ? 'stop_action' : 'permission_action'
 						);
 						break;
 				}

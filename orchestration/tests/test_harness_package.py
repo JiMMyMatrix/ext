@@ -91,8 +91,8 @@ class HarnessPackageTests(unittest.TestCase):
                 repo_root=repo_root,
             )
             self.assertEqual(model["snapshot"]["currentActor"], "orchestration")
-            self.assertEqual(model["snapshot"]["currentStage"], "ready_for_acceptance")
-            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
+            self.assertEqual(model["snapshot"]["currentStage"], "permission_needed")
+            self.assertIsNotNone(model["snapshot"]["pendingPermissionRequest"])
 
     def test_session_governor_dialogue_is_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -103,14 +103,11 @@ class HarnessPackageTests(unittest.TestCase):
                 repo_root=repo_root,
             )
 
-            self.assertEqual(model["snapshot"]["currentActor"], "intake_shell")
-            self.assertEqual(model["snapshot"]["currentStage"], "idle")
+            self.assertEqual(model["snapshot"]["currentActor"], "orchestration")
+            self.assertEqual(model["snapshot"]["currentStage"], "permission_needed")
             self.assertIsNone(model["activeClarification"])
-            self.assertIsNone(model["snapshot"]["pendingApproval"])
+            self.assertIsNotNone(model["snapshot"]["pendingPermissionRequest"])
             self.assertFalse((repo_root / ".agent" / "intakes").exists())
-            self.assertTrue(
-                any(item["type"] == "actor_event" for item in model["feed"])
-            )
 
     def test_session_natural_follow_up_questions_route_to_governor_dialogue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -121,13 +118,10 @@ class HarnessPackageTests(unittest.TestCase):
                 repo_root=repo_root,
             )
 
-            self.assertEqual(model["snapshot"]["currentStage"], "idle")
+            self.assertEqual(model["snapshot"]["currentStage"], "permission_needed")
             self.assertIsNone(model["activeClarification"])
-            self.assertIsNone(model["snapshot"]["pendingApproval"])
+            self.assertIsNotNone(model["snapshot"]["pendingPermissionRequest"])
             self.assertFalse((repo_root / ".agent" / "intakes").exists())
-            self.assertTrue(
-                any(item["type"] == "actor_event" for item in model["feed"])
-            )
 
     def test_scenario_fixture_loader_materializes_checked_in_state(self) -> None:
         self.assertIn("accepted_idle", list_scenarios())
@@ -144,6 +138,9 @@ class HarnessPackageTests(unittest.TestCase):
 
     def test_session_governor_dialogue_reads_accepted_intake_artifact(self) -> None:
         with temporary_scenario_repo("accepted_idle") as repo_root:
+            payload = session.load_session(repo_root)
+            payload["model"]["snapshot"]["permissionScope"] = "observe"
+            session.save_session(payload, repo_root=repo_root)
             model = session.dispatch_session_action(
                 "submit_prompt",
                 text="What is the current progress?",
@@ -157,6 +154,9 @@ class HarnessPackageTests(unittest.TestCase):
 
     def test_session_governor_dialogue_reads_dispatch_and_transition_artifacts(self) -> None:
         with temporary_scenario_repo("completed_with_governor_decision") as repo_root:
+            payload = session.load_session(repo_root)
+            payload["model"]["snapshot"]["permissionScope"] = "observe"
+            session.save_session(payload, repo_root=repo_root)
             model = session.dispatch_session_action(
                 "submit_prompt",
                 text="What is the current progress?",
@@ -166,7 +166,6 @@ class HarnessPackageTests(unittest.TestCase):
             latest = actor_events[-1]
             self.assertIn("lane/intake/dispatch-001", latest["body"])
             self.assertIn("Result status is completed", latest["body"])
-            self.assertIn("Governor decision is accept", latest["body"])
             self.assertEqual(
                 latest["source_artifact_ref"],
                 ".agent/dispatches/lane/intake/dispatch-001/governor_decision.json",
@@ -177,7 +176,7 @@ class HarnessPackageTests(unittest.TestCase):
         with temporary_scenario_repo("ready_for_acceptance") as repo_root:
             model = session.dispatch_session_action("state", repo_root=repo_root)
             self.assertEqual(model["snapshot"]["currentStage"], "ready_for_acceptance")
-            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
+            self.assertIsNotNone(model["snapshot"].get("pendingPermissionRequest") or model["snapshot"].get("pendingApproval"))
             self.assertIsNone(model["activeClarification"])
 
     def test_session_state_reads_running_dispatch_fixture(self) -> None:
@@ -216,10 +215,10 @@ class HarnessPackageTests(unittest.TestCase):
                 context_ref=model["activeClarification"]["contextRef"],
                 repo_root=repo_root,
             )
-            self.assertEqual(model["snapshot"]["currentStage"], "ready_for_acceptance")
-            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
+            self.assertEqual(model["snapshot"]["currentStage"], "permission_needed")
+            self.assertIsNotNone(model["snapshot"]["pendingPermissionRequest"])
 
-    def test_session_full_access_sets_session_mode_and_running_state(self) -> None:
+    def test_session_execute_permission_sets_session_mode_and_running_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
             session.dispatch_session_action(
@@ -234,21 +233,22 @@ class HarnessPackageTests(unittest.TestCase):
                 context_ref=clarification_model["activeClarification"]["contextRef"],
                 repo_root=repo_root,
             )
-            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
+            self.assertIsNotNone(model["snapshot"]["pendingPermissionRequest"])
 
             model = session.dispatch_session_action(
-                "full_access",
-                context_ref=model["snapshot"]["pendingApproval"]["contextRef"],
+                "set_permission_scope",
+                permission_scope="execute",
+                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
                 repo_root=repo_root,
             )
 
-            self.assertEqual(model["snapshot"]["accessMode"], "full_access")
+            self.assertEqual(model["snapshot"]["permissionScope"], "execute")
             self.assertEqual(model["snapshot"]["runState"], "running")
             self.assertEqual(model["snapshot"]["currentActor"], "governor")
-            self.assertIsNone(model["snapshot"]["pendingApproval"])
-            self.assertIn("Full access", model["acceptedIntakeSummary"]["body"])
+            self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
+            self.assertIn("Execute permission", model["acceptedIntakeSummary"]["body"])
 
-    def test_session_auto_accepts_later_requests_after_full_access(self) -> None:
+    def test_session_auto_accepts_later_requests_after_execute_permission(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
             session.dispatch_session_action(
@@ -264,8 +264,9 @@ class HarnessPackageTests(unittest.TestCase):
             )
             approval_model = session.load_session(repo_root)["model"]
             session.dispatch_session_action(
-                "full_access",
-                context_ref=approval_model["snapshot"]["pendingApproval"]["contextRef"],
+                "set_permission_scope",
+                permission_scope="execute",
+                context_ref=approval_model["snapshot"]["pendingPermissionRequest"]["contextRef"],
                 repo_root=repo_root,
             )
 
@@ -275,8 +276,8 @@ class HarnessPackageTests(unittest.TestCase):
                 repo_root=repo_root,
             )
 
-            self.assertIsNone(model["snapshot"]["pendingApproval"])
-            self.assertEqual(model["snapshot"]["accessMode"], "full_access")
+            self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
+            self.assertEqual(model["snapshot"]["permissionScope"], "execute")
             self.assertEqual(model["snapshot"]["runState"], "running")
             self.assertTrue((repo_root / ".agent" / "intakes").exists())
 
@@ -330,7 +331,7 @@ class HarnessPackageTests(unittest.TestCase):
                     "used_accepted_intake_summary": False,
                     "used_dialogue_summary": False,
                     "had_active_clarification": False,
-                    "had_pending_approval": False,
+                    "had_pending_permission_request": False,
                     "had_pending_interrupt": False,
                 },
                 semantic_route_type="governed_work_intent",

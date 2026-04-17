@@ -15,15 +15,18 @@ export const CODEX_CHAT_PARTICIPANT_ID = 'ext.codex';
 
 type ChatCommand =
 	| 'status'
-	| 'approve'
-	| 'full-access'
+	| 'observe'
+	| 'plan'
+	| 'execute'
+	| 'decline-permission'
 	| 'stop';
 
 interface ChatResultMetadata {
 	hasClarification?: boolean;
-	hasApproval?: boolean;
+	hasPermissionRequest?: boolean;
 	hasInterrupt?: boolean;
 	canStop?: boolean;
+	permissionScope?: string;
 	transportState: TransportState;
 	stale?: boolean;
 }
@@ -40,10 +43,15 @@ export function resolveChatAction(
 	switch (command as ChatCommand | undefined) {
 		case 'status':
 			return undefined;
-		case 'approve':
-			return { type: 'approve' };
-		case 'full-access':
-			return { type: 'full_access' };
+		case 'observe':
+		case 'plan':
+		case 'execute':
+			return {
+				type: 'set_permission_scope',
+				permission_scope: command as 'observe' | 'plan' | 'execute',
+			};
+		case 'decline-permission':
+			return { type: 'decline_permission' };
 		case 'stop':
 			return { type: 'interrupt_run' };
 	}
@@ -71,9 +79,10 @@ export function buildChatResultMetadata(
 ): ChatResultMetadata {
 	return {
 		hasClarification: Boolean(model.activeClarification),
-		hasApproval: Boolean(model.snapshot.pendingApproval),
+		hasPermissionRequest: Boolean(model.snapshot.pendingPermissionRequest),
 		hasInterrupt: Boolean(model.snapshot.pendingInterrupt),
 		canStop: isStopAvailable(model),
+		permissionScope: model.snapshot.permissionScope,
 		transportState: model.snapshot.transportState,
 		stale: isSnapshotStale(model.snapshot.snapshotFreshness),
 	};
@@ -84,17 +93,17 @@ export function buildChatFollowups(
 ): vscode.ChatFollowup[] {
 	const followups: vscode.ChatFollowup[] = [];
 
-	if (metadata.hasApproval) {
+	if (metadata.hasPermissionRequest) {
 		followups.push(
 			{
-				label: 'Approve',
-				prompt: 'Approve the pending request.',
-				command: 'approve',
+				label: 'Observe',
+				prompt: 'Grant Observe permission for the current session.',
+				command: 'observe',
 			},
 			{
-				label: 'Full access',
-				prompt: 'Grant full access for the current session.',
-				command: 'full-access',
+				label: 'Plan',
+				prompt: 'Grant Plan permission for the current session.',
+				command: 'plan',
 			}
 		);
 	}
@@ -232,8 +241,8 @@ function buildPrimaryMessage(model: ExecutionWindowModel): string | undefined {
 		return `${model.activeClarification.body}\n\nReply here to continue.`;
 	}
 
-	if (model.snapshot.pendingApproval) {
-		return `${model.snapshot.pendingApproval.body}\n\nUse \`/approve\` or \`/full-access\`.`;
+	if (model.snapshot.pendingPermissionRequest) {
+		return `${model.snapshot.pendingPermissionRequest.body}\n\nUse \`/observe\`, \`/plan\`, or \`/execute\`.`;
 	}
 
 	if (model.snapshot.pendingInterrupt) {
@@ -265,14 +274,14 @@ function buildStatusMessage(model: ExecutionWindowModel): string {
 	}
 	if (model.activeClarification) {
 		notes.push('Clarification is waiting.');
-	} else if (model.snapshot.pendingApproval) {
-		notes.push('Approval is waiting.');
+	} else if (model.snapshot.pendingPermissionRequest) {
+		notes.push('Permission choice is waiting.');
 	} else if (model.snapshot.pendingInterrupt) {
 		notes.push('Stop is pending.');
 	}
 
-	if (model.snapshot.accessMode === 'full_access') {
-		notes.push('Full access is enabled.');
+	if (model.snapshot.permissionScope && model.snapshot.permissionScope !== 'unset') {
+		notes.push(`Permission scope is ${model.snapshot.permissionScope}.`);
 	}
 
 	if (model.snapshot.runState === 'running' && !model.snapshot.pendingInterrupt) {
@@ -294,7 +303,7 @@ function latestNarrativeItem(feed: FeedItem[]): FeedItem | undefined {
 				item.type !== 'user_message' &&
 				item.type !== 'artifact_reference' &&
 				item.type !== 'clarification_request' &&
-				item.type !== 'approval_request' &&
+				item.type !== 'permission_request' &&
 				item.type !== 'interrupt_request'
 		);
 }

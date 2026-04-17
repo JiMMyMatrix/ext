@@ -6,7 +6,7 @@ type FeedItemType =
 	| 'system_status'
 	| 'actor_event'
 	| 'clarification_request'
-	| 'approval_request'
+	| 'permission_request'
 	| 'interrupt_request'
 	| 'artifact_reference'
 	| 'error';
@@ -19,7 +19,7 @@ export type TransportState =
 	| 'degraded'
 	| 'disconnected';
 
-export type AccessMode = 'approval_required' | 'full_access';
+export type PermissionScope = 'unset' | 'observe' | 'plan' | 'execute';
 
 export type RunState = 'idle' | 'running';
 
@@ -27,7 +27,7 @@ export type TurnType =
 	| 'governed_work_intent'
 	| 'governor_dialogue'
 	| 'clarification_reply'
-	| 'approval_action'
+	| 'permission_action'
 	| 'stop_action'
 	| 'system';
 
@@ -41,8 +41,6 @@ export type SemanticRouteType =
 export type SemanticConfidence = 'high' | 'low';
 
 export type SemanticActionName =
-	| 'approve'
-	| 'full_access'
 	| 'interrupt_run'
 	| 'none';
 
@@ -51,7 +49,7 @@ export interface SemanticContextFlags {
 	used_accepted_intake_summary: boolean;
 	used_dialogue_summary: boolean;
 	had_active_clarification: boolean;
-	had_pending_approval: boolean;
+	had_pending_permission_request: boolean;
 	had_pending_interrupt: boolean;
 }
 
@@ -69,6 +67,7 @@ export interface SemanticMetadata {
 export interface ControllerRequestMetadata {
 	request_id?: string;
 	context_ref?: string;
+	session_ref?: string;
 }
 
 export type ActivityKind =
@@ -113,6 +112,11 @@ export interface RequestCard {
 	requestedAt: string;
 }
 
+export interface PermissionRequest extends RequestCard {
+	recommendedScope: PermissionScope;
+	allowedScopes: PermissionScope[];
+}
+
 export interface ClarificationOption {
 	id: string;
 	label: string;
@@ -143,15 +147,16 @@ export interface SnapshotFreshness {
 }
 
 export interface ContextSnapshot {
+	sessionRef?: string;
 	lane?: string;
 	branch?: string;
 	task?: string;
 	currentActor?: string;
 	currentStage?: string;
-	accessMode: AccessMode;
+	permissionScope: PermissionScope;
 	runState: RunState;
 	transportState: TransportState;
-	pendingApproval?: RequestCard;
+	pendingPermissionRequest?: PermissionRequest;
 	pendingInterrupt?: RequestCard;
 	recentArtifacts: ArtifactReference[];
 	snapshotFreshness: SnapshotFreshness;
@@ -195,14 +200,15 @@ export interface ExecutionWindowModel {
 	snapshot: ContextSnapshot;
 	feed: FeedItem[];
 	activeClarification?: ClarificationRequest;
+	activeForegroundRequestId?: string;
 	acceptedIntakeSummary?: AcceptedIntakeSummary;
 }
 
 export type ModelAction =
 	| ({ type: 'submit_prompt'; text: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
 	| ({ type: 'answer_clarification'; text: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
-	| ({ type: 'approve'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
-	| ({ type: 'full_access'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
+	| ({ type: 'set_permission_scope'; permission_scope: PermissionScope; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
+	| ({ type: 'decline_permission'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
 	| ({ type: 'interrupt_run'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
 	| ({ type: 'reconnect'; now?: string } & ControllerRequestMetadata);
 
@@ -393,11 +399,12 @@ function refreshSnapshot(
 export function createInitialModel(now = new Date().toISOString()): ExecutionWindowModel {
 	return {
 		snapshot: {
+			sessionRef: nextId('session'),
 			lane: 'lane/phase-1',
 			branch: 'feature/execution-window',
 			currentActor: 'intake_shell',
 			currentStage: 'idle',
-			accessMode: 'approval_required',
+			permissionScope: 'unset',
 			runState: 'idle',
 			transportState: 'connected',
 			recentArtifacts: [],
@@ -502,15 +509,15 @@ function supersedePendingApproval(
 	now: string,
 	requestId?: string
 ): FeedItem[] {
-	if (!model.snapshot.pendingApproval) {
+	if (!model.snapshot.pendingPermissionRequest) {
 		return [];
 	}
 
 	return [
 		createFeedItem(
 			'system_status',
-			'Pending approval superseded',
-			'A new request replaced the previous approval checkpoint.',
+			'Pending permission request superseded',
+			'A new request replaced the previous permission checkpoint.',
 			true,
 			now,
 			undefined,
@@ -613,9 +620,9 @@ function staleContextError(command: string): string {
 	switch (command) {
 		case 'answer_clarification':
 			return 'The clarification changed before this answer was applied. Refresh and answer the current clarification instead.';
-		case 'approve':
-		case 'full_access':
-			return 'The approval request changed before this action was applied. Refresh and confirm the current approval card.';
+		case 'set_permission_scope':
+		case 'decline_permission':
+			return 'The permission request changed before this action was applied. Refresh and confirm the current permission choice.';
 		case 'interrupt_run':
 			return 'The interruptible run state changed before this stop request was applied. Refresh and try again if stop is still available.';
 		default:
@@ -752,9 +759,9 @@ function buildGovernorDialogueReply(
 		};
 	}
 
-	if (snapshot.pendingApproval) {
+	if (snapshot.pendingPermissionRequest) {
 		return {
-			body: 'Current progress: this request is ready, but it is waiting for your approval or full access before Corgi can continue.',
+			body: `Current progress: this request is ready, but it is waiting for a ${snapshot.pendingPermissionRequest.recommendedScope} permission choice before Corgi can continue.`,
 			details: [
 				`Prompt: ${summarizePrompt(prompt)}`,
 				`Current actor: ${actor}`,
@@ -811,12 +818,12 @@ function humanizeAcceptedSummary(task: string): string {
 
 function buildAcceptedSummary(
 	model: ExecutionWindowModel,
-	accessMode: AccessMode
+	permissionScope: PermissionScope
 ): AcceptedIntakeSummary {
 	const task = model.snapshot.task ?? 'Current task';
 	const suffix =
-		accessMode === 'full_access'
-			? ' Full access is enabled for this session.'
+		permissionScope === 'execute'
+			? ' Execute permission is active for this session.'
 			: '';
 
 	return {
@@ -825,10 +832,76 @@ function buildAcceptedSummary(
 	};
 }
 
+function recommendedPermissionScope(prompt: string): PermissionScope {
+	const normalized = trimAndNormalize(prompt).toLowerCase();
+	if (
+		[
+			'implement',
+			'build',
+			'create',
+			'refactor',
+			'fix',
+			'debug',
+			'update',
+			'change',
+			'write',
+		].some((token) => normalized === token || normalized.startsWith(`${token} `))
+	) {
+		return 'execute';
+	}
+
+	return 'plan';
+}
+
+function buildPermissionRequest(
+	recommendedScope: PermissionScope,
+	now: string
+): PermissionRequest {
+	return {
+		id: nextId('permission'),
+		contextRef: buildContextRef('permission'),
+		title: 'Permission needed',
+		body: `Choose ${recommendedScope} if you want Corgi to continue this request.`,
+		recommendedScope,
+		allowedScopes: ['observe', 'plan', 'execute'],
+		requestedAt: now,
+	};
+}
+
+function permissionAllowsTurn(
+	scope: PermissionScope,
+	turnType: TurnType
+): boolean {
+	if (turnType === 'governor_dialogue') {
+		return scope === 'observe' || scope === 'plan' || scope === 'execute';
+	}
+	if (turnType === 'governed_work_intent') {
+		return scope === 'plan' || scope === 'execute';
+	}
+	return true;
+}
+
+function permissionRank(scope: PermissionScope): number {
+	switch (scope) {
+		case 'unset':
+			return 0;
+		case 'observe':
+			return 1;
+		case 'plan':
+			return 2;
+		case 'execute':
+			return 3;
+	}
+}
+
+function scopeSatisfies(current: PermissionScope, required: PermissionScope): boolean {
+	return permissionRank(current) >= permissionRank(required);
+}
+
 function acceptIntake(
 	model: ExecutionWindowModel,
 	now: string,
-	accessMode: AccessMode,
+	permissionScope: PermissionScope,
 	turnType: TurnType = 'system',
 	provenance?: Partial<
 		Pick<
@@ -846,15 +919,15 @@ function acceptIntake(
 	>
 ): ExecutionWindowModel {
 	const artifacts = defaultArtifacts();
-	const acceptedIntakeSummary = buildAcceptedSummary(model, accessMode);
+	const acceptedIntakeSummary = buildAcceptedSummary(model, permissionScope);
 
 	return {
 		snapshot: refreshSnapshot(model.snapshot, now, {
-			currentActor: accessMode === 'full_access' ? 'governor' : 'orchestration',
-			currentStage: accessMode === 'full_access' ? 'running' : 'intake_accepted',
-			accessMode,
-			runState: accessMode === 'full_access' ? 'running' : 'idle',
-			pendingApproval: undefined,
+			currentActor: permissionScope === 'execute' ? 'governor' : 'orchestration',
+			currentStage: permissionScope === 'execute' ? 'running' : 'intake_accepted',
+			permissionScope,
+			runState: permissionScope === 'execute' ? 'running' : 'idle',
+			pendingPermissionRequest: undefined,
 			pendingInterrupt: undefined,
 			recentArtifacts: artifacts,
 			transportState: 'connected',
@@ -863,7 +936,7 @@ function acceptIntake(
 			...model.feed,
 			createFeedItem(
 				'system_status',
-				accessMode === 'full_access' ? 'Full access enabled' : 'Accepted and ready',
+				permissionScope === 'execute' ? 'Permission confirmed: Execute' : 'Accepted and ready',
 				acceptedIntakeSummary.body,
 				true,
 				now,
@@ -876,6 +949,8 @@ function acceptIntake(
 			),
 		],
 		activeClarification: undefined,
+		activeForegroundRequestId:
+			permissionScope === 'execute' ? model.activeForegroundRequestId : undefined,
 		acceptedIntakeSummary,
 	};
 }
@@ -936,6 +1011,40 @@ export function applyModelAction(
 				prompt
 			);
 			if (turnType === 'governor_dialogue') {
+				if (!permissionAllowsTurn(model.snapshot.permissionScope, turnType)) {
+					const permissionRequest = buildPermissionRequest('observe', now);
+					return {
+						...model,
+						snapshot: refreshSnapshot(model.snapshot, now, {
+							currentActor: 'orchestration',
+							currentStage: 'permission_needed',
+							pendingPermissionRequest: permissionRequest,
+							transportState: 'connected',
+						}),
+						feed: [
+							...model.feed,
+							createFeedItem('user_message', 'Governor question', prompt, false, now, undefined, undefined, {
+								turn_type: turnType,
+								...responseProvenanceForAction(action),
+							}),
+							createFeedItem(
+								'permission_request',
+								permissionRequest.title,
+								permissionRequest.body,
+								true,
+								now,
+								undefined,
+								undefined,
+								{
+									turn_type: turnType,
+									...responseProvenanceForAction(action),
+								}
+							),
+						],
+						activeForegroundRequestId: model.activeForegroundRequestId ?? action.request_id,
+					};
+				}
+
 				const reply = buildGovernorDialogueReply(model, prompt);
 				return {
 					...model,
@@ -964,6 +1073,7 @@ export function applyModelAction(
 							}
 						),
 					],
+					activeForegroundRequestId: undefined,
 				};
 			}
 
@@ -981,7 +1091,7 @@ export function applyModelAction(
 					currentActor: 'intake_shell',
 					currentStage: 'clarification_needed',
 					runState: 'idle',
-					pendingApproval: undefined,
+					pendingPermissionRequest: undefined,
 					pendingInterrupt: undefined,
 					recentArtifacts: [],
 					transportState: 'connected',
@@ -1005,7 +1115,7 @@ export function applyModelAction(
 					createFeedItem(
 						'shell_event',
 						'One detail needed',
-						'I need a quick clarification before continuing.',
+						'I need one quick clarification before checking the permission scope for this request.',
 						false,
 						now,
 						[
@@ -1037,6 +1147,7 @@ export function applyModelAction(
 					),
 				],
 				activeClarification: clarification,
+				activeForegroundRequestId: action.request_id ?? model.activeForegroundRequestId,
 			};
 		}
 
@@ -1075,20 +1186,43 @@ export function applyModelAction(
 				);
 			}
 
-			const approval: RequestCard = {
-				id: nextId('approval'),
-				contextRef: buildContextRef('approval'),
-				title: 'Approval needed',
-				body: 'Approve this request, or grant full access for the session when you want Corgi to continue.',
-				requestedAt: now,
-			};
+			const requiredScope = recommendedPermissionScope(answer);
+			if (scopeSatisfies(model.snapshot.permissionScope, requiredScope)) {
+				return acceptIntake(
+					{
+						...model,
+						feed: [
+							...model.feed,
+							createFeedItem(
+								'user_message',
+								'Clarification answered',
+								answer,
+								false,
+								now,
+								undefined,
+								undefined,
+								{
+									turn_type: 'clarification_reply',
+									...responseProvenanceForAction(action),
+								}
+							),
+						],
+					},
+					now,
+					model.snapshot.permissionScope,
+					'clarification_reply',
+					responseProvenanceForAction(action)
+				);
+			}
+
+			const permissionRequest = buildPermissionRequest(requiredScope, now);
 
 			return {
 				snapshot: refreshSnapshot(model.snapshot, now, {
 					currentActor: 'orchestration',
-					currentStage: 'ready_for_acceptance',
+					currentStage: 'permission_needed',
 					runState: 'idle',
-					pendingApproval: approval,
+					pendingPermissionRequest: permissionRequest,
 					transportState: 'connected',
 				}),
 				feed: [
@@ -1108,15 +1242,15 @@ export function applyModelAction(
 					),
 					createFeedItem(
 						'shell_event',
-						'Draft ready for acceptance',
-						'The intake shell updated the draft and handed it back for orchestration acceptance.',
+						'Draft is ready for permission review',
+						'The intake shell updated the draft and handed it back for permission selection.',
 						false,
 						now,
 						undefined,
 						{
 							kind: 'status',
 							state: 'completed',
-							summary: 'Ready for acceptance',
+							summary: 'Ready for permission',
 						},
 						{
 							turn_type: 'clarification_reply',
@@ -1124,9 +1258,9 @@ export function applyModelAction(
 						}
 					),
 					createFeedItem(
-						'approval_request',
-						approval.title,
-						approval.body,
+						'permission_request',
+						permissionRequest.title,
+						permissionRequest.body,
 						true,
 						now,
 						undefined,
@@ -1139,26 +1273,29 @@ export function applyModelAction(
 				],
 				activeClarification: undefined,
 				acceptedIntakeSummary: undefined,
+				activeForegroundRequestId: model.activeForegroundRequestId ?? action.request_id,
 			};
 		}
 
-		case 'approve': {
-			if (!model.snapshot.pendingApproval) {
+		case 'set_permission_scope': {
+			if (!model.snapshot.pendingPermissionRequest) {
 				return appendError(
 					model,
-					'No approval is active',
-					'There is no approval request to approve right now.',
+					'No permission request is active',
+					'There is no permission request to answer right now.',
 					undefined,
 					now,
 					action.request_id
 				);
 			}
 
-			if (!hasFreshContextRef(action, model.snapshot.pendingApproval.contextRef)) {
+			if (
+				!hasFreshContextRef(action, model.snapshot.pendingPermissionRequest.contextRef)
+			) {
 				return appendError(
 					model,
-					'Approval changed',
-					staleContextError('approve'),
+					'Permission changed',
+					staleContextError('set_permission_scope'),
 					undefined,
 					now,
 					action.request_id
@@ -1172,14 +1309,14 @@ export function applyModelAction(
 							...model.feed,
 							createFeedItem(
 								'user_message',
-								'Approval requested',
+								'Permission selected',
 								trimAndNormalize(action.text),
 								false,
 								now,
 								undefined,
 								undefined,
 								{
-									turn_type: 'approval_action',
+									turn_type: 'permission_action',
 									...responseProvenanceForAction(action),
 								}
 							),
@@ -1190,64 +1327,80 @@ export function applyModelAction(
 			return acceptIntake(
 				withUserTurn,
 				now,
-				model.snapshot.accessMode,
-				'approval_action',
+				action.permission_scope,
+				'permission_action',
 				responseProvenanceForAction(action)
 			);
 		}
 
-		case 'full_access': {
-			if (!model.snapshot.pendingApproval) {
+		case 'decline_permission': {
+			if (!model.snapshot.pendingPermissionRequest) {
 				return appendError(
 					model,
-					'No approval is active',
-					'There is no approval request to grant full access for right now.',
+					'No permission request is active',
+					'There is no permission request to decline right now.',
 					undefined,
 					now,
 					action.request_id
 				);
 			}
 
-			if (!hasFreshContextRef(action, model.snapshot.pendingApproval.contextRef)) {
+			if (
+				!hasFreshContextRef(action, model.snapshot.pendingPermissionRequest.contextRef)
+			) {
 				return appendError(
 					model,
-					'Approval changed',
-					staleContextError('full_access'),
+					'Permission changed',
+					staleContextError('decline_permission'),
 					undefined,
 					now,
 					action.request_id
 				);
 			}
 
-			const withUserTurn = action.text
-				? {
-						...model,
-						feed: [
-							...model.feed,
-							createFeedItem(
-								'user_message',
-								'Full access requested',
-								trimAndNormalize(action.text),
-								false,
-								now,
-								undefined,
-								undefined,
-								{
-									turn_type: 'approval_action',
-									...responseProvenanceForAction(action),
-								}
-							),
-						],
-				  }
-				: model;
-
-			return acceptIntake(
-				withUserTurn,
-				now,
-				'full_access',
-				'approval_action',
-				responseProvenanceForAction(action)
-			);
+			return {
+				...model,
+				snapshot: refreshSnapshot(model.snapshot, now, {
+					currentActor: 'orchestration',
+					currentStage: 'permission_declined',
+					runState: 'idle',
+					pendingPermissionRequest: undefined,
+					transportState: 'connected',
+				}),
+				feed: [
+					...model.feed,
+					...(action.text
+						? [
+								createFeedItem(
+									'user_message',
+									'Permission declined',
+									trimAndNormalize(action.text),
+									false,
+									now,
+									undefined,
+									undefined,
+									{
+										turn_type: 'permission_action',
+										...responseProvenanceForAction(action),
+									}
+								),
+						  ]
+						: []),
+					createFeedItem(
+						'system_status',
+						'Permission request declined',
+						'The session permission scope did not change, and this request will not continue.',
+						true,
+						now,
+						undefined,
+						undefined,
+						{
+							turn_type: 'permission_action',
+							...responseProvenanceForAction(action),
+						}
+					),
+				],
+			};
 		}
 
 		case 'interrupt_run': {

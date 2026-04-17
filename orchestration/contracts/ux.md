@@ -4,15 +4,16 @@ The VS Code extension is a thin human-facing webview client.
 
 ## Context Snapshot
 The orchestration layer may provide:
+- `sessionRef`
 - `lane`
 - `branch`
 - `task`
 - `currentActor`
 - `currentStage`
-- `accessMode`
+- `permissionScope`
 - `runState`
 - `transportState`
-- `pendingApproval`
+- `pendingPermissionRequest`
 - `pendingInterrupt`
 - `recentArtifacts`
 - `snapshotFreshness`
@@ -23,7 +24,7 @@ The orchestration layer may provide:
 - `system_status`
 - `actor_event`
 - `clarification_request`
-- `approval_request`
+- `permission_request`
 - `interrupt_request`
 - `artifact_reference`
 - `error`
@@ -32,7 +33,7 @@ The orchestration layer may provide:
 - `governed_work_intent`
 - `governor_dialogue`
 - `clarification_reply`
-- `approval_action`
+- `permission_action`
 - `stop_action`
 - `system`
 
@@ -49,8 +50,8 @@ Governor dialogue turns remain read-only by default.
 ## User Actions
 - `submit_prompt`
 - `answer_clarification`
-- `approve`
-- `full_access`
+- `set_permission_scope`
+- `decline_permission`
 - `interrupt_run`
 - `open_artifact`
 - `reveal_artifact_path`
@@ -65,8 +66,8 @@ Free-text commands:
 - `answer-clarification`
 
 Stateful control commands:
-- `approve`
-- `decline-or-hold`
+- `set-permission-scope`
+- `decline-permission`
 - `interrupt`
 - `reconnect`
 
@@ -87,18 +88,24 @@ preconditions must fail closed and must not trigger route guessing.
   - requires semantic classification to have completed for free-text routing
 - `answer-clarification`
   - requires an active clarification
+  - should carry the current `session_ref` once a session exists
   - requires a fresh matching `context_ref`
-- `approve`
-  - requires a currently pending approval
+- `set-permission-scope`
+  - requires a currently pending permission request
+  - requires a valid `permission_scope`
+  - should carry the current `session_ref` once a session exists
   - requires a fresh matching `context_ref`
-- `decline-or-hold`
-  - requires a currently pending approval
+- `decline-permission`
+  - requires a currently pending permission request
+  - should carry the current `session_ref` once a session exists
   - requires a fresh matching `context_ref`
 - `interrupt`
   - requires an interruptible running session state
+  - should carry the current `session_ref` once a session exists
   - requires a fresh matching `context_ref`
 - `reconnect`
   - requires reconnectable, stale, degraded, or disconnected session state
+  - should carry `session_ref` when reconnect targets a known session
 
 The controller may reject obviously invalid commands locally, but the session
 layer remains authoritative for state freshness and legality.
@@ -124,12 +131,13 @@ chain should reuse the same `in_response_to_request_id`.
 Commands tied to active session state should carry a current `context_ref`.
 
 - stale or mismatched `context_ref` values must fail closed
+- once a session exists, state-bound commands should normally carry `session_ref`
 - the controller must not assume a rendered UI card is still valid without
   state confirmation
 - this especially applies to:
   - `answer-clarification`
-  - `approve`
-  - `decline-or-hold`
+  - `set-permission-scope`
+  - `decline-permission`
   - `interrupt`
 
 ## Authority Boundary

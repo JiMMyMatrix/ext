@@ -26,8 +26,8 @@ type WebviewMessage =
 	| { type: 'ready' }
 	| { type: 'submit_prompt'; text?: string }
 	| { type: 'answer_clarification'; text?: string }
-	| { type: 'approve' }
-	| { type: 'full_access' }
+	| { type: 'set_permission_scope'; permissionScope?: 'observe' | 'plan' | 'execute' }
+	| { type: 'decline_permission' }
 	| { type: 'interrupt_run' }
 	| { type: 'open_artifact'; artifactId?: string }
 	| { type: 'reveal_artifact_path'; artifactId?: string }
@@ -160,9 +160,9 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		switch (actionType) {
 			case 'answer_clarification':
 				return this.model.activeClarification?.contextRef;
-			case 'approve':
-			case 'full_access':
-				return this.model.snapshot.pendingApproval?.contextRef;
+			case 'set_permission_scope':
+			case 'decline_permission':
+				return this.model.snapshot.pendingPermissionRequest?.contextRef;
 			case 'interrupt_run':
 				return this.model.snapshot.snapshotFreshness.receivedAt
 					? `interrupt:${this.model.snapshot.snapshotFreshness.receivedAt}`
@@ -177,6 +177,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			...action,
 			request_id: action.request_id ?? this.nextRequestId(),
 			context_ref: action.context_ref ?? this.contextRefForAction(action.type),
+			session_ref: action.session_ref ?? this.model.snapshot.sessionRef,
 		};
 	}
 
@@ -232,11 +233,17 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 					text: message.text ?? '',
 				}));
 				return;
-			case 'approve':
-				await this.applyAction(this.buildControllerAction({ type: 'approve' }));
+			case 'set_permission_scope':
+				if (!message.permissionScope) {
+					return;
+				}
+				await this.applyAction(this.buildControllerAction({
+					type: 'set_permission_scope',
+					permission_scope: message.permissionScope,
+				}));
 				return;
-			case 'full_access':
-				await this.applyAction(this.buildControllerAction({ type: 'full_access' }));
+			case 'decline_permission':
+				await this.applyAction(this.buildControllerAction({ type: 'decline_permission' }));
 				return;
 			case 'interrupt_run':
 				await this.applyAction(this.buildControllerAction({ type: 'interrupt_run' }));
@@ -354,7 +361,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				transportState: 'disconnected',
 				runState: 'idle',
 				recentArtifacts: [],
-				pendingApproval: undefined,
+				pendingPermissionRequest: undefined,
 				pendingInterrupt: undefined,
 			},
 			feed: [],
@@ -804,6 +811,33 @@ export function getExecutionWindowHtml(
 			line-height: 1.4;
 		}
 
+		.progress-cluster {
+			padding-top: 4px;
+		}
+
+		.progress-list {
+			margin-top: 2px;
+			padding-left: 16px;
+			font-size: 12px;
+		}
+
+		.progress-bullet {
+			color: var(--muted);
+		}
+
+		.progress-bullet.is-done {
+			color: var(--text);
+		}
+
+		.progress-bullet.is-active,
+		.progress-bullet.is-waiting {
+			color: var(--accent);
+		}
+
+		.progress-bullet.is-failed {
+			color: var(--danger);
+		}
+
 		.feed-divider {
 			display: grid;
 			grid-template-columns: 1fr auto 1fr;
@@ -960,7 +994,6 @@ export function getExecutionWindowHtml(
 			expandedIds: [],
 			scrollTop: 0,
 			initialFeedCount: undefined,
-			railExpanded: false,
 		};
 		if (shouldResetPersistedState) {
 			vscode.setState(defaultPersistedState);
@@ -979,12 +1012,7 @@ export function getExecutionWindowHtml(
 				typeof persisted.initialFeedCount === 'number'
 					? persisted.initialFeedCount
 					: undefined,
-			railExpanded: Boolean(persisted.railExpanded),
-			pendingSubmissionText: '',
-			pendingSubmissionActive: false,
-			pendingSubmissionTitle: '',
-			pendingSubmissionBody: '',
-			pendingSubmissionHint: '',
+			foregroundRequest: undefined,
 		};
 
 		const app = document.getElementById('app');
@@ -1004,7 +1032,6 @@ export function getExecutionWindowHtml(
 				expandedIds: Array.from(ui.expandedIds),
 				scrollTop: feed.scrollTop,
 				initialFeedCount: ui.initialFeedCount,
-				railExpanded: ui.railExpanded,
 			});
 		}
 
@@ -1042,8 +1069,8 @@ export function getExecutionWindowHtml(
 			if (snapshot.pendingInterrupt) {
 				return 'Stop pending';
 			}
-			if (snapshot.pendingApproval) {
-				return 'Waiting on you';
+			if (snapshot.pendingPermissionRequest) {
+				return 'Permission needed';
 			}
 			if (model?.activeClarification) {
 				return 'Needs input';
@@ -1071,8 +1098,8 @@ export function getExecutionWindowHtml(
 			if (model?.activeClarification) {
 				return 'One quick clarification will get this moving.';
 			}
-			if (snapshot.pendingApproval) {
-				return 'Waiting for your go-ahead before Corgi can continue.';
+			if (snapshot.pendingPermissionRequest) {
+				return 'Waiting for your permission choice before Corgi can continue.';
 			}
 			if (snapshot.pendingInterrupt) {
 				return snapshot.pendingInterrupt.body;
@@ -1122,7 +1149,7 @@ export function getExecutionWindowHtml(
 
 			if (
 				item.type === 'clarification_request' ||
-				item.type === 'approval_request' ||
+				item.type === 'permission_request' ||
 				item.type === 'interrupt_request' ||
 				item.type === 'error'
 			) {
@@ -1212,11 +1239,11 @@ export function getExecutionWindowHtml(
 			if (model?.activeClarification) {
 				chips.push('<span class="pill is-warning">Clarification</span>');
 			}
-			if (snapshot.pendingApproval) {
-				chips.push('<span class="pill is-warning">Approval</span>');
+			if (snapshot.pendingPermissionRequest) {
+				chips.push('<span class="pill is-warning">Permission</span>');
 			}
-			if (snapshot.accessMode === 'full_access') {
-				chips.push('<span class="pill is-primary">Full access</span>');
+			if (snapshot.permissionScope && snapshot.permissionScope !== 'unset') {
+				chips.push('<span class="pill is-primary">' + escapeHtml(snapshot.permissionScope) + '</span>');
 			}
 			if (snapshot.pendingInterrupt) {
 				chips.push('<span class="pill is-danger">Stop pending</span>');
@@ -1232,56 +1259,136 @@ export function getExecutionWindowHtml(
 			);
 		}
 
-		function pendingStateForCurrentStep(text) {
-			if (model?.activeClarification) {
-				return {
-					text,
-					title: 'Applying your clarification',
-					body: 'Corgi is updating the request with your answer and preparing the next step.',
-					hint: 'Updating your clarification...',
-				};
-			}
-
-			if (model?.snapshot?.pendingApproval) {
-				return {
-					text,
-					title: 'Reviewing your new request',
-					body: 'Corgi is replacing the previous approval checkpoint and checking the new request.',
-					hint: 'Reviewing your new request...',
-				};
-			}
-
-			if (model?.snapshot?.runState === 'running') {
-				return {
-					text,
-					title: 'Reviewing your message',
-					body: 'Corgi is deciding whether this should become a question, a stop, or a new request.',
-					hint: 'Reviewing your message...',
-				};
-			}
-
-			return {
-				text,
-				title: 'Reviewing your request',
-				body: 'Corgi is reading your prompt and deciding the next step.',
-				hint: 'Reviewing your request...',
-			};
+		function bulletId() {
+			return 'bullet-' + String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8);
 		}
 
-		function setPendingSubmission(pending) {
-			ui.pendingSubmissionText = pending.text || '';
-			ui.pendingSubmissionTitle = pending.title || '';
-			ui.pendingSubmissionBody = pending.body || '';
-			ui.pendingSubmissionHint = pending.hint || '';
-			ui.pendingSubmissionActive = true;
+		function ensureForegroundRequest(userText, hint) {
+			if (!ui.foregroundRequest) {
+				ui.foregroundRequest = {
+					id: 'foreground-' + String(Date.now()),
+					userText: userText || '',
+					status: 'live',
+					hint: hint || '',
+					bullets: [],
+				};
+			}
+			if (userText) {
+				ui.foregroundRequest.userText = userText;
+			}
+			if (hint) {
+				ui.foregroundRequest.hint = hint;
+			}
 		}
 
-		function clearPendingSubmission() {
-			ui.pendingSubmissionText = '';
-			ui.pendingSubmissionTitle = '';
-			ui.pendingSubmissionBody = '';
-			ui.pendingSubmissionHint = '';
-			ui.pendingSubmissionActive = false;
+		function appendForegroundBullet(label, state, hint) {
+			ensureForegroundRequest('', hint);
+			const bullets = ui.foregroundRequest.bullets;
+			const previous = bullets[bullets.length - 1];
+			if (previous && previous.state === 'active') {
+				previous.state = 'done';
+			}
+			bullets.push({
+				id: bulletId(),
+				label,
+				state: state || 'active',
+			});
+			if (hint) {
+				ui.foregroundRequest.hint = hint;
+			}
+		}
+
+		function replaceForegroundTail(label, state, hint) {
+			ensureForegroundRequest('', hint);
+			const bullets = ui.foregroundRequest.bullets;
+			if (bullets.length === 0) {
+				bullets.push({ id: bulletId(), label, state: state || 'active' });
+			} else {
+				bullets[bullets.length - 1] = {
+					...bullets[bullets.length - 1],
+					label,
+					state: state || bullets[bullets.length - 1].state,
+				};
+			}
+			if (hint) {
+				ui.foregroundRequest.hint = hint;
+			}
+		}
+
+		function freezeForegroundRequest(label, state, hint) {
+			if (!ui.foregroundRequest) {
+				return;
+			}
+			if (label) {
+				replaceForegroundTail(label, state || 'done', hint);
+			} else if (ui.foregroundRequest.bullets.length > 0) {
+				ui.foregroundRequest.bullets[ui.foregroundRequest.bullets.length - 1].state = state || 'done';
+			}
+			ui.foregroundRequest.status = 'frozen';
+			if (hint) {
+				ui.foregroundRequest.hint = hint;
+			}
+		}
+
+		function latestRequestError() {
+			if (!model) {
+				return undefined;
+			}
+			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
+				const item = model.feed[index];
+				if (item.type === 'error') {
+					return item;
+				}
+			}
+			return undefined;
+		}
+
+		function syncForegroundRequestFromModel() {
+			if (!ui.foregroundRequest || !model) {
+				return;
+			}
+
+			const snapshot = model.snapshot;
+			const latestError = latestRequestError();
+			if (latestError) {
+				freezeForegroundRequest(latestError.title, 'failed', 'Corgi needs your input before this can continue.');
+				return;
+			}
+
+			if (model.activeClarification) {
+				replaceForegroundTail('Waiting for clarification', 'waiting', 'Answer the clarification to continue this request.');
+				return;
+			}
+
+			if (snapshot.pendingPermissionRequest) {
+				replaceForegroundTail(
+					'Waiting for permission: ' + snapshot.pendingPermissionRequest.recommendedScope.charAt(0).toUpperCase() + snapshot.pendingPermissionRequest.recommendedScope.slice(1),
+					'waiting',
+					'Choose a permission scope to continue this request.'
+				);
+				return;
+			}
+
+			if (snapshot.pendingInterrupt) {
+				replaceForegroundTail('Stop requested', 'waiting', 'Waiting for orchestration to handle the stop request.');
+				return;
+			}
+
+			if (snapshot.runState === 'running') {
+				replaceForegroundTail('Execution started', 'active', 'Corgi is actively working on this request.');
+				return;
+			}
+
+			const latestItem = model.feed[model.feed.length - 1];
+			if (latestItem?.type === 'actor_event') {
+				freezeForegroundRequest('Governor responded', 'done', 'Corgi finished this request.');
+				return;
+			}
+
+			if (model.acceptedIntakeSummary) {
+				freezeForegroundRequest('Completed', 'done', 'Corgi finished this request.');
+				return;
+			}
 		}
 
 		function composerMode() {
@@ -1381,14 +1488,23 @@ export function getExecutionWindowHtml(
 				);
 			}
 
-			if (snapshot.pendingApproval) {
+			if (snapshot.pendingPermissionRequest) {
+				const scopes = Array.isArray(snapshot.pendingPermissionRequest.allowedScopes)
+					? snapshot.pendingPermissionRequest.allowedScopes
+					: ['observe', 'plan', 'execute'];
 				cards.push(
 					'<section class="action-card">' +
-						'<h2>' + escapeHtml(snapshot.pendingApproval.title) + '</h2>' +
-						'<p>' + escapeHtml(snapshot.pendingApproval.body) + '</p>' +
+						'<h2>' + escapeHtml(snapshot.pendingPermissionRequest.title) + '</h2>' +
+						'<p>' + escapeHtml(snapshot.pendingPermissionRequest.body) + '</p>' +
 						'<div class="card-actions">' +
-							'<button type="button" data-action="approve">Approve</button>' +
-							'<button type="button" class="secondary" data-action="full_access">Full access</button>' +
+							scopes.map((scope) =>
+								'<button type="button" ' +
+									(scope === snapshot.pendingPermissionRequest.recommendedScope ? '' : 'class="secondary" ') +
+									'data-action="set_permission_scope" data-permission-scope="' + escapeHtml(scope) + '">' +
+									escapeHtml(scope.charAt(0).toUpperCase() + scope.slice(1)) +
+								'</button>'
+							).join('') +
+							'<button type="button" class="secondary" data-action="decline_permission">Decline</button>' +
 						'</div>' +
 						renderArtifactQuickAction(currentQuickArtifact()) +
 					'</section>'
@@ -1406,7 +1522,7 @@ export function getExecutionWindowHtml(
 			} else if (canStop(snapshot)) {
 				cards.push(
 					'<section class="action-card">' +
-						'<h2>Working now</h2>' +
+						'<h2>Run controls</h2>' +
 						'<p>Corgi is handling the current request. Stop only if you need to interrupt it.</p>' +
 						'<div class="card-actions">' +
 							'<button type="button" class="secondary" data-action="interrupt_run">Stop</button>' +
@@ -1568,6 +1684,48 @@ export function getExecutionWindowHtml(
 			);
 		}
 
+		function renderForegroundRequest() {
+			if (!ui.foregroundRequest) {
+				return '';
+			}
+
+			const bullets = Array.isArray(ui.foregroundRequest.bullets)
+				? ui.foregroundRequest.bullets
+				: [];
+			const bulletMarkup =
+				bullets.length > 0
+					? '<ul class="detail-list progress-list">' +
+						bullets
+							.map(
+								(bullet) =>
+									'<li class="progress-bullet is-' +
+									escapeHtml(bullet.state || 'active') +
+									'">' +
+									escapeHtml(bullet.label) +
+									'</li>'
+							)
+							.join('') +
+					  '</ul>'
+					: '';
+
+			return (
+				(ui.foregroundRequest.userText
+					? '<article class="message user">' +
+						'<div class="message-body">' + escapeHtml(ui.foregroundRequest.userText) + '</div>' +
+					  '</article>'
+					: '') +
+				'<article class="message assistant is-informational progress-cluster ' +
+					(ui.foregroundRequest.status === 'frozen' ? 'is-frozen' : '') +
+				'">' +
+					'<div class="message-label">Corgi</div>' +
+					bulletMarkup +
+					(ui.foregroundRequest.hint
+						? '<div class="activity-summary">' + escapeHtml(ui.foregroundRequest.hint) + '</div>'
+						: '') +
+				'</article>'
+			);
+		}
+
 		function dividerMarkup(label) {
 			return '<div class="feed-divider" role="separator">' + escapeHtml(label) + '</div>';
 		}
@@ -1606,39 +1764,9 @@ export function getExecutionWindowHtml(
 				}
 				return markup;
 			}).filter((markup) => markup && markup.trim().length > 0);
-			if (ui.pendingSubmissionText) {
-				cards.push(
-					'<article class="message user">' +
-						'<div class="message-body">' +
-						escapeHtml(ui.pendingSubmissionText) +
-						'</div>' +
-					'</article>'
-				);
-				if (ui.pendingSubmissionActive) {
-					cards.push(
-						'<article class="message assistant is-informational">' +
-							'<div class="message-label">Corgi</div>' +
-							'<div class="message-body">' +
-							escapeHtml(ui.pendingSubmissionTitle || 'Working on it...') +
-							'</div>' +
-							(ui.pendingSubmissionBody
-								? '<div class="activity-summary">' + escapeHtml(ui.pendingSubmissionBody) + '</div>'
-								: '') +
-						'</article>'
-					);
-				}
-			} else if (ui.pendingSubmissionActive) {
-				cards.push(
-					'<article class="message assistant is-informational">' +
-						'<div class="message-label">Corgi</div>' +
-						'<div class="message-body">' +
-						escapeHtml(ui.pendingSubmissionTitle || 'Working on it...') +
-						'</div>' +
-						(ui.pendingSubmissionBody
-							? '<div class="activity-summary">' + escapeHtml(ui.pendingSubmissionBody) + '</div>'
-							: '') +
-					'</article>'
-				);
+			const foregroundMarkup = renderForegroundRequest();
+			if (foregroundMarkup) {
+				cards.push(foregroundMarkup);
 			}
 
 			feed.innerHTML =
@@ -1661,13 +1789,13 @@ export function getExecutionWindowHtml(
 		function renderComposer() {
 			const mode = composerMode();
 			const blocked = model?.snapshot?.transportState === 'disconnected';
-			const busy = ui.pendingSubmissionActive;
+			const busy = Boolean(ui.foregroundRequest && ui.foregroundRequest.status === 'live');
 			const chips = model ? renderContextChips(model.snapshot) : '';
 			composerInput.placeholder = mode.placeholder;
 			composerHint.textContent = blocked
 				? 'Open the repo/workspace folder that contains orchestration/scripts/orchestrate.py, then reopen Corgi.'
 				: busy
-					? (ui.pendingSubmissionHint || 'Corgi is processing your request...')
+					? (ui.foregroundRequest?.hint || 'Corgi is processing your request...')
 				: mode.hint;
 			composerSubmitButton.textContent = busy ? 'Sending...' : mode.buttonLabel;
 			composerInput.value = ui.draft;
@@ -1697,7 +1825,9 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
-			setPendingSubmission(pendingStateForCurrentStep(text));
+			ui.foregroundRequest = undefined;
+			ensureForegroundRequest(text, 'Model clarifying...');
+			appendForegroundBullet('Model clarifying', 'active', 'Model clarifying...');
 			vscode.postMessage({ type: 'submit_prompt', text });
 
 			ui.draft = '';
@@ -1728,12 +1858,8 @@ export function getExecutionWindowHtml(
 			if (clarificationTarget) {
 				const clarificationAnswer = clarificationTarget.dataset.clarificationAnswer;
 				if (clarificationAnswer) {
-					setPendingSubmission({
-						text: clarificationAnswer,
-						title: 'Applying your clarification',
-						body: 'Corgi is updating the request with your answer and preparing the next step.',
-						hint: 'Updating your clarification...',
-					});
+					appendForegroundBullet('Clarification received', 'done', 'Applying your clarification...');
+					appendForegroundBullet('Continuing request', 'active', 'Applying your clarification...');
 					renderFeed();
 					renderComposer();
 					vscode.postMessage({
@@ -1777,31 +1903,30 @@ export function getExecutionWindowHtml(
 			}
 
 			if (
-				action === 'approve' ||
-				action === 'full_access' ||
+				action === 'set_permission_scope' ||
+				action === 'decline_permission' ||
 				action === 'interrupt_run'
 			) {
-				if (action === 'approve') {
-					setPendingSubmission({
-						text: '',
-						title: 'Applying approval',
-						body: 'Corgi is accepting the current request and refreshing the session.',
-						hint: 'Applying your approval...',
-					});
-				} else if (action === 'full_access') {
-					setPendingSubmission({
-						text: '',
-						title: 'Enabling full access',
-						body: 'Corgi is enabling full access for this session and continuing the current request.',
-						hint: 'Enabling full access...',
-					});
+				if (action === 'set_permission_scope') {
+					const scope = target.dataset.permissionScope;
+					appendForegroundBullet(
+						scope
+							? 'Permission confirmed: ' + scope.charAt(0).toUpperCase() + scope.slice(1)
+							: 'Permission confirmed',
+						'done',
+						'Applying your permission choice...'
+					);
+					appendForegroundBullet('Continuing request', 'active', 'Applying your permission choice...');
+					renderFeed();
+					renderComposer();
+					vscode.postMessage({ type: 'set_permission_scope', permissionScope: scope });
+					return;
+				}
+				if (action === 'decline_permission') {
+					appendForegroundBullet('Permission declined', 'failed', 'This request will not continue.');
+					freezeForegroundRequest(undefined, 'failed', 'This request will not continue.');
 				} else {
-					setPendingSubmission({
-						text: '',
-						title: 'Requesting stop',
-						body: 'Corgi is asking orchestration to stop the current run.',
-						hint: 'Requesting stop...',
-					});
+					appendForegroundBullet('Stop requested', 'waiting', 'Requesting stop...');
 				}
 				renderFeed();
 				renderComposer();
@@ -1816,7 +1941,7 @@ export function getExecutionWindowHtml(
 			}
 
 			model = message.payload;
-			clearPendingSubmission();
+			syncForegroundRequestFromModel();
 			if (
 				typeof ui.initialFeedCount !== 'number' ||
 				(model?.feed?.length ?? 0) < ui.initialFeedCount
