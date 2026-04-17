@@ -349,6 +349,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!html.includes('Open</button>'));
 		assert.ok(!html.includes('Reveal</button>'));
 		assert.ok(!html.includes('Copy path</button>'));
+		assert.ok(!html.includes('<h1 class="header-title">Corgi</h1>'));
+		assert.ok(!html.includes('<div class="brand-mark">C</div>'));
 		assert.ok(html.includes("transportState === 'disconnected'"));
 		assert.ok(
 			html.includes(
@@ -375,6 +377,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!html.includes('<section class="session-rail" id="sessionRail"></section>'));
 		assert.ok(!html.includes('data-action="toggle_rail"'));
 		assert.ok(html.includes('Current work: '));
+		assert.ok(html.includes('<span class="status-dot '));
 		assert.ok(!html.includes('Lane: '));
 		assert.ok(!html.includes('Branch: '));
 	});

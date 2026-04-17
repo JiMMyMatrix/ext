@@ -486,50 +486,6 @@ export function getExecutionWindowHtml(
 			border-bottom: 1px solid var(--line);
 		}
 
-		.header-row {
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			gap: 10px;
-		}
-
-		.brand {
-			display: inline-flex;
-			align-items: center;
-			gap: 8px;
-			min-width: 0;
-		}
-
-		.brand-mark {
-			width: 22px;
-			height: 22px;
-			display: grid;
-			place-items: center;
-			border: 1px solid var(--line);
-			border-radius: 7px;
-			color: var(--muted);
-			font-weight: 700;
-			font-size: 11px;
-		}
-
-		.header-title {
-			margin: 0;
-			font-size: 13px;
-			font-weight: 600;
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-		}
-
-		.header-status {
-			display: inline-flex;
-			align-items: center;
-			gap: 6px;
-			color: var(--muted);
-			font-size: 11px;
-			white-space: nowrap;
-		}
-
 		.status-dot {
 			width: 7px;
 			height: 7px;
@@ -542,7 +498,6 @@ export function getExecutionWindowHtml(
 		}
 
 		.header-subline {
-			margin-top: 8px;
 			display: flex;
 			flex-wrap: wrap;
 			gap: 6px;
@@ -1431,18 +1386,14 @@ export function getExecutionWindowHtml(
 			if (stage) {
 				subline.push('<span class="pill">Stage: ' + escapeHtml(stage) + '</span>');
 			}
+			subline.push(
+				'<span class="pill">' +
+					'<span class="status-dot ' + (stale ? 'is-stale' : '') + '"></span>' +
+					escapeHtml(statusLabel(snapshot, stale)) +
+				'</span>'
+			);
 
 			headerContent.innerHTML =
-				'<div class="header-row">' +
-					'<div class="brand">' +
-						'<div class="brand-mark">C</div>' +
-						'<h1 class="header-title">Corgi</h1>' +
-					'</div>' +
-					'<div class="header-status">' +
-						'<span class="status-dot ' + (stale ? 'is-stale' : '') + '"></span>' +
-						'<span>' + escapeHtml(statusLabel(snapshot, stale)) + '</span>' +
-					'</div>' +
-				'</div>' +
 				'<div class="header-subline">' +
 					'<span class="pill is-primary">Current work: ' + escapeHtml(railTask) + '</span>' +
 					subline.join('') +
@@ -1689,6 +1640,14 @@ export function getExecutionWindowHtml(
 				return '';
 			}
 
+			const hasAuthoritativeUserEcho =
+				Boolean(model) &&
+				model.feed.some(
+					(item) =>
+						item.type === 'user_message' &&
+						(item.body || item.title) === ui.foregroundRequest.userText
+				);
+
 			const bullets = Array.isArray(ui.foregroundRequest.bullets)
 				? ui.foregroundRequest.bullets
 				: [];
@@ -1709,7 +1668,7 @@ export function getExecutionWindowHtml(
 					: '';
 
 			return (
-				(ui.foregroundRequest.userText
+				(ui.foregroundRequest.userText && !hasAuthoritativeUserEcho
 					? '<article class="message user">' +
 						'<div class="message-body">' + escapeHtml(ui.foregroundRequest.userText) + '</div>' +
 					  '</article>'
