@@ -870,13 +870,30 @@ export function getExecutionWindowHtml(
 		}
 
 		.progress-list {
+			list-style: none;
 			margin-top: 2px;
-			padding-left: 16px;
+			padding-left: 0;
 			font-size: 12px;
+			display: grid;
+			gap: 4px;
 		}
 
 		.progress-bullet {
+			display: grid;
+			grid-template-columns: 10px minmax(0, 1fr);
+			align-items: center;
+			gap: 8px;
 			color: var(--muted);
+		}
+
+		.progress-bullet::before {
+			content: '';
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			background: currentColor;
+			transform: scale(0.95);
+			opacity: 0.75;
 		}
 
 		.progress-bullet.is-done {
@@ -886,6 +903,26 @@ export function getExecutionWindowHtml(
 		.progress-bullet.is-active,
 		.progress-bullet.is-waiting {
 			color: var(--accent);
+		}
+
+		.progress-bullet-text {
+			display: inline-block;
+		}
+
+		.progress-bullet.is-active .progress-bullet-text,
+		.progress-bullet.is-waiting .progress-bullet-text {
+			background-image: linear-gradient(
+				90deg,
+				color-mix(in srgb, var(--accent) 72%, var(--muted)) 0%,
+				var(--text) 45%,
+				color-mix(in srgb, var(--accent) 72%, var(--muted)) 100%
+			);
+			background-size: 200% 100%;
+			background-position: 100% 50%;
+			-webkit-background-clip: text;
+			background-clip: text;
+			color: transparent;
+			animation: progressShimmer 1.8s linear infinite;
 		}
 
 		.progress-bullet.is-failed {
@@ -1008,6 +1045,15 @@ export function getExecutionWindowHtml(
 		@keyframes pulse {
 			50% {
 				opacity: 0.45;
+			}
+		}
+
+		@keyframes progressShimmer {
+			0% {
+				background-position: 120% 50%;
+			}
+			100% {
+				background-position: -40% 50%;
 			}
 		}
 
@@ -1824,7 +1870,6 @@ export function getExecutionWindowHtml(
 				'<article class="message assistant ' +
 					(item.authoritative ? '' : 'is-informational') +
 				'">' +
-					'<div class="message-label">Corgi</div>' +
 					'<div class="message-body">' + escapeHtml(item.body || item.title) + '</div>' +
 					(isMeaningfulMilestone(item)
 						? renderArtifactQuickAction(milestoneArtifact(item))
@@ -1900,7 +1945,9 @@ export function getExecutionWindowHtml(
 									'<li class="progress-bullet is-' +
 									escapeHtml(bullet.state || 'active') +
 									'">' +
-									escapeHtml(bullet.label) +
+									'<span class="progress-bullet-text">' +
+										escapeHtml(bullet.label) +
+									'</span>' +
 									'</li>'
 							)
 							.join('') +
@@ -1916,7 +1963,6 @@ export function getExecutionWindowHtml(
 				'<article class="message assistant is-informational progress-cluster ' +
 					(ui.foregroundRequest.status === 'frozen' ? 'is-frozen' : '') +
 				'">' +
-					'<div class="message-label">Corgi</div>' +
 					bulletMarkup +
 					(shouldRenderHint
 						? '<div class="activity-summary">' + escapeHtml(ui.foregroundRequest.hint) + '</div>'

@@ -339,6 +339,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('Model clarifying'));
 		assert.ok(html.includes('normalizeUiText'));
 		assert.ok(html.includes('latestRenderedAssistantItem'));
+		assert.ok(html.includes('progress-bullet-text'));
+		assert.ok(html.includes('@keyframes progressShimmer'));
+		assert.ok(!html.includes('@keyframes progressDotPulse'));
 		assert.ok(html.includes('Waiting for clarification'));
 		assert.ok(html.includes('Waiting for permission: '));
 		assert.ok(html.includes('Execution started'));
@@ -356,6 +359,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!html.includes('Copy path</button>'));
 		assert.ok(!html.includes('<h1 class="header-title">Corgi</h1>'));
 		assert.ok(!html.includes('<div class="brand-mark">C</div>'));
+		assert.ok(!html.includes('<div class="message-label">Corgi</div>'));
 		assert.ok(html.includes("transportState === 'disconnected'"));
 		assert.ok(
 			html.includes(
