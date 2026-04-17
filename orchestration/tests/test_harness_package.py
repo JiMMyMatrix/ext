@@ -413,6 +413,24 @@ class HarnessPackageTests(unittest.TestCase):
             )
             self.assertEqual(len(replay_clarifications), len(initial_clarifications))
 
+    def test_initial_state_persists_session_ref_for_first_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            state_model = session.dispatch_session_action("state", repo_root=repo_root)
+            session_ref = state_model["snapshot"]["sessionRef"]
+
+            next_model = session.dispatch_session_action(
+                "submit_prompt",
+                text="analyze the repo",
+                session_ref=session_ref,
+                request_id="corgi-request:first-request",
+                repo_root=repo_root,
+            )
+
+            self.assertNotEqual(next_model["feed"][-1]["type"], "error")
+            self.assertEqual(next_model["snapshot"]["sessionRef"], session_ref)
+            self.assertEqual(next_model["snapshot"]["currentStage"], "clarification_needed")
+
     def test_transition_module_records_and_loads_transition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)

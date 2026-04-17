@@ -495,7 +495,13 @@ def load_session(repo_root: str | Path | None = None) -> dict[str, Any]:
 	session_path = resolve_paths(repo_root).ui_session_path
 	payload = load_json(session_path, default=None)
 	if payload is None:
-		return {"model": _initial_model(now, repo_root=repo_root), "meta": {"activeIntakeRef": None}}
+		payload = {
+			"model": _initial_model(now, repo_root=repo_root),
+			"meta": {"activeIntakeRef": None},
+		}
+		_normalize_session(payload, now, repo_root=repo_root)
+		write_json(session_path, payload)
+		return payload
 	_normalize_session(payload, now, repo_root=repo_root)
 	return payload
 
