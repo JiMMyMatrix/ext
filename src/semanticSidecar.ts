@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -17,6 +17,7 @@ export const DEFAULT_SEMANTIC_SIDECAR_MODEL = 'gpt-5.4-mini';
 export const SEMANTIC_INPUT_VERSION = 'corgi-semantic-sidecar.v1';
 const SEMANTIC_CLARIFICATION_BUDGET = 2;
 const SEMANTIC_TIMEOUT_MS = 25_000;
+const SEMANTIC_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 type SemanticControllerState = {
 	current_actor?: string;
@@ -332,26 +333,91 @@ class CodexSemanticRunner implements SemanticRunner {
 
 		try {
 			const stdout = await new Promise<string>((resolve, reject) => {
-				execFile(
-					'codex',
-					args,
-					{
-						timeout: SEMANTIC_TIMEOUT_MS,
-						maxBuffer: 1024 * 1024,
-						env: {
-							...process.env,
-						},
+				const child = spawn('codex', args, {
+					env: {
+						...process.env,
 					},
-					(error, commandStdout, stderr) => {
-						if (error) {
+					stdio: ['pipe', 'pipe', 'pipe'],
+				});
+				child.stdin.end();
+
+				let settled = false;
+				let stdout = '';
+				let stderr = '';
+				let timedOut = false;
+
+				const finish = (callback: () => void) => {
+					if (settled) {
+						return;
+					}
+					settled = true;
+					clearTimeout(timeoutHandle);
+					callback();
+				};
+
+				const appendOutput = (
+					current: string,
+					chunk: Buffer | string,
+					label: 'stdout' | 'stderr'
+				) => {
+					const next = current + chunk.toString();
+					if (next.length > SEMANTIC_MAX_OUTPUT_BYTES) {
+						child.kill('SIGTERM');
+						finish(() =>
 							reject(
-								new Error(stderr.trim() || commandStdout.trim() || error.message)
+								new Error(
+									`Corgi semantic sidecar ${label} exceeded ${SEMANTIC_MAX_OUTPUT_BYTES} bytes.`
+								)
+							)
+						);
+						return current;
+					}
+					return next;
+				};
+
+				const timeoutHandle = setTimeout(() => {
+					timedOut = true;
+					child.kill('SIGTERM');
+				}, SEMANTIC_TIMEOUT_MS);
+
+				child.on('error', (error) => {
+					finish(() => reject(error));
+				});
+
+				child.stdout.on('data', (chunk) => {
+					stdout = appendOutput(stdout, chunk, 'stdout');
+				});
+				child.stderr.on('data', (chunk) => {
+					stderr = appendOutput(stderr, chunk, 'stderr');
+				});
+
+				child.on('close', (code, signal) => {
+					finish(() => {
+						if (timedOut) {
+							reject(
+								new Error(
+									stderr.trim() ||
+										stdout.trim() ||
+										`Corgi semantic sidecar timed out after ${SEMANTIC_TIMEOUT_MS}ms.`
+								)
 							);
 							return;
 						}
-						resolve(commandStdout);
-					}
-				);
+						if (code !== 0) {
+							reject(
+								new Error(
+									stderr.trim() ||
+										stdout.trim() ||
+										(signal
+											? `Corgi semantic sidecar exited via ${signal}.`
+											: `Corgi semantic sidecar exited with code ${code}.`)
+								)
+							);
+							return;
+						}
+						resolve(stdout);
+					});
+				});
 			});
 
 			const payload = fs.existsSync(outputPath)
