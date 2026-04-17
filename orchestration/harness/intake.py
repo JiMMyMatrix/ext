@@ -33,6 +33,41 @@ CLARIFICATION_PLACEHOLDER = (
 )
 
 
+def _sentence(text: str) -> str:
+	normalized = trim_text(text).rstrip(".!?")
+	if not normalized:
+		return ""
+	return normalized[0].upper() + normalized[1:] + "."
+
+
+def _humanize_draft_summary(goal: str, constraint: str) -> str:
+	goal_sentence = _sentence(goal)
+	normalized_constraint = trim_text(constraint).rstrip(".!?")
+	if not goal_sentence:
+		return summarize(_sentence(normalized_constraint), 96)
+	if not normalized_constraint:
+		return summarize(goal_sentence, 96)
+
+	lower = normalized_constraint.lower()
+	if lower.startswith(
+		(
+			"focus on ",
+			"keep ",
+			"preserve ",
+			"avoid ",
+			"use ",
+			"include ",
+			"highlight ",
+			"compare ",
+			"cover ",
+		)
+	):
+		body = f"{goal_sentence} {normalized_constraint}."
+	else:
+		body = f"{goal_sentence} Keep in mind: {normalized_constraint}."
+	return summarize(body, 96)
+
+
 def _clarification_request_for_prompt(prompt: str, intake_ref: str) -> dict[str, Any]:
 	now = utc_now()
 	lower = prompt.lower()
@@ -129,21 +164,25 @@ def accepted_intake_path(intake_ref: str, *, repo_root: str | Path | None = None
 	return intake_dir(intake_ref, repo_root=repo_root) / "accepted_intake.json"
 
 
-def _build_initial_draft(prompt: str, intake_ref: str, *, repo_root: str | Path | None = None) -> dict[str, Any]:
-	constraints = constraint_hints_from_text(prompt)
+def _build_initial_draft(
+	normalized_text: str, intake_ref: str, *, repo_root: str | Path | None = None
+) -> dict[str, Any]:
+	constraints = constraint_hints_from_text(normalized_text)
 	needs_clarification = len(constraints) == 0
 
 	return {
 		"intake_ref": intake_ref,
 		"shell_state": "clarification_needed" if needs_clarification else "ready_for_acceptance",
 		"raw_request_ref": repo_relative(raw_request_path(intake_ref, repo_root=repo_root), repo_root),
-		"draft_summary": summarize(prompt, 96),
-		"normalized_goal": trim_text(prompt),
+		"draft_summary": summarize(normalized_text, 96),
+		"normalized_goal": trim_text(normalized_text),
 		"constraints": constraints,
 		"clarification_history": [],
-		"clarification_request": _clarification_request_for_prompt(prompt, intake_ref) if needs_clarification else None,
+		"clarification_request": _clarification_request_for_prompt(normalized_text, intake_ref)
+		if needs_clarification
+		else None,
 		"lane_hint": None,
-		"task_hint": summarize(prompt, 60),
+		"task_hint": summarize(normalized_text, 60),
 	}
 
 
@@ -165,14 +204,20 @@ def _envelope_from_draft(draft: dict[str, Any], *, repo_root: str | Path | None 
 	}
 
 
-def start_intake(prompt: str, *, repo_root: str | Path | None = None) -> dict[str, Any]:
-	normalized = trim_text(prompt)
-	if not normalized:
+def start_intake(
+	prompt: str,
+	*,
+	normalized_text: str | None = None,
+	repo_root: str | Path | None = None,
+) -> dict[str, Any]:
+	raw_prompt = trim_text(prompt)
+	if not raw_prompt:
 		raise ValueError("prompt text is required")
 
-	intake_ref = next_intake_ref(normalized)
-	write_text(raw_request_path(intake_ref, repo_root=repo_root), normalized + "\n")
-	draft = _build_initial_draft(normalized, intake_ref, repo_root=repo_root)
+	semantic_prompt = trim_text(normalized_text) or raw_prompt
+	intake_ref = next_intake_ref(raw_prompt)
+	write_text(raw_request_path(intake_ref, repo_root=repo_root), raw_prompt + "\n")
+	draft = _build_initial_draft(semantic_prompt, intake_ref, repo_root=repo_root)
 	write_json(request_draft_path(intake_ref, repo_root=repo_root), draft)
 	return _envelope_from_draft(draft, repo_root=repo_root)
 
@@ -181,12 +226,14 @@ def answer_intake_clarification(
 	intake_ref: str,
 	answer: str,
 	*,
+	normalized_text: str | None = None,
 	repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
 	draft = load_json(request_draft_path(intake_ref, repo_root=repo_root))
-	normalized = trim_text(answer)
-	if not normalized:
+	raw_answer = trim_text(answer)
+	if not raw_answer:
 		raise ValueError("clarification answer is required")
+	semantic_answer = trim_text(normalized_text) or raw_answer
 
 	current_request = draft.get("clarification_request")
 	if not current_request:
@@ -197,21 +244,22 @@ def answer_intake_clarification(
 		{
 			"question": current_request["body"],
 			"askedAt": current_request["requestedAt"],
-			"answer": normalized,
+			"answer": semantic_answer,
 			"answeredAt": utc_now(),
 		}
 	)
 
 	constraints = unique_strings(
-		list(draft.get("constraints", [])) + constraint_hints_from_text(normalized) + [normalized]
+		list(draft.get("constraints", []))
+		+ constraint_hints_from_text(semantic_answer)
+		+ [semantic_answer]
 	)
 	draft["constraints"] = constraints
 	draft["clarification_history"] = history
 	draft["clarification_request"] = None
 	draft["shell_state"] = "ready_for_acceptance"
-	draft["draft_summary"] = summarize(
-		f"{draft['normalized_goal']} Constraint: {normalized}",
-		96,
+	draft["draft_summary"] = _humanize_draft_summary(
+		draft["normalized_goal"], semantic_answer
 	)
 	write_json(request_draft_path(intake_ref, repo_root=repo_root), draft)
 	return _envelope_from_draft(draft, repo_root=repo_root)

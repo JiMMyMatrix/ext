@@ -10,15 +10,51 @@ import {
 	isSnapshotStale,
 } from '../phase1Model';
 import {
+	createExecutionTransport,
+	resolveExecutionTransportTarget,
+	TransportUnavailableError,
+} from '../executionTransport';
+import {
+	DEFAULT_SEMANTIC_SIDECAR_MODEL,
+	resolveSemanticRouting,
+	type SemanticDecision,
+} from '../semanticSidecar';
+import {
 	EXECUTION_WINDOW_CONTAINER_ID,
 	EXECUTION_WINDOW_VIEW_ID,
 	getExecutionWindowHtml,
 } from '../executionWindowPanel';
 
 const PACKAGE_JSON_PATH = path.resolve(__dirname, '../../package.json');
+const LAUNCH_JSON_PATH = path.resolve(__dirname, '../../.vscode/launch.json');
 
 function loadPackageJson(): Record<string, unknown> {
 	return JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8')) as Record<string, unknown>;
+}
+
+function semanticContextFlags() {
+	return {
+		used_controller_summary: true,
+		used_accepted_intake_summary: false,
+		used_dialogue_summary: false,
+		had_active_clarification: false,
+		had_pending_approval: false,
+		had_pending_interrupt: false,
+	};
+}
+
+function semanticDecision(
+	overrides: Partial<SemanticDecision>
+): SemanticDecision {
+	return {
+		route_type: 'governed_work_intent',
+		action_name: 'none',
+		normalized_text: 'analyze the repo',
+		paraphrase: 'Ask Corgi to analyze the repo.',
+		confidence: 'high',
+		reason: 'clear_work_intent',
+		...overrides,
+	};
 }
 
 suite('Corgi Webview UX', () => {
@@ -52,6 +88,192 @@ suite('Corgi Webview UX', () => {
 
 		assert.ok(scriptMatch, 'Expected the generated webview HTML to contain an inline script.');
 		assert.doesNotThrow(() => new vm.Script(scriptMatch?.[1] ?? ''));
+	});
+
+	test('debug launch opens the current repo as the workspace', () => {
+		const launchJson = fs.readFileSync(LAUNCH_JSON_PATH, 'utf8');
+
+		assert.match(
+			launchJson,
+			/"args"\s*:\s*\[\s*"--extensionDevelopmentPath=\$\{workspaceFolder\}"\s*,\s*"\$\{workspaceFolder\}"/s
+		);
+	});
+
+	test('transport selection resolves the real orchestration workspace when available', () => {
+		const target = resolveExecutionTransportTarget(
+			vscode.ExtensionMode.Development,
+			vscode.Uri.file(path.resolve(__dirname, '../..')),
+			vscode.Uri.file('/tmp/not-used-because-workspace-wins')
+		);
+
+		assert.strictEqual(target.kind, 'orchestration');
+		if (target.kind === 'orchestration') {
+			assert.ok(target.scriptPath.endsWith('orchestration/scripts/orchestrate.py'));
+			assert.strictEqual(target.source, 'workspace');
+		}
+	});
+
+	test('transport selection falls back to the development extension repo when no workspace is open', async () => {
+		const target = resolveExecutionTransportTarget(
+			vscode.ExtensionMode.Development,
+			undefined,
+			vscode.Uri.file(path.resolve(__dirname, '../..'))
+		);
+		assert.strictEqual(target.kind, 'orchestration');
+		if (target.kind === 'orchestration') {
+			assert.strictEqual(target.source, 'extension_dev');
+		}
+
+		const transport = createExecutionTransport(
+			vscode.ExtensionMode.Development,
+			undefined,
+			vscode.Uri.file(path.resolve(__dirname, '../..'))
+		);
+		await assert.doesNotReject(() => transport.load());
+	});
+
+	test('transport selection fails closed in production when no workspace is open', async () => {
+		const target = resolveExecutionTransportTarget(
+			vscode.ExtensionMode.Production,
+			undefined,
+			vscode.Uri.file(path.resolve(__dirname, '../..'))
+		);
+		assert.strictEqual(target.kind, 'unavailable');
+		if (target.kind === 'unavailable') {
+			assert.strictEqual(target.title, 'Real orchestration workspace required');
+		}
+
+		const transport = createExecutionTransport(
+			vscode.ExtensionMode.Production,
+			undefined,
+			vscode.Uri.file(path.resolve(__dirname, '../..'))
+		);
+		await assert.rejects(
+			() => transport.load(),
+			(error: unknown) =>
+				error instanceof TransportUnavailableError &&
+				error.title === 'Real orchestration workspace required'
+		);
+	});
+
+	test('transport selection fails closed when neither workspace nor development repo contains orchestrate', async () => {
+		const target = resolveExecutionTransportTarget(
+			vscode.ExtensionMode.Development,
+			undefined,
+			vscode.Uri.file('/tmp/corgi-missing-root')
+		);
+		assert.strictEqual(target.kind, 'unavailable');
+		if (target.kind === 'unavailable') {
+			assert.strictEqual(target.title, 'Real orchestration workspace required');
+		}
+	});
+
+	test('semantic sidecar defaults to gpt-5.4-mini', () => {
+		assert.strictEqual(DEFAULT_SEMANTIC_SIDECAR_MODEL, 'gpt-5.4-mini');
+	});
+
+	test('semantic routing maps approval intent only when approval is pending', () => {
+		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+			type: 'submit_prompt',
+			text: 'Build a compact execution window for phase 1.',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+		const approvalModel = applyModelAction(promptModel, {
+			type: 'answer_clarification',
+			text: 'Keep current actor and current stage visible.',
+			now: '2026-04-10T10:00:10.000Z',
+		});
+		const resolution = resolveSemanticRouting(
+			approvalModel,
+			'go ahead',
+			semanticDecision({
+				route_type: 'explicit_action',
+				action_name: 'approve',
+				normalized_text: 'approve',
+				paraphrase: 'Approve the pending intake.',
+			}),
+			undefined,
+			'semantic-summary:test',
+			{
+				...semanticContextFlags(),
+				had_pending_approval: true,
+			}
+		);
+
+		assert.strictEqual(resolution.kind, 'dispatch');
+		if (resolution.kind === 'dispatch') {
+			assert.strictEqual(resolution.action.type, 'approve');
+			assert.strictEqual(resolution.action.text, 'go ahead');
+			assert.strictEqual(resolution.action.semantic_route_type, 'explicit_action');
+		}
+	});
+
+	test('semantic routing blocks clarification replies when no clarification is active', () => {
+		const resolution = resolveSemanticRouting(
+			createInitialModel('2026-04-10T10:00:00.000Z'),
+			'architecture',
+			semanticDecision({
+				route_type: 'clarification_reply',
+				normalized_text: 'architecture',
+				paraphrase: 'Answer the current clarification with architecture.',
+			}),
+			undefined,
+			'semantic-summary:test',
+			semanticContextFlags()
+		);
+
+		assert.strictEqual(resolution.kind, 'block');
+		if (resolution.kind === 'block') {
+			assert.match(resolution.body, /There is no active clarification/i);
+		}
+	});
+
+	test('semantic routing exhausts the clarification budget conservatively', () => {
+		const resolution = resolveSemanticRouting(
+			createInitialModel('2026-04-10T10:00:00.000Z'),
+			'do whatever is best',
+			semanticDecision({
+				route_type: 'block',
+				action_name: 'none',
+				normalized_text: 'do whatever is best',
+				paraphrase: '',
+				confidence: 'low',
+				reason: 'mixed_or_ambiguous',
+			}),
+			{
+				attempts: 2,
+				exhausted: false,
+				lastQuestion: 'Please restate this more directly.',
+			},
+			'semantic-summary:test',
+			semanticContextFlags()
+		);
+
+		assert.strictEqual(resolution.kind, 'block');
+		if (resolution.kind === 'block') {
+			assert.strictEqual(resolution.nextLoopState.exhausted, true);
+			assert.match(resolution.body, /not confident enough to route that safely/i);
+		}
+	});
+
+	test('webview transcript treats requests as assistant replies and separates new turns', () => {
+		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
+
+		assert.ok(html.includes('feed-divider'));
+		assert.ok(html.includes('Current turn'));
+		assert.ok(html.includes('initialFeedCount'));
+		assert.ok(!html.includes('request-marker'));
+		assert.ok(!html.includes('renderRequestMarker'));
+		assert.ok(!html.includes("return renderRequestMarker(item);"));
+		assert.ok(!html.includes('Open</button>'));
+		assert.ok(!html.includes('Reveal</button>'));
+		assert.ok(!html.includes('Copy path</button>'));
+		assert.ok(html.includes("transportState === 'disconnected'"));
+		assert.ok(
+			html.includes(
+				'Open the repo/workspace folder that contains orchestration/scripts/orchestrate.py, then reopen Corgi.'
+			)
+		);
 	});
 
 	test('submit prompt moves the model into clarification state', () => {
@@ -90,6 +312,20 @@ suite('Corgi Webview UX', () => {
 
 		assert.strictEqual(model.snapshot.currentStage, initialModel.snapshot.currentStage);
 		assert.strictEqual(model.snapshot.currentActor, initialModel.snapshot.currentActor);
+		assert.strictEqual(model.activeClarification, undefined);
+		assert.strictEqual(model.snapshot.pendingApproval, undefined);
+		assert.ok(model.feed.some((item) => item.type === 'actor_event'));
+	});
+
+	test('natural progress questions route to governor dialogue', () => {
+		const initialModel = createInitialModel('2026-04-10T10:00:00.000Z');
+		const model = applyModelAction(initialModel, {
+			type: 'submit_prompt',
+			text: 'what happen?',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+
+		assert.strictEqual(model.snapshot.currentStage, initialModel.snapshot.currentStage);
 		assert.strictEqual(model.activeClarification, undefined);
 		assert.strictEqual(model.snapshot.pendingApproval, undefined);
 		assert.ok(model.feed.some((item) => item.type === 'actor_event'));
@@ -136,11 +372,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(runningModel.acceptedIntakeSummary);
 		assert.ok(runningModel.snapshot.recentArtifacts.length >= 2);
 		assert.ok(getArtifactById(runningModel, 'artifact-orchestration-readme'));
-		assert.ok(
-			runningModel.feed.some(
-				(item) => item.type === 'artifact_reference' && item.artifact.path
-			)
-		);
+		assert.ok(!runningModel.feed.some((item) => item.type === 'artifact_reference'));
 	});
 
 	test('full access accepts the draft and marks the session as running', () => {

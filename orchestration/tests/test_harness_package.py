@@ -18,7 +18,12 @@ from orchestration.harness import (
     start_guard,
     transition,
 )
-from orchestration.harness.paths import load_json, repo_relative, write_json
+from orchestration.harness.paths import load_json
+from orchestration.harness.scenario_fixtures import (
+    list_scenarios,
+    materialize_scenario,
+    temporary_scenario_repo,
+)
 
 
 class HarnessPackageTests(unittest.TestCase):
@@ -43,6 +48,29 @@ class HarnessPackageTests(unittest.TestCase):
                 repo_root=repo_root,
             )
             self.assertTrue((repo_root / accepted["accepted_intake_ref"]).exists())
+
+    def test_intake_preserves_raw_text_but_uses_normalized_text_for_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            envelope = intake.start_intake(
+                "analyze the repo",
+                normalized_text="Analyze the repo while focusing on architecture, structure, and subsystem boundaries.",
+                repo_root=repo_root,
+            )
+
+            raw_request = intake.raw_request_path(envelope["intake_ref"], repo_root=repo_root).read_text(
+                encoding="utf-8"
+            )
+            draft = load_json(
+                intake.request_draft_path(envelope["intake_ref"], repo_root=repo_root)
+            )
+
+            self.assertEqual(raw_request.strip(), "analyze the repo")
+            self.assertEqual(
+                draft["normalized_goal"],
+                "Analyze the repo while focusing on architecture, structure, and subsystem boundaries.",
+            )
+            self.assertIn("architecture", draft["draft_summary"].lower())
 
     def test_session_module_preserves_current_model_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -83,19 +111,38 @@ class HarnessPackageTests(unittest.TestCase):
                 any(item["type"] == "actor_event" for item in model["feed"])
             )
 
-    def test_session_governor_dialogue_reads_accepted_intake_artifact(self) -> None:
+    def test_session_natural_follow_up_questions_route_to_governor_dialogue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
             model = session.dispatch_session_action(
                 "submit_prompt",
-                text="Implement the sidebar while preserving inline artifact actions.",
+                text="what happen?",
                 repo_root=repo_root,
             )
-            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
 
-            model = session.dispatch_session_action("approve", repo_root=repo_root)
-            actor_event_count = len([item for item in model["feed"] if item["type"] == "actor_event"])
+            self.assertEqual(model["snapshot"]["currentStage"], "idle")
+            self.assertIsNone(model["activeClarification"])
+            self.assertIsNone(model["snapshot"]["pendingApproval"])
+            self.assertFalse((repo_root / ".agent" / "intakes").exists())
+            self.assertTrue(
+                any(item["type"] == "actor_event" for item in model["feed"])
+            )
 
+    def test_scenario_fixture_loader_materializes_checked_in_state(self) -> None:
+        self.assertIn("accepted_idle", list_scenarios())
+        self.assertIn("completed_with_governor_decision", list_scenarios())
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = materialize_scenario("accepted_idle", tmp_dir)
+            self.assertTrue(
+                (repo_root / ".agent" / "orchestration" / "ui_session.json").exists()
+            )
+            self.assertTrue(
+                (repo_root / ".agent" / "intakes" / "fixture-accepted-idle" / "accepted_intake.json").exists()
+            )
+
+    def test_session_governor_dialogue_reads_accepted_intake_artifact(self) -> None:
+        with temporary_scenario_repo("accepted_idle") as repo_root:
             model = session.dispatch_session_action(
                 "submit_prompt",
                 text="What is the current progress?",
@@ -103,81 +150,12 @@ class HarnessPackageTests(unittest.TestCase):
             )
 
             actor_events = [item for item in model["feed"] if item["type"] == "actor_event"]
-            self.assertEqual(len(actor_events), actor_event_count + 1)
             latest = actor_events[-1]
             self.assertIn("accepted intake", latest["body"])
             self.assertTrue(str(latest.get("source_artifact_ref", "")).endswith("accepted_intake.json"))
 
     def test_session_governor_dialogue_reads_dispatch_and_transition_artifacts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            repo_root = Path(tmp_dir)
-            model = session.dispatch_session_action(
-                "submit_prompt",
-                text="Implement the sidebar while preserving inline artifact actions.",
-                repo_root=repo_root,
-            )
-            model = session.dispatch_session_action("approve", repo_root=repo_root)
-            lane = model["snapshot"]["lane"]
-
-            dispatch_ref = "lane/intake/dispatch-001"
-            from orchestration.harness import dispatch
-
-            emit_result = dispatch.emit_main(
-                [
-                    "--dispatch-ref",
-                    dispatch_ref,
-                    "--objective",
-                    "Summarize current lane progress for the sidebar.",
-                    "--lane",
-                    lane,
-                    "--root",
-                    str(repo_root),
-                ]
-            )
-            self.assertEqual(emit_result, 0)
-
-            dispatch_dir = repo_root / ".agent" / "dispatches" / Path(dispatch_ref)
-            result_path = dispatch_dir / "result.json"
-            decision_path = dispatch_dir / "governor_decision.json"
-            write_json(
-                result_path,
-                {
-                    "dispatch_ref": dispatch_ref,
-                    "status": "completed",
-                    "scope_respected": True,
-                    "runtime_behavior_changed": False,
-                    "summary": "Completed successfully.",
-                    "artifacts": [],
-                    "blocker": None,
-                },
-            )
-            write_json(
-                decision_path,
-                {
-                    "dispatch_ref": dispatch_ref,
-                    "result_ref": repo_relative(result_path, repo_root),
-                    "review_ref": None,
-                    "decision": "accept",
-                    "reason": "Looks good.",
-                    "recommended_next_action": "governor_may_accept",
-                },
-            )
-            transition.record_transition(
-                repo_root,
-                transition.build_transition_payload(
-                    repo_root=repo_root,
-                    lane=lane,
-                    source="governor_finalize_dispatch",
-                    transition="continue_internal",
-                    next_action_kind="emit_dispatch",
-                    next_action_ref=dispatch_ref,
-                    next_action_summary="Continue dispatch flow.",
-                    dispatch_ref=dispatch_ref,
-                    decision_ref=repo_relative(decision_path, repo_root),
-                    evidence_refs=[repo_relative(result_path, repo_root)],
-                ),
-            )
-
+        with temporary_scenario_repo("completed_with_governor_decision") as repo_root:
             model = session.dispatch_session_action(
                 "submit_prompt",
                 text="What is the current progress?",
@@ -185,11 +163,37 @@ class HarnessPackageTests(unittest.TestCase):
             )
             actor_events = [item for item in model["feed"] if item["type"] == "actor_event"]
             latest = actor_events[-1]
-            self.assertIn(dispatch_ref, latest["body"])
+            self.assertIn("lane/intake/dispatch-001", latest["body"])
             self.assertIn("Result status is completed", latest["body"])
             self.assertIn("Governor decision is accept", latest["body"])
-            self.assertEqual(latest["source_artifact_ref"], repo_relative(decision_path, repo_root))
+            self.assertEqual(
+                latest["source_artifact_ref"],
+                ".agent/dispatches/lane/intake/dispatch-001/governor_decision.json",
+            )
             self.assertTrue(any("Proposed transition:" in detail for detail in latest.get("details", [])))
+
+    def test_session_state_reads_ready_for_acceptance_fixture(self) -> None:
+        with temporary_scenario_repo("ready_for_acceptance") as repo_root:
+            model = session.dispatch_session_action("state", repo_root=repo_root)
+            self.assertEqual(model["snapshot"]["currentStage"], "ready_for_acceptance")
+            self.assertIsNotNone(model["snapshot"]["pendingApproval"])
+            self.assertIsNone(model["activeClarification"])
+
+    def test_session_state_reads_running_dispatch_fixture(self) -> None:
+        with temporary_scenario_repo("running_dispatch") as repo_root:
+            model = session.dispatch_session_action("state", repo_root=repo_root)
+            self.assertEqual(model["snapshot"]["runState"], "running")
+            self.assertEqual(model["snapshot"]["currentActor"], "governor")
+
+            progress_model = session.dispatch_session_action(
+                "submit_prompt",
+                text="What is the current progress?",
+                repo_root=repo_root,
+            )
+            actor_events = [item for item in progress_model["feed"] if item["type"] == "actor_event"]
+            latest = actor_events[-1]
+            self.assertIn("lane/intake/dispatch-001", latest["body"])
+            self.assertIn("state in_progress", latest["body"])
 
     def test_session_analysis_prompt_returns_structured_clarification_options(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -301,6 +305,46 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(clarification_items[0]["source_layer"], "intake")
             self.assertEqual(clarification_items[0]["source_actor"], "intake_shell")
             self.assertEqual(clarification_items[0]["turn_type"], "governed_work_intent")
+
+    def test_session_uses_semantic_normalized_text_but_preserves_raw_human_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="analyze the repo",
+                turn_type="governed_work_intent",
+                normalized_text="Analyze the repo while focusing on architecture, structure, and subsystem boundaries.",
+                paraphrase="Ask Corgi to analyze the repo with an architecture focus.",
+                semantic_input_version="corgi-semantic-sidecar.v1",
+                semantic_summary_ref="semantic-summary:test",
+                semantic_context_flags={
+                    "used_controller_summary": True,
+                    "used_accepted_intake_summary": False,
+                    "used_dialogue_summary": False,
+                    "had_active_clarification": False,
+                    "had_pending_approval": False,
+                    "had_pending_interrupt": False,
+                },
+                semantic_route_type="governed_work_intent",
+                semantic_confidence="high",
+                repo_root=repo_root,
+            )
+
+            user_items = [item for item in model["feed"] if item["type"] == "user_message"]
+            self.assertEqual(user_items[-1]["body"], "analyze the repo")
+            self.assertEqual(
+                user_items[-1]["semantic_normalized_text"],
+                "Analyze the repo while focusing on architecture, structure, and subsystem boundaries.",
+            )
+
+            active_intake_ref = session.load_session(repo_root)["meta"]["activeIntakeRef"]
+            draft = load_json(
+                intake.request_draft_path(active_intake_ref, repo_root=repo_root)
+            )
+            self.assertEqual(
+                draft["normalized_goal"],
+                "Analyze the repo while focusing on architecture, structure, and subsystem boundaries.",
+            )
 
     def test_transition_module_records_and_loads_transition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

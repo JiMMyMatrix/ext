@@ -45,6 +45,14 @@ def _feed_item(
 	source_actor: str | None = None,
 	source_artifact_ref: str | None = None,
 	turn_type: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
 ) -> dict[str, Any]:
 	default_provenance = _default_feed_provenance(item_type)
 	payload: dict[str, Any] = {
@@ -65,6 +73,22 @@ def _feed_item(
 		payload["activity"] = activity
 	if source_artifact_ref:
 		payload["source_artifact_ref"] = source_artifact_ref
+	if semantic_input_version:
+		payload["semantic_input_version"] = semantic_input_version
+	if semantic_summary_ref:
+		payload["semantic_summary_ref"] = semantic_summary_ref
+	if semantic_context_flags is not None:
+		payload["semantic_context_flags"] = semantic_context_flags
+	if semantic_route_type:
+		payload["semantic_route_type"] = semantic_route_type
+	if semantic_confidence:
+		payload["semantic_confidence"] = semantic_confidence
+	if semantic_block_reason:
+		payload["semantic_block_reason"] = semantic_block_reason
+	if semantic_paraphrase:
+		payload["semantic_paraphrase"] = semantic_paraphrase
+	if semantic_normalized_text:
+		payload["semantic_normalized_text"] = semantic_normalized_text
 	return payload
 
 
@@ -140,6 +164,16 @@ def _classify_turn(prompt: str) -> str:
 		"what are you doing",
 		"what is the current",
 		"what's the current",
+		"what happened",
+		"what happen",
+		"what's happening",
+		"what is happening",
+		"what's going on",
+		"what is going on",
+		"how is it going",
+		"how's it going",
+		"any update",
+		"update me",
 		"why",
 		"explain",
 		"help me understand",
@@ -433,6 +467,69 @@ def public_model(session: dict[str, Any]) -> dict[str, Any]:
 	return session["model"]
 
 
+def _semantic_provenance(
+	*,
+	turn_type: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
+) -> dict[str, Any]:
+	return {
+		"turn_type": turn_type,
+		"semantic_input_version": semantic_input_version,
+		"semantic_summary_ref": semantic_summary_ref,
+		"semantic_context_flags": semantic_context_flags,
+		"semantic_route_type": semantic_route_type,
+		"semantic_confidence": semantic_confidence,
+		"semantic_block_reason": semantic_block_reason,
+		"semantic_paraphrase": semantic_paraphrase,
+		"semantic_normalized_text": semantic_normalized_text,
+	}
+
+
+def _append_user_turn(
+	model: dict[str, Any],
+	now: str,
+	*,
+	title: str,
+	body: str,
+	turn_type: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
+) -> None:
+	model["feed"].append(
+		_feed_item(
+			"user_message",
+			title,
+			body,
+			authoritative=False,
+			now=now,
+			**_semantic_provenance(
+				turn_type=turn_type,
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=semantic_paraphrase,
+				semantic_normalized_text=semantic_normalized_text,
+			),
+		)
+	)
+
+
 def _current_access_mode(model: dict[str, Any]) -> str:
 	return model["snapshot"].get("accessMode") or "approval_required"
 
@@ -467,6 +564,14 @@ def _accept_pending_intake(
 	repo_root: str | Path | None = None,
 	enable_full_access: bool = False,
 	turn_type: str = "system",
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
 ) -> bool:
 	model = session["model"]
 	intake_ref = session["meta"].get("activeIntakeRef")
@@ -520,15 +625,23 @@ def _accept_pending_intake(
 	model["feed"].append(
 		_feed_item(
 			"system_status",
-			"Full access enabled" if access_mode == "full_access" else "Intake accepted",
+			"Full access enabled" if access_mode == "full_access" else "Ready to continue",
 			summary,
 			authoritative=True,
 			now=now,
-			turn_type=turn_type,
+			**_semantic_provenance(
+				turn_type=turn_type,
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=semantic_paraphrase,
+				semantic_normalized_text=semantic_normalized_text,
+			),
 		)
 	)
-	for artifact in artifacts:
-		model["feed"].append(_artifact_feed_item(artifact, now))
 	_refresh_snapshot(
 		model,
 		now,
@@ -540,7 +653,21 @@ def _accept_pending_intake(
 	return True
 
 
-def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str | Path | None = None) -> None:
+def handle_submit_prompt(
+	session: dict[str, Any],
+	text: str,
+	*,
+	repo_root: str | Path | None = None,
+	turn_type: str | None = None,
+	normalized_text: str | None = None,
+	paraphrase: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+) -> None:
 	now = utc_now()
 	model = session["model"]
 	prompt = trim_text(text)
@@ -548,22 +675,28 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 		_append_error(model, "Prompt required", "Enter a prompt before sending it.", now)
 		return
 
-	turn_type = _classify_turn(prompt)
-	if turn_type == "governor_dialogue":
+	semantic_prompt = trim_text(normalized_text) or prompt
+	resolved_turn_type = turn_type or _classify_turn(semantic_prompt)
+	if resolved_turn_type == "governor_dialogue":
 		body, details, primary_ref = _build_governor_dialogue(
 			session,
-			prompt,
+			semantic_prompt,
 			repo_root=repo_root,
 		)
-		model["feed"].append(
-			_feed_item(
-				"user_message",
-				"Governor question",
-				prompt,
-				authoritative=False,
-				now=now,
-				turn_type=turn_type,
-			)
+		_append_user_turn(
+			model,
+			now,
+			title="Governor question",
+			body=prompt,
+			turn_type=resolved_turn_type,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=paraphrase,
+			semantic_normalized_text=semantic_prompt,
 		)
 		model["feed"].append(
 			_feed_item(
@@ -576,25 +709,40 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 				source_layer="governor",
 				source_actor="governor",
 				source_artifact_ref=primary_ref,
-				turn_type=turn_type,
+				**_semantic_provenance(
+					turn_type=resolved_turn_type,
+					semantic_input_version=semantic_input_version,
+					semantic_summary_ref=semantic_summary_ref,
+					semantic_context_flags=semantic_context_flags,
+					semantic_route_type=semantic_route_type,
+					semantic_confidence=semantic_confidence,
+					semantic_block_reason=semantic_block_reason,
+					semantic_paraphrase=paraphrase,
+					semantic_normalized_text=semantic_prompt,
+				),
 			)
 		)
 		_refresh_snapshot(model, now, transportState="connected")
 		return
 
 	_supersede_pending_approval(model, now)
-	envelope = start_intake(prompt, repo_root=repo_root)
+	envelope = start_intake(prompt, normalized_text=semantic_prompt, repo_root=repo_root)
 	session["meta"]["activeIntakeRef"] = envelope["intake_ref"]
 
-	model["feed"].append(
-		_feed_item(
-			"user_message",
-			"Prompt submitted",
-			prompt,
-			authoritative=False,
-			now=now,
-			turn_type=turn_type,
-		)
+	_append_user_turn(
+		model,
+		now,
+		title="Prompt submitted",
+		body=prompt,
+		turn_type=resolved_turn_type,
+		semantic_input_version=semantic_input_version,
+		semantic_summary_ref=semantic_summary_ref,
+		semantic_context_flags=semantic_context_flags,
+		semantic_route_type=semantic_route_type,
+		semantic_confidence=semantic_confidence,
+		semantic_block_reason=semantic_block_reason,
+		semantic_paraphrase=paraphrase,
+		semantic_normalized_text=semantic_prompt,
 	)
 	model["feed"].append(
 		_feed_item(
@@ -608,13 +756,23 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 				"Intake acceptance remains orchestration-owned.",
 			],
 			activity={"kind": "status", "state": "completed", "summary": "Draft updated"},
-			turn_type=turn_type,
+			**_semantic_provenance(
+				turn_type=resolved_turn_type,
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=paraphrase,
+				semantic_normalized_text=semantic_prompt,
+			),
 		)
 	)
 	model["acceptedIntakeSummary"] = None
 	model["snapshot"]["pendingInterrupt"] = None
 	model["snapshot"]["recentArtifacts"] = []
-	model["snapshot"]["task"] = envelope.get("task_hint") or summarize(prompt, 60)
+	model["snapshot"]["task"] = envelope.get("task_hint") or summarize(semantic_prompt, 60)
 	model["snapshot"]["branch"] = model["snapshot"].get("branch") or git_branch_name(repo_root)
 
 	if envelope["shell_state"] == "clarification_needed":
@@ -628,7 +786,17 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 				clarification["body"],
 				authoritative=True,
 				now=now,
-				turn_type=turn_type,
+				**_semantic_provenance(
+					turn_type=resolved_turn_type,
+					semantic_input_version=semantic_input_version,
+					semantic_summary_ref=semantic_summary_ref,
+					semantic_context_flags=semantic_context_flags,
+					semantic_route_type=semantic_route_type,
+					semantic_confidence=semantic_confidence,
+					semantic_block_reason=semantic_block_reason,
+					semantic_paraphrase=paraphrase,
+					semantic_normalized_text=semantic_prompt,
+				),
 			)
 		)
 		_refresh_snapshot(
@@ -645,29 +813,48 @@ def handle_submit_prompt(session: dict[str, Any], text: str, *, repo_root: str |
 	if _current_access_mode(model) == "full_access":
 		model["snapshot"]["pendingApproval"] = _request_card(
 			"Accept intake",
-			"Approve this accepted intake draft or grant full access so orchestration can continue.",
+			"Approve or grant full access when you're ready to continue.",
 			now,
 		)
 		_accept_pending_intake(
 			session,
 			now,
 			repo_root=repo_root,
-			turn_type=turn_type,
+			turn_type=resolved_turn_type,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=paraphrase,
+			semantic_normalized_text=semantic_prompt,
 		)
 		return
 
 	model["snapshot"]["pendingApproval"] = _request_card(
 		"Accept intake",
-		"Approve this accepted intake draft or grant full access so orchestration can continue.",
+		"Approve or grant full access when you're ready to continue.",
 		now,
 	)
 	model["feed"].append(
 		_feed_item(
 			"approval_request",
 			"Accept intake",
-			"Orchestration is waiting for approval or full access before canonical acceptance.",
+			"Approve or grant full access when you're ready to continue.",
 			authoritative=True,
 			now=now,
+			**_semantic_provenance(
+				turn_type=resolved_turn_type,
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=paraphrase,
+				semantic_normalized_text=semantic_prompt,
+			),
 		)
 	)
 	_refresh_snapshot(
@@ -685,6 +872,14 @@ def handle_answer_clarification(
 	text: str,
 	*,
 	repo_root: str | Path | None = None,
+	normalized_text: str | None = None,
+	paraphrase: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -708,16 +903,27 @@ def handle_answer_clarification(
 		)
 		return
 
-	envelope = answer_intake_clarification(intake_ref, answer, repo_root=repo_root)
-	model["feed"].append(
-		_feed_item(
-			"user_message",
-			"Clarification answered",
-			answer,
-			authoritative=False,
-			now=now,
-			turn_type="clarification_reply",
-		)
+	semantic_answer = trim_text(normalized_text) or answer
+	envelope = answer_intake_clarification(
+		intake_ref,
+		answer,
+		normalized_text=semantic_answer,
+		repo_root=repo_root,
+	)
+	_append_user_turn(
+		model,
+		now,
+		title="Clarification answered",
+		body=answer,
+		turn_type="clarification_reply",
+		semantic_input_version=semantic_input_version,
+		semantic_summary_ref=semantic_summary_ref,
+		semantic_context_flags=semantic_context_flags,
+		semantic_route_type=semantic_route_type,
+		semantic_confidence=semantic_confidence,
+		semantic_block_reason=semantic_block_reason,
+		semantic_paraphrase=paraphrase,
+		semantic_normalized_text=semantic_answer,
 	)
 	model["feed"].append(
 		_feed_item(
@@ -727,13 +933,23 @@ def handle_answer_clarification(
 			authoritative=False,
 			now=now,
 			activity={"kind": "status", "state": "completed", "summary": "Ready for acceptance"},
-			turn_type="clarification_reply",
+			**_semantic_provenance(
+				turn_type="clarification_reply",
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=paraphrase,
+				semantic_normalized_text=semantic_answer,
+			),
 		)
 	)
 	model["activeClarification"] = None
 	model["snapshot"]["pendingApproval"] = _request_card(
 		"Accept intake",
-		"Approve this accepted intake draft or grant full access so orchestration can continue.",
+		"Approve or grant full access when you're ready to continue.",
 		now,
 	)
 	if _current_access_mode(model) == "full_access":
@@ -742,16 +958,34 @@ def handle_answer_clarification(
 			now,
 			repo_root=repo_root,
 			turn_type="clarification_reply",
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=paraphrase,
+			semantic_normalized_text=semantic_answer,
 		)
 		return
 	model["feed"].append(
 		_feed_item(
 			"approval_request",
 			"Accept intake",
-			"Orchestration is waiting for approval or full access before canonical acceptance.",
+			"Approve or grant full access when you're ready to continue.",
 			authoritative=True,
 			now=now,
-			turn_type="clarification_reply",
+			**_semantic_provenance(
+				turn_type="clarification_reply",
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=paraphrase,
+				semantic_normalized_text=semantic_answer,
+			),
 		)
 	)
 	_refresh_snapshot(
@@ -764,19 +998,102 @@ def handle_answer_clarification(
 	)
 
 
-def handle_approve(session: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+def handle_approve(
+	session: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+	text: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
+) -> None:
 	now = utc_now()
-	_accept_pending_intake(session, now, repo_root=repo_root, turn_type="approval_action")
+	model = session["model"]
+	raw_text = trim_text(text or "")
+	if raw_text:
+		_append_user_turn(
+			model,
+			now,
+			title="Approval requested",
+			body=raw_text,
+			turn_type="approval_action",
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=semantic_paraphrase,
+			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text,
+		)
+	_accept_pending_intake(
+		session,
+		now,
+		repo_root=repo_root,
+		turn_type="approval_action",
+		semantic_input_version=semantic_input_version,
+		semantic_summary_ref=semantic_summary_ref,
+		semantic_context_flags=semantic_context_flags,
+		semantic_route_type=semantic_route_type,
+		semantic_confidence=semantic_confidence,
+		semantic_block_reason=semantic_block_reason,
+		semantic_paraphrase=semantic_paraphrase,
+		semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
+	)
 
 
-def handle_full_access(session: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+def handle_full_access(
+	session: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+	text: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
+) -> None:
 	now = utc_now()
+	model = session["model"]
+	raw_text = trim_text(text or "")
+	if raw_text:
+		_append_user_turn(
+			model,
+			now,
+			title="Full access requested",
+			body=raw_text,
+			turn_type="approval_action",
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=semantic_paraphrase,
+			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text,
+		)
 	_accept_pending_intake(
 		session,
 		now,
 		repo_root=repo_root,
 		enable_full_access=True,
 		turn_type="approval_action",
+		semantic_input_version=semantic_input_version,
+		semantic_summary_ref=semantic_summary_ref,
+		semantic_context_flags=semantic_context_flags,
+		semantic_route_type=semantic_route_type,
+		semantic_confidence=semantic_confidence,
+		semantic_block_reason=semantic_block_reason,
+		semantic_paraphrase=semantic_paraphrase,
+		semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
 	)
 
 
@@ -807,9 +1124,23 @@ def handle_decline_or_hold(session: dict[str, Any], *, repo_root: str | Path | N
 	)
 
 
-def handle_interrupt(session: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+def handle_interrupt(
+	session: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+	text: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
+) -> None:
 	now = utc_now()
 	model = session["model"]
+	raw_text = trim_text(text or "")
 	if model["snapshot"].get("runState") != "running":
 		_append_error(
 			model,
@@ -831,6 +1162,22 @@ def handle_interrupt(session: dict[str, Any], *, repo_root: str | Path | None = 
 		"Stop has been requested and is waiting for orchestration handling.",
 		now,
 	)
+	if raw_text:
+		_append_user_turn(
+			model,
+			now,
+			title="Stop requested",
+			body=raw_text,
+			turn_type="stop_action",
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=semantic_paraphrase,
+			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text,
+		)
 	model["feed"].append(
 		_feed_item(
 			"interrupt_request",
@@ -838,7 +1185,17 @@ def handle_interrupt(session: dict[str, Any], *, repo_root: str | Path | None = 
 			"Stop has been requested and is waiting for orchestration handling.",
 			authoritative=True,
 			now=now,
-			turn_type="stop_action",
+			**_semantic_provenance(
+				turn_type="stop_action",
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=semantic_paraphrase,
+				semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
+			),
 		)
 	)
 	_refresh_snapshot(
@@ -871,20 +1228,90 @@ def dispatch_session_action(
 	*,
 	text: str | None = None,
 	repo_root: str | Path | None = None,
+	turn_type: str | None = None,
+	normalized_text: str | None = None,
+	paraphrase: str | None = None,
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
 ) -> dict[str, Any]:
 	session = load_session(repo_root)
 	if command == "submit_prompt":
-		handle_submit_prompt(session, text or "", repo_root=repo_root)
+		handle_submit_prompt(
+			session,
+			text or "",
+			repo_root=repo_root,
+			turn_type=turn_type,
+			normalized_text=normalized_text,
+			paraphrase=paraphrase,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+		)
 	elif command == "answer_clarification":
-		handle_answer_clarification(session, text or "", repo_root=repo_root)
+		handle_answer_clarification(
+			session,
+			text or "",
+			repo_root=repo_root,
+			normalized_text=normalized_text,
+			paraphrase=paraphrase,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+		)
 	elif command == "approve":
-		handle_approve(session, repo_root=repo_root)
+		handle_approve(
+			session,
+			repo_root=repo_root,
+			text=text,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=paraphrase,
+			semantic_normalized_text=normalized_text,
+		)
 	elif command == "full_access":
-		handle_full_access(session, repo_root=repo_root)
+		handle_full_access(
+			session,
+			repo_root=repo_root,
+			text=text,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=paraphrase,
+			semantic_normalized_text=normalized_text,
+		)
 	elif command == "decline_or_hold":
 		handle_decline_or_hold(session, repo_root=repo_root)
 	elif command == "interrupt_run":
-		handle_interrupt(session, repo_root=repo_root)
+		handle_interrupt(
+			session,
+			repo_root=repo_root,
+			text=text,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=paraphrase,
+			semantic_normalized_text=normalized_text,
+		)
 	elif command == "reconnect":
 		handle_reconnect(session, repo_root=repo_root)
 	elif command != "state":
@@ -902,14 +1329,62 @@ def build_parser() -> argparse.ArgumentParser:
 
 	submit = subparsers.add_parser("submit_prompt")
 	submit.add_argument("--text", required=True)
+	submit.add_argument("--turn-type")
+	submit.add_argument("--normalized-text")
+	submit.add_argument("--paraphrase")
+	submit.add_argument("--semantic-input-version")
+	submit.add_argument("--semantic-summary-ref")
+	submit.add_argument("--semantic-context-flags-json")
+	submit.add_argument("--semantic-route-type")
+	submit.add_argument("--semantic-confidence")
+	submit.add_argument("--semantic-block-reason")
 
 	answer = subparsers.add_parser("answer_clarification")
 	answer.add_argument("--text", required=True)
+	answer.add_argument("--turn-type")
+	answer.add_argument("--normalized-text")
+	answer.add_argument("--paraphrase")
+	answer.add_argument("--semantic-input-version")
+	answer.add_argument("--semantic-summary-ref")
+	answer.add_argument("--semantic-context-flags-json")
+	answer.add_argument("--semantic-route-type")
+	answer.add_argument("--semantic-confidence")
+	answer.add_argument("--semantic-block-reason")
 
-	subparsers.add_parser("approve")
-	subparsers.add_parser("full_access")
+	approve = subparsers.add_parser("approve")
+	approve.add_argument("--text")
+	approve.add_argument("--turn-type")
+	approve.add_argument("--normalized-text")
+	approve.add_argument("--paraphrase")
+	approve.add_argument("--semantic-input-version")
+	approve.add_argument("--semantic-summary-ref")
+	approve.add_argument("--semantic-context-flags-json")
+	approve.add_argument("--semantic-route-type")
+	approve.add_argument("--semantic-confidence")
+	approve.add_argument("--semantic-block-reason")
+	full_access = subparsers.add_parser("full_access")
+	full_access.add_argument("--text")
+	full_access.add_argument("--turn-type")
+	full_access.add_argument("--normalized-text")
+	full_access.add_argument("--paraphrase")
+	full_access.add_argument("--semantic-input-version")
+	full_access.add_argument("--semantic-summary-ref")
+	full_access.add_argument("--semantic-context-flags-json")
+	full_access.add_argument("--semantic-route-type")
+	full_access.add_argument("--semantic-confidence")
+	full_access.add_argument("--semantic-block-reason")
 	subparsers.add_parser("decline_or_hold")
-	subparsers.add_parser("interrupt_run")
+	interrupt = subparsers.add_parser("interrupt_run")
+	interrupt.add_argument("--text")
+	interrupt.add_argument("--turn-type")
+	interrupt.add_argument("--normalized-text")
+	interrupt.add_argument("--paraphrase")
+	interrupt.add_argument("--semantic-input-version")
+	interrupt.add_argument("--semantic-summary-ref")
+	interrupt.add_argument("--semantic-context-flags-json")
+	interrupt.add_argument("--semantic-route-type")
+	interrupt.add_argument("--semantic-confidence")
+	interrupt.add_argument("--semantic-block-reason")
 	subparsers.add_parser("reconnect")
 	return parser
 
@@ -917,12 +1392,24 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) -> int:
 	args = build_parser().parse_args(argv)
 	try:
+		semantic_context_flags = None
+		if getattr(args, "semantic_context_flags_json", None):
+			semantic_context_flags = json.loads(args.semantic_context_flags_json)
 		model = dispatch_session_action(
 			args.command,
 			text=getattr(args, "text", None),
 			repo_root=repo_root,
+			turn_type=getattr(args, "turn_type", None),
+			normalized_text=getattr(args, "normalized_text", None),
+			paraphrase=getattr(args, "paraphrase", None),
+			semantic_input_version=getattr(args, "semantic_input_version", None),
+			semantic_summary_ref=getattr(args, "semantic_summary_ref", None),
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=getattr(args, "semantic_route_type", None),
+			semantic_confidence=getattr(args, "semantic_confidence", None),
+			semantic_block_reason=getattr(args, "semantic_block_reason", None),
 		)
-	except ValueError as exc:
+	except (ValueError, json.JSONDecodeError) as exc:
 		raise SystemExit(str(exc))
 	print(json.dumps(model, indent=2, sort_keys=True))
 	return 0

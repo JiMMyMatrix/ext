@@ -2,32 +2,121 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import {
-	applyModelAction,
-	createInitialModel,
-	type ExecutionWindowModel,
-	type ModelAction,
-} from './phase1Model';
+import { type ExecutionWindowModel, type ModelAction } from './phase1Model';
 
 export interface ExecutionTransport {
 	load(): Promise<ExecutionWindowModel>;
 	dispatch(action: ModelAction): Promise<ExecutionWindowModel>;
 }
 
-class MockExecutionTransport implements ExecutionTransport {
-	private model: ExecutionWindowModel;
+export class TransportUnavailableError extends Error {
+	public readonly title: string;
+	public readonly details: string[];
 
-	constructor() {
-		this.model = createInitialModel();
+	constructor(title: string, body: string, details: string[] = []) {
+		super(body);
+		this.name = 'TransportUnavailableError';
+		this.title = title;
+		this.details = details;
+	}
+}
+
+export type ExecutionTransportTarget =
+	| {
+			kind: 'orchestration';
+			cwd: string;
+			scriptPath: string;
+			source: 'workspace' | 'extension_dev';
+	  }
+	| {
+			kind: 'unavailable';
+			title: string;
+			body: string;
+			details: string[];
+	  };
+
+function orchestrationTarget(
+	rootPath: string,
+	source: 'workspace' | 'extension_dev'
+): Extract<ExecutionTransportTarget, { kind: 'orchestration' }> {
+	return {
+		kind: 'orchestration',
+		cwd: rootPath,
+		scriptPath: path.join(rootPath, 'orchestration', 'scripts', 'orchestrate.py'),
+		source,
+	};
+}
+
+function missingWorkspaceTarget(): ExecutionTransportTarget {
+	return {
+		kind: 'unavailable',
+		title: 'Real orchestration workspace required',
+		body: 'Corgi needs an open workspace folder that contains orchestration/scripts/orchestrate.py before it can run.',
+		details: [
+			'Open the repo/workspace folder that contains orchestration/scripts/orchestrate.py.',
+			'Reload or reopen the Corgi sidebar after the workspace is available.',
+		],
+	};
+}
+
+function missingOrchestrationTarget(workspaceRoot: vscode.Uri): ExecutionTransportTarget {
+	return {
+		kind: 'unavailable',
+		title: 'Orchestration CLI not found',
+		body: `The current workspace does not contain orchestration/scripts/orchestrate.py under ${workspaceRoot.fsPath}.`,
+		details: [
+			'Open the repo/workspace folder that contains orchestration/scripts/orchestrate.py.',
+			'If you are testing seeded state, load the scenario into that same repo and then reopen Corgi.',
+		],
+	};
+}
+
+export function resolveExecutionTransportTarget(
+	extensionMode: vscode.ExtensionMode,
+	workspaceRoot: vscode.Uri | undefined,
+	extensionUri?: vscode.Uri
+): ExecutionTransportTarget {
+	if (workspaceRoot) {
+		const workspaceTarget = orchestrationTarget(workspaceRoot.fsPath, 'workspace');
+		if (fs.existsSync(workspaceTarget.scriptPath)) {
+			return workspaceTarget;
+		}
+		return missingOrchestrationTarget(workspaceRoot);
+	}
+
+	if (
+		extensionMode === vscode.ExtensionMode.Development &&
+		extensionUri
+	) {
+		const extensionTarget = orchestrationTarget(
+			extensionUri.fsPath,
+			'extension_dev'
+		);
+		if (fs.existsSync(extensionTarget.scriptPath)) {
+			return extensionTarget;
+		}
+	}
+
+	return missingWorkspaceTarget();
+}
+
+class UnavailableExecutionTransport implements ExecutionTransport {
+	private readonly error: TransportUnavailableError;
+
+	constructor(target: Extract<ExecutionTransportTarget, { kind: 'unavailable' }>) {
+		this.error = new TransportUnavailableError(
+			target.title,
+			target.body,
+			target.details
+		);
 	}
 
 	public async load(): Promise<ExecutionWindowModel> {
-		return this.model;
+		throw this.error;
 	}
 
-	public async dispatch(action: ModelAction): Promise<ExecutionWindowModel> {
-		this.model = applyModelAction(this.model, action);
-		return this.model;
+	public async dispatch(_action: ModelAction): Promise<ExecutionWindowModel> {
+		throw this.error;
 	}
 }
 
@@ -35,14 +124,9 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	private readonly scriptPath: string;
 	private readonly cwd: string;
 
-	constructor(workspaceRoot: vscode.Uri) {
-		this.cwd = workspaceRoot.fsPath;
-		this.scriptPath = path.join(
-			this.cwd,
-			'orchestration',
-			'scripts',
-			'orchestrate.py'
-		);
+	constructor(target: Extract<ExecutionTransportTarget, { kind: 'orchestration' }>) {
+		this.cwd = target.cwd;
+		this.scriptPath = target.scriptPath;
 	}
 
 	public async load(): Promise<ExecutionWindowModel> {
@@ -52,24 +136,66 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	public async dispatch(action: ModelAction): Promise<ExecutionWindowModel> {
 		switch (action.type) {
 			case 'submit_prompt':
-				return this.run('session', 'submit-prompt', action.text);
+				return this.run('session', 'submit-prompt', action);
 			case 'answer_clarification':
-				return this.run('session', 'answer-clarification', action.text);
+				return this.run('session', 'answer-clarification', action);
 			case 'approve':
-				return this.run('session', 'approve');
+				return this.run('session', 'approve', action);
 			case 'full_access':
-				return this.run('session', 'full-access');
+				return this.run('session', 'full-access', action);
 			case 'interrupt_run':
-				return this.run('session', 'interrupt');
+				return this.run('session', 'interrupt', action);
 			case 'reconnect':
 				return this.run('session', 'reconnect');
 		}
 	}
 
-	private run(group: string, command: string, text?: string): Promise<ExecutionWindowModel> {
+	private run(group: string, command: string, action?: ModelAction): Promise<ExecutionWindowModel> {
 		const args = [this.scriptPath, group, command];
-		if (typeof text === 'string') {
-			args.push('--text', text);
+		if (action && 'text' in action && typeof action.text === 'string') {
+			args.push('--text', action.text);
+		}
+		if (action && action.type !== 'reconnect') {
+			if (action.semantic_route_type) {
+				switch (action.semantic_route_type) {
+					case 'governed_work_intent':
+					case 'governor_dialogue':
+					case 'clarification_reply':
+						args.push('--turn-type', action.semantic_route_type);
+						break;
+					case 'explicit_action':
+						args.push(
+							'--turn-type',
+							action.type === 'interrupt_run' ? 'stop_action' : 'approval_action'
+						);
+						break;
+				}
+				args.push('--semantic-route-type', action.semantic_route_type);
+			}
+			if (action.semantic_normalized_text) {
+				args.push('--normalized-text', action.semantic_normalized_text);
+			}
+			if (action.semantic_paraphrase) {
+				args.push('--paraphrase', action.semantic_paraphrase);
+			}
+			if (action.semantic_input_version) {
+				args.push('--semantic-input-version', action.semantic_input_version);
+			}
+			if (action.semantic_summary_ref) {
+				args.push('--semantic-summary-ref', action.semantic_summary_ref);
+			}
+			if (action.semantic_context_flags) {
+				args.push(
+					'--semantic-context-flags-json',
+					JSON.stringify(action.semantic_context_flags)
+				);
+			}
+			if (action.semantic_confidence) {
+				args.push('--semantic-confidence', action.semantic_confidence);
+			}
+			if (action.semantic_block_reason) {
+				args.push('--semantic-block-reason', action.semantic_block_reason);
+			}
 		}
 
 		return new Promise((resolve, reject) => {
@@ -110,17 +236,17 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 
 export function createExecutionTransport(
 	extensionMode: vscode.ExtensionMode,
-	workspaceRoot: vscode.Uri | undefined
+	workspaceRoot: vscode.Uri | undefined,
+	extensionUri?: vscode.Uri
 ): ExecutionTransport {
-	if (
-		workspaceRoot &&
-		extensionMode !== vscode.ExtensionMode.Test &&
-		fs.existsSync(
-			path.join(workspaceRoot.fsPath, 'orchestration', 'scripts', 'orchestrate.py')
-		)
-	) {
-		return new OrchestrationExecutionTransport(workspaceRoot);
+	const target = resolveExecutionTransportTarget(
+		extensionMode,
+		workspaceRoot,
+		extensionUri
+	);
+	if (target.kind === 'orchestration') {
+		return new OrchestrationExecutionTransport(target);
 	}
 
-	return new MockExecutionTransport();
+	return new UnavailableExecutionTransport(target);
 }

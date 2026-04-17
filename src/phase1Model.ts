@@ -31,6 +31,41 @@ export type TurnType =
 	| 'stop_action'
 	| 'system';
 
+export type SemanticRouteType =
+	| 'governed_work_intent'
+	| 'governor_dialogue'
+	| 'clarification_reply'
+	| 'explicit_action'
+	| 'block';
+
+export type SemanticConfidence = 'high' | 'low';
+
+export type SemanticActionName =
+	| 'approve'
+	| 'full_access'
+	| 'interrupt_run'
+	| 'none';
+
+export interface SemanticContextFlags {
+	used_controller_summary: boolean;
+	used_accepted_intake_summary: boolean;
+	used_dialogue_summary: boolean;
+	had_active_clarification: boolean;
+	had_pending_approval: boolean;
+	had_pending_interrupt: boolean;
+}
+
+export interface SemanticMetadata {
+	semantic_input_version?: string;
+	semantic_summary_ref?: string;
+	semantic_context_flags?: SemanticContextFlags;
+	semantic_route_type?: SemanticRouteType;
+	semantic_confidence?: SemanticConfidence;
+	semantic_block_reason?: string;
+	semantic_paraphrase?: string;
+	semantic_normalized_text?: string;
+}
+
 export type ActivityKind =
 	| 'read'
 	| 'search'
@@ -127,6 +162,14 @@ interface FeedItemShared {
 	source_actor?: string;
 	source_artifact_ref?: string;
 	turn_type?: TurnType;
+	semantic_input_version?: string;
+	semantic_summary_ref?: string;
+	semantic_context_flags?: SemanticContextFlags;
+	semantic_route_type?: SemanticRouteType;
+	semantic_confidence?: SemanticConfidence;
+	semantic_block_reason?: string;
+	semantic_paraphrase?: string;
+	semantic_normalized_text?: string;
 }
 
 interface FeedItemBase extends FeedItemShared {
@@ -148,11 +191,11 @@ export interface ExecutionWindowModel {
 }
 
 export type ModelAction =
-	| { type: 'submit_prompt'; text: string; now?: string }
-	| { type: 'answer_clarification'; text: string; now?: string }
-	| { type: 'approve'; now?: string }
-	| { type: 'full_access'; now?: string }
-	| { type: 'interrupt_run'; now?: string }
+	| ({ type: 'submit_prompt'; text: string; now?: string } & SemanticMetadata)
+	| ({ type: 'answer_clarification'; text: string; now?: string } & SemanticMetadata)
+	| ({ type: 'approve'; text?: string; now?: string } & SemanticMetadata)
+	| ({ type: 'full_access'; text?: string; now?: string } & SemanticMetadata)
+	| ({ type: 'interrupt_run'; text?: string; now?: string } & SemanticMetadata)
 	| { type: 'reconnect'; now?: string };
 
 let idCounter = 0;
@@ -236,7 +279,18 @@ function createFeedItem(
 	provenance?: Partial<
 		Pick<
 			FeedItemShared,
-			'source_layer' | 'source_actor' | 'source_artifact_ref' | 'turn_type'
+			| 'source_layer'
+			| 'source_actor'
+			| 'source_artifact_ref'
+			| 'turn_type'
+			| 'semantic_input_version'
+			| 'semantic_summary_ref'
+			| 'semantic_context_flags'
+			| 'semantic_route_type'
+			| 'semantic_confidence'
+			| 'semantic_block_reason'
+			| 'semantic_paraphrase'
+			| 'semantic_normalized_text'
 		>
 	>
 ): FeedItemBase {
@@ -254,6 +308,14 @@ function createFeedItem(
 		source_actor: provenance?.source_actor ?? defaults.source_actor,
 		source_artifact_ref: provenance?.source_artifact_ref,
 		turn_type: provenance?.turn_type ?? defaults.turn_type,
+		semantic_input_version: provenance?.semantic_input_version,
+		semantic_summary_ref: provenance?.semantic_summary_ref,
+		semantic_context_flags: provenance?.semantic_context_flags,
+		semantic_route_type: provenance?.semantic_route_type,
+		semantic_confidence: provenance?.semantic_confidence,
+		semantic_block_reason: provenance?.semantic_block_reason,
+		semantic_paraphrase: provenance?.semantic_paraphrase,
+		semantic_normalized_text: provenance?.semantic_normalized_text,
 	};
 }
 
@@ -354,6 +416,66 @@ export function appendError(
 	};
 }
 
+export function appendControllerSemanticClarification(
+	model: ExecutionWindowModel,
+	rawText: string,
+	body: string,
+	semantic: SemanticMetadata,
+	now = new Date().toISOString()
+): ExecutionWindowModel {
+	return {
+		...model,
+		snapshot: refreshSnapshot(model.snapshot, now, {
+			transportState: 'connected',
+		}),
+		feed: [
+			...model.feed,
+			createFeedItem(
+				'user_message',
+				'Prompt submitted',
+				trimAndNormalize(rawText),
+				false,
+				now,
+				undefined,
+				undefined,
+				{
+					source_layer: 'dialog_controller',
+					source_actor: 'human',
+					semantic_input_version: semantic.semantic_input_version,
+					semantic_summary_ref: semantic.semantic_summary_ref,
+					semantic_context_flags: semantic.semantic_context_flags,
+					semantic_route_type: semantic.semantic_route_type,
+					semantic_confidence: semantic.semantic_confidence,
+					semantic_block_reason: semantic.semantic_block_reason,
+					semantic_paraphrase: semantic.semantic_paraphrase,
+					semantic_normalized_text: semantic.semantic_normalized_text,
+				}
+			),
+			createFeedItem(
+				'system_status',
+				'Need a clearer instruction',
+				body,
+				true,
+				now,
+				undefined,
+				undefined,
+				{
+					source_layer: 'dialog_controller',
+					source_actor: 'semantic_sidecar',
+					semantic_input_version: semantic.semantic_input_version,
+					semantic_summary_ref: semantic.semantic_summary_ref,
+					semantic_context_flags: semantic.semantic_context_flags,
+					semantic_route_type: semantic.semantic_route_type,
+					semantic_confidence: semantic.semantic_confidence,
+					semantic_block_reason: semantic.semantic_block_reason,
+					semantic_paraphrase: semantic.semantic_paraphrase,
+					semantic_normalized_text: semantic.semantic_normalized_text,
+				}
+			),
+		],
+	};
+}
+
 function supersedePendingApproval(
 	model: ExecutionWindowModel,
 	now: string
@@ -382,6 +504,16 @@ function classifyTurn(text: string): TurnType {
 		'what are you doing',
 		'what is the current',
 		"what's the current",
+		'what happened',
+		'what happen',
+		"what's happening",
+		'what is happening',
+		"what's going on",
+		'what is going on',
+		'how is it going',
+		"how's it going",
+		'any update',
+		'update me',
 		'why',
 		'explain',
 		'help me understand',
@@ -394,6 +526,38 @@ function classifyTurn(text: string): TurnType {
 	return dialogueTokens.some((token) => lower.includes(token))
 		? 'governor_dialogue'
 		: 'governed_work_intent';
+}
+
+function resolveTurnTypeFromSemanticRoute(
+	routeType: SemanticRouteType | undefined,
+	fallbackText: string
+): TurnType {
+	if (routeType === 'governor_dialogue') {
+		return 'governor_dialogue';
+	}
+	if (routeType === 'clarification_reply') {
+		return 'clarification_reply';
+	}
+	if (routeType === 'explicit_action' || routeType === 'block') {
+		return 'system';
+	}
+	return classifyTurn(fallbackText);
+}
+
+function semanticProvenanceForAction(action: ModelAction): SemanticMetadata {
+	if (action.type === 'reconnect') {
+		return {};
+	}
+	return {
+		semantic_input_version: action.semantic_input_version,
+		semantic_summary_ref: action.semantic_summary_ref,
+		semantic_context_flags: action.semantic_context_flags,
+		semantic_route_type: action.semantic_route_type,
+		semantic_confidence: action.semantic_confidence,
+		semantic_block_reason: action.semantic_block_reason,
+		semantic_paraphrase: action.semantic_paraphrase,
+		semantic_normalized_text: action.semantic_normalized_text,
+	};
 }
 
 function buildClarificationRequest(
@@ -556,6 +720,19 @@ function buildGovernorDialogueReply(
 	};
 }
 
+function humanizeAcceptedSummary(task: string): string {
+	const normalizedTask = task.trim().replace(/[.!?]+$/u, '');
+	if (!normalizedTask) {
+		return 'Ready to continue.';
+	}
+
+	return (
+		normalizedTask.charAt(0).toUpperCase() +
+		normalizedTask.slice(1) +
+		'.'
+	);
+}
+
 function buildAcceptedSummary(
 	model: ExecutionWindowModel,
 	accessMode: AccessMode
@@ -563,12 +740,12 @@ function buildAcceptedSummary(
 	const task = model.snapshot.task ?? 'Current task';
 	const suffix =
 		accessMode === 'full_access'
-			? ' Accepted. Full access is enabled for this session.'
-			: ' Accepted for downstream governor consumption.';
+			? ' Full access is enabled for this session.'
+			: '';
 
 	return {
 		title: 'Accepted intake summary',
-		body: `${task}${suffix}`,
+		body: `${humanizeAcceptedSummary(task)}${suffix}`,
 	};
 }
 
@@ -596,7 +773,7 @@ function acceptIntake(
 			...model.feed,
 			createFeedItem(
 				'system_status',
-				accessMode === 'full_access' ? 'Full access enabled' : 'Intake accepted',
+				accessMode === 'full_access' ? 'Full access enabled' : 'Ready to continue',
 				acceptedIntakeSummary.body,
 				true,
 				now,
@@ -604,7 +781,6 @@ function acceptIntake(
 				undefined,
 				{ turn_type: turnType }
 			),
-			...artifacts.map((artifact) => createArtifactFeedItem(artifact, now)),
 		],
 		activeClarification: undefined,
 		acceptedIntakeSummary,
@@ -661,7 +837,10 @@ export function applyModelAction(
 				);
 			}
 
-			const turnType = classifyTurn(prompt);
+			const turnType = resolveTurnTypeFromSemanticRoute(
+				action.semantic_route_type,
+				prompt
+			);
 			if (turnType === 'governor_dialogue') {
 				const reply = buildGovernorDialogueReply(model, prompt);
 				return {
@@ -673,6 +852,7 @@ export function applyModelAction(
 						...model.feed,
 						createFeedItem('user_message', 'Governor question', prompt, false, now, undefined, undefined, {
 							turn_type: turnType,
+							...semanticProvenanceForAction(action),
 						}),
 						createFeedItem(
 							'actor_event',
@@ -686,6 +866,7 @@ export function applyModelAction(
 								source_layer: 'governor',
 								source_actor: 'governor',
 								turn_type: turnType,
+								...semanticProvenanceForAction(action),
 							}
 						),
 					],
@@ -718,7 +899,10 @@ export function applyModelAction(
 						now,
 						undefined,
 						undefined,
-						{ turn_type: turnType }
+						{
+							turn_type: turnType,
+							...semanticProvenanceForAction(action),
+						}
 					),
 					createFeedItem(
 						'shell_event',
@@ -735,7 +919,10 @@ export function applyModelAction(
 							state: 'running',
 							summary: 'Intake clarification',
 						},
-						{ turn_type: turnType }
+						{
+							turn_type: turnType,
+							...semanticProvenanceForAction(action),
+						}
 					),
 					createFeedItem(
 						'clarification_request',
@@ -745,7 +932,10 @@ export function applyModelAction(
 						now,
 						undefined,
 						undefined,
-						{ turn_type: turnType }
+						{
+							turn_type: turnType,
+							...semanticProvenanceForAction(action),
+						}
 					),
 				],
 				activeClarification: clarification,
@@ -777,7 +967,7 @@ export function applyModelAction(
 			const approval: RequestCard = {
 				id: nextId('approval'),
 				title: 'Accept intake',
-				body: 'Approve the intake draft or grant full access so orchestration can continue.',
+				body: "Approve or grant full access when you're ready to continue.",
 				requestedAt: now,
 			};
 
@@ -799,7 +989,10 @@ export function applyModelAction(
 						now,
 						undefined,
 						undefined,
-						{ turn_type: 'clarification_reply' }
+						{
+							turn_type: 'clarification_reply',
+							...semanticProvenanceForAction(action),
+						}
 					),
 					createFeedItem(
 						'shell_event',
@@ -813,7 +1006,10 @@ export function applyModelAction(
 							state: 'completed',
 							summary: 'Ready for acceptance',
 						},
-						{ turn_type: 'clarification_reply' }
+						{
+							turn_type: 'clarification_reply',
+							...semanticProvenanceForAction(action),
+						}
 					),
 					createFeedItem(
 						'approval_request',
@@ -823,7 +1019,10 @@ export function applyModelAction(
 						now,
 						undefined,
 						undefined,
-						{ turn_type: 'clarification_reply' }
+						{
+							turn_type: 'clarification_reply',
+							...semanticProvenanceForAction(action),
+						}
 					),
 				],
 				activeClarification: undefined,
@@ -842,7 +1041,34 @@ export function applyModelAction(
 				);
 			}
 
-			return acceptIntake(model, now, model.snapshot.accessMode, 'approval_action');
+			const withUserTurn = action.text
+				? {
+						...model,
+						feed: [
+							...model.feed,
+							createFeedItem(
+								'user_message',
+								'Approval requested',
+								trimAndNormalize(action.text),
+								false,
+								now,
+								undefined,
+								undefined,
+								{
+									turn_type: 'approval_action',
+									...semanticProvenanceForAction(action),
+								}
+							),
+						],
+				  }
+				: model;
+
+			return acceptIntake(
+				withUserTurn,
+				now,
+				model.snapshot.accessMode,
+				'approval_action'
+			);
 		}
 
 		case 'full_access': {
@@ -856,7 +1082,29 @@ export function applyModelAction(
 				);
 			}
 
-			return acceptIntake(model, now, 'full_access', 'approval_action');
+			const withUserTurn = action.text
+				? {
+						...model,
+						feed: [
+							...model.feed,
+							createFeedItem(
+								'user_message',
+								'Full access requested',
+								trimAndNormalize(action.text),
+								false,
+								now,
+								undefined,
+								undefined,
+								{
+									turn_type: 'approval_action',
+									...semanticProvenanceForAction(action),
+								}
+							),
+						],
+				  }
+				: model;
+
+			return acceptIntake(withUserTurn, now, 'full_access', 'approval_action');
 		}
 
 		case 'interrupt_run': {
@@ -906,6 +1154,23 @@ export function applyModelAction(
 				}),
 				feed: [
 					...model.feed,
+					...(action.text
+						? [
+								createFeedItem(
+									'user_message',
+									'Stop requested',
+									trimAndNormalize(action.text),
+									false,
+									now,
+									undefined,
+									undefined,
+									{
+										turn_type: 'stop_action',
+										...semanticProvenanceForAction(action),
+									}
+								),
+						  ]
+						: []),
 					createFeedItem(
 						'interrupt_request',
 						interrupt.title,
@@ -914,7 +1179,10 @@ export function applyModelAction(
 						now,
 						undefined,
 						undefined,
-						{ turn_type: 'stop_action' }
+						{
+							turn_type: 'stop_action',
+							...semanticProvenanceForAction(action),
+						}
 					),
 				],
 			};

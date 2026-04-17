@@ -1,12 +1,18 @@
 import * as vscode from 'vscode';
 import {
 	appendError,
+	appendControllerSemanticClarification,
 	createInitialModel,
 	getArtifactById,
 	type ExecutionWindowModel,
 	type ModelAction,
 } from './phase1Model';
-import { createExecutionTransport, type ExecutionTransport } from './executionTransport';
+import {
+	createExecutionTransport,
+	TransportUnavailableError,
+	type ExecutionTransport,
+} from './executionTransport';
+import { SemanticSidecar, type SemanticLoopState } from './semanticSidecar';
 
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
 export const EXECUTION_WINDOW_VIEW_ID = 'ext.executionWindowView';
@@ -44,15 +50,22 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 	private model: ExecutionWindowModel;
 	private readonly transport: ExecutionTransport;
+	private readonly semanticSidecar: SemanticSidecar;
 	private view: vscode.WebviewView | undefined;
 	private readonly workspaceRoot: vscode.Uri | undefined;
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly webviewDisposables: vscode.Disposable[] = [];
+	private semanticLoopState: SemanticLoopState | undefined;
 
 	private constructor(context: vscode.ExtensionContext) {
 		this.workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 		this.model = createInitialModel();
-		this.transport = createExecutionTransport(context.extensionMode, this.workspaceRoot);
+		this.transport = createExecutionTransport(
+			context.extensionMode,
+			this.workspaceRoot,
+			context.extensionUri
+		);
+		this.semanticSidecar = new SemanticSidecar();
 	}
 
 	public resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -96,9 +109,10 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		try {
 			this.model = await this.transport.load();
 		} catch (error) {
-			this.pushLocalError(
+			this.pushTransportError(
+				error,
 				'Orchestration state unavailable',
-				error instanceof Error ? error.message : 'Failed to load orchestration state.'
+				'Failed to load orchestration state.'
 			);
 			return;
 		}
@@ -106,18 +120,52 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		this.postState();
 	}
 
-	private async applyAction(action: ModelAction) {
+	private async applyAction(
+		action: ModelAction,
+		options: { clearSemanticLoop?: boolean } = {}
+	) {
 		try {
 			this.model = await this.transport.dispatch(action);
 		} catch (error) {
-			this.pushLocalError(
+			this.pushTransportError(
+				error,
 				'Orchestration action failed',
-				error instanceof Error ? error.message : 'The orchestration action could not be applied.'
+				'The orchestration action could not be applied.'
 			);
 			return;
 		}
 
+		if (options.clearSemanticLoop ?? true) {
+			this.semanticLoopState = undefined;
+		}
 		this.postState();
+	}
+
+	private async routeFreeText(text: string) {
+		const rawText = text.trim();
+		if (!rawText) {
+			return;
+		}
+
+		const resolution = await this.semanticSidecar.route(
+			rawText,
+			this.model,
+			this.semanticLoopState
+		);
+
+		if (resolution.kind === 'block') {
+			this.semanticLoopState = resolution.nextLoopState;
+			this.model = appendControllerSemanticClarification(
+				this.model,
+				rawText,
+				resolution.body,
+				resolution.semantic
+			);
+			this.postState();
+			return;
+		}
+
+		await this.applyAction(resolution.action);
 	}
 
 	private async handleMessage(message: WebviewMessage) {
@@ -126,10 +174,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				await this.refreshState();
 				return;
 			case 'submit_prompt':
-				await this.applyAction({
-					type: 'submit_prompt',
-					text: message.text ?? '',
-				});
+				await this.routeFreeText(message.text ?? '');
 				return;
 			case 'answer_clarification':
 				await this.applyAction({
@@ -225,6 +270,44 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private pushLocalError(title: string, body: string, details?: string[]) {
 		this.model = appendError(this.model, title, body, details);
 		this.postState();
+	}
+
+	private pushBlockingError(title: string, body: string, details?: string[]) {
+		const baseModel = createInitialModel();
+		this.model = {
+			...baseModel,
+			snapshot: {
+				...baseModel.snapshot,
+				currentActor: 'orchestration',
+				currentStage: 'unavailable',
+				transportState: 'disconnected',
+				runState: 'idle',
+				recentArtifacts: [],
+				pendingApproval: undefined,
+				pendingInterrupt: undefined,
+			},
+			feed: [],
+			activeClarification: undefined,
+			acceptedIntakeSummary: undefined,
+		};
+		this.model = appendError(this.model, title, body, details);
+		this.postState();
+	}
+
+	private pushTransportError(
+		error: unknown,
+		fallbackTitle: string,
+		fallbackBody: string
+	) {
+		if (error instanceof TransportUnavailableError) {
+			this.pushBlockingError(error.title, error.message, error.details);
+			return;
+		}
+
+		this.pushLocalError(
+			fallbackTitle,
+			error instanceof Error ? error.message : fallbackBody
+		);
 	}
 
 }
@@ -504,11 +587,23 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			line-height: 1.4;
 		}
 
-		.request-marker {
+		.feed-divider {
+			display: grid;
+			grid-template-columns: 1fr auto 1fr;
+			align-items: center;
+			gap: 8px;
+			margin: 6px 0 2px;
 			color: var(--muted);
-			font-size: 12px;
-			border-left: 2px solid var(--line);
-			padding-left: 8px;
+			font-size: 11px;
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+		}
+
+		.feed-divider::before,
+		.feed-divider::after {
+			content: '';
+			height: 1px;
+			background: var(--line);
 		}
 
 		.action-band {
@@ -633,6 +728,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			draft: '',
 			expandedIds: [],
 			scrollTop: 0,
+			initialFeedCount: undefined,
 		};
 
 		let model = undefined;
@@ -641,6 +737,10 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			draft: typeof persisted.draft === 'string' ? persisted.draft : '',
 			expandedIds: new Set(Array.isArray(persisted.expandedIds) ? persisted.expandedIds : []),
 			scrollTop: typeof persisted.scrollTop === 'number' ? persisted.scrollTop : 0,
+			initialFeedCount:
+				typeof persisted.initialFeedCount === 'number'
+					? persisted.initialFeedCount
+					: undefined,
 		};
 
 		const app = document.getElementById('app');
@@ -658,6 +758,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 				draft: ui.draft,
 				expandedIds: Array.from(ui.expandedIds),
 				scrollTop: feed.scrollTop,
+				initialFeedCount: ui.initialFeedCount,
 			});
 		}
 
@@ -774,8 +875,8 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 						: '';
 				cards.push(
 					'<section class="action-card">' +
-						'<h2>' + escapeHtml(model.activeClarification.title) + '</h2>' +
-						'<p>' + escapeHtml(model.activeClarification.body) + '</p>' +
+						'<h2>Choose a direction</h2>' +
+						'<p>Pick one option or type a short answer below.</p>' +
 						optionButtons +
 					'</section>'
 				);
@@ -784,8 +885,8 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			if (snapshot.pendingApproval) {
 				cards.push(
 					'<section class="action-card">' +
-						'<h2>' + escapeHtml(snapshot.pendingApproval.title) + '</h2>' +
-						'<p>' + escapeHtml(snapshot.pendingApproval.body) + '</p>' +
+						'<h2>Ready to continue</h2>' +
+						'<p>Approve this intake or grant full access.</p>' +
 						'<div class="card-actions">' +
 							'<button type="button" data-action="approve">Approve</button>' +
 							'<button type="button" class="secondary" data-action="full_access">Full access</button>' +
@@ -902,18 +1003,8 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			);
 		}
 
-		function renderArtifactActions(item) {
-			if (item.type !== 'artifact_reference') {
-				return '';
-			}
-
-			return (
-				'<div class="inline-actions">' +
-					'<button type="button" class="secondary" data-action="open_artifact" data-artifact-id="' + escapeHtml(item.artifact.id) + '">Open</button>' +
-					'<button type="button" class="ghost" data-action="reveal_artifact_path" data-artifact-id="' + escapeHtml(item.artifact.id) + '">Reveal</button>' +
-					'<button type="button" class="ghost" data-action="copy_artifact_path" data-artifact-id="' + escapeHtml(item.artifact.id) + '">Copy path</button>' +
-				'</div>'
-			);
+		function renderArtifactActions() {
+			return '';
 		}
 
 		function renderActivity(item) {
@@ -936,14 +1027,6 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 						renderArtifactActions(item) +
 						renderDetails(item) +
 					'</div>' +
-				'</article>'
-			);
-		}
-
-		function renderRequestMarker(item) {
-			return (
-				'<article class="request-marker">' +
-					escapeHtml(item.title) +
 				'</article>'
 			);
 		}
@@ -979,16 +1062,16 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			);
 		}
 
+		function dividerMarkup(label) {
+			return '<div class="feed-divider" role="separator">' + escapeHtml(label) + '</div>';
+		}
+
 		function renderFeedItem(item) {
-			if (
-				item.type === 'clarification_request' ||
-				item.type === 'approval_request' ||
-				item.type === 'interrupt_request'
-			) {
-				return renderRequestMarker(item);
+			if (item.type === 'artifact_reference' || item.type === 'shell_event') {
+				return '';
 			}
 
-			if (item.activity || item.type === 'artifact_reference') {
+			if (item.activity) {
 				return renderActivity(item);
 			}
 
@@ -1004,7 +1087,19 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			const wasNearBottom =
 				feed.scrollHeight - feed.scrollTop - feed.clientHeight < 56;
 
-			const cards = model.feed.map(renderFeedItem);
+			const dividerIndex =
+				typeof ui.initialFeedCount === 'number' &&
+				ui.initialFeedCount > 0 &&
+				model.feed.length > ui.initialFeedCount
+					? ui.initialFeedCount
+					: -1;
+			const cards = model.feed.map((item, index) => {
+				const markup = renderFeedItem(item);
+				if (index === dividerIndex) {
+					return dividerMarkup('Current turn') + markup;
+				}
+				return markup;
+			});
 
 			feed.innerHTML =
 				cards.length > 0
@@ -1025,10 +1120,15 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 
 		function renderComposer() {
 			const mode = composerMode();
+			const blocked = model?.snapshot?.transportState === 'disconnected';
 			composerInput.placeholder = mode.placeholder;
-			composerHint.textContent = mode.hint;
+			composerHint.textContent = blocked
+				? 'Open the repo/workspace folder that contains orchestration/scripts/orchestrate.py, then reopen Corgi.'
+				: mode.hint;
 			composerSubmitButton.textContent = mode.buttonLabel;
 			composerInput.value = ui.draft;
+			composerInput.disabled = blocked;
+			composerSubmitButton.disabled = blocked;
 		}
 
 		function render() {
@@ -1051,11 +1151,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 				return;
 			}
 
-			if (model?.activeClarification) {
-				vscode.postMessage({ type: 'answer_clarification', text });
-			} else {
-				vscode.postMessage({ type: 'submit_prompt', text });
-			}
+			vscode.postMessage({ type: 'submit_prompt', text });
 
 			ui.draft = '';
 			persistUiState();
@@ -1140,6 +1236,13 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			}
 
 			model = message.payload;
+			if (
+				typeof ui.initialFeedCount !== 'number' ||
+				(model?.feed?.length ?? 0) < ui.initialFeedCount
+			) {
+				ui.initialFeedCount = Array.isArray(model?.feed) ? model.feed.length : 0;
+				persistUiState();
+			}
 			render();
 		});
 
