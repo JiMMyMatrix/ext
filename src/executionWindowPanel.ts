@@ -1834,6 +1834,31 @@ export function getExecutionWindowHtml(
 			);
 		}
 
+		function normalizeUiText(value) {
+			return String(value || '')
+				.trim()
+				.toLowerCase()
+				.replace(/[.!?]+$/g, '')
+				.replace(/\s+/g, ' ');
+		}
+
+		function latestRenderedAssistantItem() {
+			if (!model) {
+				return undefined;
+			}
+			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
+				const item = model.feed[index];
+				if (
+					item.type !== 'user_message' &&
+					item.type !== 'artifact_reference' &&
+					shouldRenderInTranscript(item)
+				) {
+					return item;
+				}
+			}
+			return undefined;
+		}
+
 		function renderForegroundRequest() {
 			if (!ui.foregroundRequest) {
 				return '';
@@ -1850,6 +1875,22 @@ export function getExecutionWindowHtml(
 			const bullets = Array.isArray(ui.foregroundRequest.bullets)
 				? ui.foregroundRequest.bullets
 				: [];
+			const latestBulletLabel =
+				bullets.length > 0
+					? normalizeUiText(bullets[bullets.length - 1].label)
+					: '';
+			const latestAssistantItem = latestRenderedAssistantItem();
+			const latestAssistantText = normalizeUiText(
+				latestAssistantItem?.body || latestAssistantItem?.title
+			);
+			const hintText = normalizeUiText(ui.foregroundRequest.hint);
+			const shouldRenderHint =
+				Boolean(hintText) &&
+				hintText !== latestBulletLabel &&
+				!(
+					ui.foregroundRequest.status === 'frozen' &&
+					hintText === latestAssistantText
+				);
 			const bulletMarkup =
 				bullets.length > 0
 					? '<ul class="detail-list progress-list">' +
@@ -1877,7 +1918,7 @@ export function getExecutionWindowHtml(
 				'">' +
 					'<div class="message-label">Corgi</div>' +
 					bulletMarkup +
-					(ui.foregroundRequest.hint
+					(shouldRenderHint
 						? '<div class="activity-summary">' + escapeHtml(ui.foregroundRequest.hint) + '</div>'
 						: '') +
 				'</article>'

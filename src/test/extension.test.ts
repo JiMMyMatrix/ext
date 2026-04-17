@@ -337,6 +337,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('View source'));
 		assert.ok(html.includes('foregroundRequest'));
 		assert.ok(html.includes('Model clarifying'));
+		assert.ok(html.includes('normalizeUiText'));
+		assert.ok(html.includes('latestRenderedAssistantItem'));
 		assert.ok(html.includes('Waiting for clarification'));
 		assert.ok(html.includes('Waiting for permission: '));
 		assert.ok(html.includes('Execution started'));
