@@ -67,6 +67,14 @@ export interface SemanticDecision {
 	reason: string;
 }
 
+export type SemanticBlockKind =
+	| 'needs_disambiguation'
+	| 'semantic_unavailable'
+	| 'control_unmappable'
+	| 'nothing_running'
+	| 'interrupt_pending'
+	| 'no_active_clarification';
+
 export type SemanticResolution =
 	| {
 			kind: 'dispatch';
@@ -75,7 +83,7 @@ export type SemanticResolution =
 	  }
 	| {
 			kind: 'block';
-			body: string;
+			blockKind: SemanticBlockKind;
 			semantic: SemanticMetadata;
 			nextLoopState: SemanticLoopState;
 	  };
@@ -256,193 +264,6 @@ function semanticPrompt(input: SemanticRunnerInput): string {
 	].join('\n');
 }
 
-function normalizedLower(text: string): string {
-	return text.trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
-function isShortQuestion(text: string): boolean {
-	return /\?\s*$/.test(text.trim());
-}
-
-function isObviousGovernorDialogue(text: string): boolean {
-	const normalized = normalizedLower(text);
-	if (!normalized) {
-		return false;
-	}
-
-	return (
-		isShortQuestion(text) ||
-		[
-			'what happened',
-			'what happen',
-			'what is happening',
-			"what's happening",
-			'what is going on',
-			"what's going on",
-			'what is the current progress',
-			'what is the progress',
-			'what is the status',
-			'what is the plan',
-			'who are you',
-			'why',
-			'how',
-			'explain',
-			'help me understand',
-			'compare',
-			'status',
-			'progress',
-			'update me',
-			'any update',
-		].some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `))
-	);
-}
-
-function isObviousGovernedWorkIntent(text: string): boolean {
-	const normalized = normalizedLower(text);
-	if (!normalized) {
-		return false;
-	}
-
-	return [
-		'analyze',
-		'review',
-		'develop',
-		'inspect',
-		'investigate',
-		'look at',
-		'scan',
-		'summarize',
-		'plan',
-		'implement',
-		'build',
-		'create',
-		'refactor',
-		'fix',
-		'debug',
-		'improve',
-		'update',
-		'check',
-	].some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `));
-}
-
-function explicitActionDecision(
-	model: ExecutionWindowModel,
-	text: string
-): SemanticDecision | undefined {
-	const normalized = normalizedLower(text);
-	if (!normalized) {
-		return undefined;
-	}
-
-	if (
-		model.snapshot.runState === 'running' &&
-		!model.snapshot.pendingInterrupt &&
-		['stop', 'interrupt', 'cancel', 'halt', 'stop it'].includes(normalized)
-	) {
-		return {
-			route_type: 'explicit_action',
-			action_name: 'interrupt_run',
-			normalized_text: text.trim(),
-			paraphrase: 'Stop the current run.',
-			confidence: 'high',
-			reason: 'deterministic_explicit_interrupt',
-		};
-	}
-
-	return undefined;
-}
-
-function clarificationReplyDecision(
-	model: ExecutionWindowModel,
-	text: string
-): SemanticDecision | undefined {
-	if (!model.activeClarification) {
-		return undefined;
-	}
-
-	const normalized = normalizedLower(text);
-	const trimmed = text.trim();
-	if (!normalized) {
-		return undefined;
-	}
-
-	const matchesOption = (model.activeClarification.options ?? []).some((option) => {
-		const answer = normalizedLower(option.answer);
-		const label = normalizedLower(option.label);
-		return normalized === answer || normalized === label;
-	});
-
-	if (matchesOption || (!isShortQuestion(trimmed) && normalized.split(' ').length <= 8)) {
-		return {
-			route_type: 'clarification_reply',
-			action_name: 'none',
-			normalized_text: trimmed,
-			paraphrase: 'Answer the active clarification.',
-			confidence: 'high',
-			reason: 'deterministic_clarification_reply',
-		};
-	}
-
-	return undefined;
-}
-
-function deterministicSemanticDecision(
-	model: ExecutionWindowModel,
-	rawText: string
-): SemanticDecision | undefined {
-	const trimmed = rawText.trim();
-	if (!trimmed) {
-		return undefined;
-	}
-
-	return (
-		explicitActionDecision(model, trimmed) ??
-		clarificationReplyDecision(model, trimmed) ??
-		(isObviousGovernorDialogue(trimmed)
-			? {
-					route_type: 'governor_dialogue',
-					action_name: 'none',
-					normalized_text: trimmed,
-					paraphrase: 'Ask Corgi a read-only question about progress or context.',
-					confidence: 'high',
-					reason: 'deterministic_governor_dialogue',
-			  }
-			: undefined) ??
-		(isObviousGovernedWorkIntent(trimmed)
-			? {
-					route_type: 'governed_work_intent',
-					action_name: 'none',
-					normalized_text: trimmed,
-					paraphrase: 'Ask Corgi to perform a new governed work request.',
-					confidence: 'high',
-					reason: 'deterministic_governed_work_intent',
-			  }
-			: undefined)
-	);
-}
-
-export function applyDeterministicSemanticFallback(
-	model: ExecutionWindowModel,
-	rawText: string,
-	decision: SemanticDecision
-): SemanticDecision {
-	const deterministicDecision = deterministicSemanticDecision(model, rawText);
-	if (deterministicDecision) {
-		return deterministicDecision;
-	}
-
-	if (decision.confidence === 'high' && decision.route_type !== 'block') {
-		return decision;
-	}
-
-	const trimmed = rawText.trim();
-	if (!trimmed) {
-		return decision;
-	}
-
-	return decision;
-}
-
 function normalizeDecision(raw: unknown, rawText: string): SemanticDecision {
 	const candidate = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
 	const routeType = candidate.route_type;
@@ -538,16 +359,14 @@ class CodexSemanticRunner implements SemanticRunner {
 				: stdout;
 			return normalizeDecision(JSON.parse(payload), input.rawText);
 		} catch (error) {
+			console.error('Corgi semantic sidecar failed', error);
 			return {
 				route_type: 'block',
 				action_name: 'none',
 				normalized_text: input.rawText.trim(),
 				paraphrase: '',
 				confidence: 'low',
-				reason:
-					error instanceof Error && error.message
-						? `semantic_sidecar_error:${error.message}`
-						: 'semantic_sidecar_error',
+				reason: 'semantic_sidecar_unavailable',
 			};
 		} finally {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -572,35 +391,11 @@ function semanticMetadata(
 	};
 }
 
-function clarificationPromptForAttempt(
-	model: ExecutionWindowModel,
-	attemptNumber: number
-): string {
-	if (attemptNumber > SEMANTIC_CLARIFICATION_BUDGET) {
-		return 'I’m not confident enough to route that safely. Please restate it as one of these: ask for progress, answer the current clarification, stop the run, or give a new work request.';
-	}
-
-	if (model.activeClarification) {
-		return attemptNumber === 1
-			? 'I’m not confident that answers the current clarification. Please answer it directly, or choose one of the listed clarification options.'
-			: 'Please answer the current clarification in one short phrase, or use one of the listed clarification choices.';
-	}
-
-	if (model.snapshot.pendingPermissionRequest) {
-		return attemptNumber === 1
-			? 'I’m not confident whether this is a follow-up question or a new request while a permission choice is still pending. Please restate it directly.'
-			: 'Please restate this as exactly one of: answer the current permission choice with the buttons, or ask a progress/explanation question.';
-	}
-
-	if (model.snapshot.runState === 'running') {
-		return attemptNumber === 1
-			? 'I’m not confident whether this is a stop request, a progress question, or a new work request. Please restate it directly.'
-			: 'Please restate this as exactly one of: stop, a progress/explanation question, or a new work request.';
-	}
-
-	return attemptNumber === 1
-		? 'I’m not confident whether this is a new work request or a read-only question. Please restate it more directly.'
-		: 'Please restate this as exactly one of: ask for progress, or give a new work request.';
+function semanticBlockKindForDecision(decision: SemanticDecision): SemanticBlockKind {
+	return decision.reason === 'semantic_sidecar_unavailable' ||
+		decision.reason === 'semantic_sidecar_error'
+		? 'semantic_unavailable'
+		: 'needs_disambiguation';
 }
 
 export function resolveSemanticRouting(
@@ -617,7 +412,7 @@ export function resolveSemanticRouting(
 	if (loopState?.exhausted && decision.confidence !== 'high') {
 		return {
 			kind: 'block',
-			body: clarificationPromptForAttempt(model, SEMANTIC_CLARIFICATION_BUDGET + 1),
+			blockKind: semanticBlockKindForDecision(decision),
 			semantic: metadata,
 			nextLoopState: loopState,
 		};
@@ -628,24 +423,23 @@ export function resolveSemanticRouting(
 		if (nextAttempt > SEMANTIC_CLARIFICATION_BUDGET) {
 			return {
 				kind: 'block',
-				body: clarificationPromptForAttempt(model, nextAttempt),
+				blockKind: semanticBlockKindForDecision(decision),
 				semantic: metadata,
 				nextLoopState: {
 					attempts: SEMANTIC_CLARIFICATION_BUDGET,
 					exhausted: true,
-					lastQuestion: clarificationPromptForAttempt(model, nextAttempt),
+					lastQuestion: decision.reason,
 				},
 			};
 		}
-		const question = clarificationPromptForAttempt(model, nextAttempt);
 		return {
 			kind: 'block',
-			body: question,
+			blockKind: semanticBlockKindForDecision(decision),
 			semantic: metadata,
 			nextLoopState: {
 				attempts: nextAttempt,
 				exhausted: false,
-				lastQuestion: question,
+				lastQuestion: decision.reason,
 			},
 		};
 	}
@@ -654,26 +448,24 @@ export function resolveSemanticRouting(
 		if (decision.action_name === 'none') {
 			return {
 				kind: 'block',
-				body: 'I could not map that control request safely. Please restate it as stop, a progress question, or a new work request.',
+				blockKind: 'control_unmappable',
 				semantic: metadata,
 				nextLoopState: {
 					attempts: 1,
 					exhausted: false,
-					lastQuestion:
-						'I could not map that control request safely. Please restate it as stop, a progress question, or a new work request.',
+					lastQuestion: 'control_unmappable',
 				},
 			};
 		}
 		if (decision.action_name === 'interrupt_run' && model.snapshot.runState !== 'running') {
 			return {
 				kind: 'block',
-				body: 'Nothing is running right now. Ask for progress, or send a new work request instead.',
+				blockKind: 'nothing_running',
 				semantic: metadata,
 				nextLoopState: {
 					attempts: 1,
 					exhausted: false,
-					lastQuestion:
-						'Nothing is running right now. Ask for progress, or send a new work request instead.',
+					lastQuestion: 'nothing_running',
 				},
 			};
 		}
@@ -683,13 +475,12 @@ export function resolveSemanticRouting(
 		) {
 			return {
 				kind: 'block',
-				body: 'A stop request is already pending. Wait for orchestration to handle it before asking again.',
+				blockKind: 'interrupt_pending',
 				semantic: metadata,
 				nextLoopState: {
 					attempts: 1,
 					exhausted: false,
-					lastQuestion:
-						'A stop request is already pending. Wait for orchestration to handle it before asking again.',
+					lastQuestion: 'interrupt_pending',
 				},
 			};
 		}
@@ -707,13 +498,12 @@ export function resolveSemanticRouting(
 		if (!model.activeClarification) {
 			return {
 				kind: 'block',
-				body: 'There is no active clarification to answer right now. Ask for progress or send a new work request instead.',
+				blockKind: 'no_active_clarification',
 				semantic: metadata,
 				nextLoopState: {
 					attempts: 1,
 					exhausted: false,
-					lastQuestion:
-						'There is no active clarification to answer right now. Ask for progress or send a new work request instead.',
+					lastQuestion: 'no_active_clarification',
 				},
 			};
 		}
@@ -756,22 +546,20 @@ export class SemanticSidecar {
 			rawText,
 			loopState
 		);
-		const fastDecision = deterministicSemanticDecision(model, rawText);
-		if (fastDecision) {
-			return resolveSemanticRouting(
-				model,
-				rawText,
-				fastDecision,
-				loopState,
-				summaryRef,
-				contextFlags
-			);
+		let decision: SemanticDecision;
+		try {
+			decision = await this.runner.classify({ rawText, summary });
+		} catch (error) {
+			console.error('Corgi semantic sidecar failed', error);
+			decision = {
+				route_type: 'block',
+				action_name: 'none',
+				normalized_text: rawText.trim(),
+				paraphrase: '',
+				confidence: 'low',
+				reason: 'semantic_sidecar_unavailable',
+			};
 		}
-		const decision = applyDeterministicSemanticFallback(
-			model,
-			rawText,
-			await this.runner.classify({ rawText, summary })
-		);
 		return resolveSemanticRouting(
 			model,
 			rawText,

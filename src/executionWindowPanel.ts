@@ -13,7 +13,11 @@ import {
 	TransportUnavailableError,
 	type ExecutionTransport,
 } from './executionTransport';
-import { SemanticSidecar, type SemanticLoopState } from './semanticSidecar';
+import {
+	SemanticSidecar,
+	type SemanticBlockKind,
+	type SemanticLoopState,
+} from './semanticSidecar';
 
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
 export const EXECUTION_WINDOW_VIEW_ID = 'ext.executionWindowView';
@@ -181,6 +185,80 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		};
 	}
 
+	private semanticDisambiguationCopy(
+		loopState: SemanticLoopState
+	): { title: string; body: string } {
+		const exhausted = loopState.exhausted;
+		if (this.model.activeClarification) {
+			return {
+				title: 'Need a clearer clarification answer',
+				body: exhausted
+					? 'I still need a direct answer to the current clarification. Answer it in one short phrase, or choose one of the listed options.'
+					: 'Please answer the current clarification directly, or choose one of the listed options.',
+			};
+		}
+
+		if (this.model.snapshot.pendingPermissionRequest) {
+			return {
+				title: 'Need a clearer request',
+				body: exhausted
+					? 'Please either choose a permission scope with the buttons, or ask a progress question.'
+					: 'I’m not sure whether this is a follow-up question or a new request while a permission choice is still pending. Please either choose a permission scope or ask a progress question.',
+			};
+		}
+
+		if (this.model.snapshot.runState === 'running') {
+			return {
+				title: 'Need a clearer request',
+				body: exhausted
+					? 'Please restate this as exactly one of: stop, a progress question, or a new work request.'
+					: 'I’m not sure whether this is a stop request, a progress question, or a new work request. Please restate it more directly.',
+			};
+		}
+
+		return {
+			title: exhausted ? 'Still need a clearer request' : 'Need a clearer request',
+			body: exhausted
+				? 'I still couldn’t route that safely. Please restate it as exactly one of: ask for progress, or give a new work request.'
+				: 'I’m not sure whether this is a new work request or a read-only question. Please restate it more directly.',
+		};
+	}
+
+	private semanticBlockCopy(
+		blockKind: SemanticBlockKind,
+		loopState: SemanticLoopState
+	): { title: string; body: string } {
+		switch (blockKind) {
+			case 'semantic_unavailable':
+				return {
+					title: 'Couldn’t classify request right now',
+					body: 'Corgi couldn’t classify that request right now. Please try again, or restate it more directly.',
+				};
+			case 'control_unmappable':
+				return {
+					title: 'Need a clearer control request',
+					body: 'I couldn’t map that control request safely. Please restate it as stop, a progress question, or a new work request.',
+				};
+			case 'nothing_running':
+				return {
+					title: 'Nothing is running right now',
+					body: 'Ask for progress, or send a new work request instead.',
+				};
+			case 'interrupt_pending':
+				return {
+					title: 'Stop already requested',
+					body: 'A stop request is already pending. Wait for orchestration to handle it before asking again.',
+				};
+			case 'no_active_clarification':
+				return {
+					title: 'No clarification is active',
+					body: 'There is no active clarification to answer right now. Ask for progress or send a new work request instead.',
+				};
+			case 'needs_disambiguation':
+				return this.semanticDisambiguationCopy(loopState);
+		}
+	}
+
 	private async routeFreeText(text: string) {
 		const rawText = text.trim();
 		if (!rawText) {
@@ -196,20 +274,23 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			);
 		} catch (error) {
 			this.pushLocalError(
-				'Semantic routing failed',
-				error instanceof Error
-					? error.message
-					: 'Corgi could not classify that request.'
+				'Couldn’t classify request right now',
+				'Corgi couldn’t classify that request right now. Please try again, or restate it more directly.'
 			);
 			return;
 		}
 
 		if (resolution.kind === 'block') {
 			this.semanticLoopState = resolution.nextLoopState;
+			const presentation = this.semanticBlockCopy(
+				resolution.blockKind,
+				resolution.nextLoopState
+			);
 			this.model = appendControllerSemanticClarification(
 				this.model,
 				rawText,
-				resolution.body,
+				presentation.title,
+				presentation.body,
 				resolution.semantic
 			);
 			this.postState();
@@ -384,7 +465,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 		this.pushLocalError(
 			fallbackTitle,
-			error instanceof Error ? error.message : fallbackBody
+			fallbackBody
 		);
 	}
 
@@ -1387,6 +1468,23 @@ export function getExecutionWindowHtml(
 			return undefined;
 		}
 
+		function latestSemanticBlockStatus() {
+			if (!model) {
+				return undefined;
+			}
+			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
+				const item = model.feed[index];
+				if (
+					item.type === 'system_status' &&
+					item.source_layer === 'dialog_controller' &&
+					item.source_actor === 'semantic_sidecar'
+				) {
+					return item;
+				}
+			}
+			return undefined;
+		}
+
 		function syncForegroundRequestFromModel() {
 			if (!ui.foregroundRequest || !model) {
 				return;
@@ -1396,6 +1494,18 @@ export function getExecutionWindowHtml(
 			const latestError = latestRequestError();
 			if (latestError) {
 				freezeForegroundRequest(latestError.title, 'failed', 'Corgi needs your input before this can continue.');
+				return;
+			}
+
+			const latestSemanticBlock = latestSemanticBlockStatus();
+			if (latestSemanticBlock) {
+				freezeForegroundRequest(
+					latestSemanticBlock.title,
+					latestSemanticBlock.semantic_block_reason === 'semantic_sidecar_unavailable'
+						? 'failed'
+						: 'waiting',
+					latestSemanticBlock.body || 'Corgi needs a clearer request before this can continue.'
+				);
 				return;
 			}
 

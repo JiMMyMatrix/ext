@@ -15,7 +15,6 @@ import {
 	TransportUnavailableError,
 } from '../executionTransport';
 import {
-	applyDeterministicSemanticFallback,
 	DEFAULT_SEMANTIC_SIDECAR_MODEL,
 	resolveSemanticRouting,
 	SemanticSidecar,
@@ -244,7 +243,7 @@ suite('Corgi Webview UX', () => {
 
 		assert.strictEqual(resolution.kind, 'block');
 		if (resolution.kind === 'block') {
-			assert.match(resolution.body, /There is no active clarification/i);
+			assert.strictEqual(resolution.blockKind, 'no_active_clarification');
 		}
 	});
 
@@ -272,63 +271,57 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(resolution.kind, 'block');
 		if (resolution.kind === 'block') {
 			assert.strictEqual(resolution.nextLoopState.exhausted, true);
-			assert.match(resolution.body, /not confident enough to route that safely/i);
+			assert.strictEqual(resolution.blockKind, 'needs_disambiguation');
 		}
 	});
 
-	test('deterministic semantic fallback upgrades obvious work requests and dialogue questions', () => {
-		const baseModel = createInitialModel('2026-04-10T10:00:00.000Z');
-		const blockedDecision = semanticDecision({
-			route_type: 'block',
-			action_name: 'none',
-			confidence: 'low',
-			reason: 'mixed_or_ambiguous',
-			paraphrase: '',
-		});
-
-		const workDecision = applyDeterministicSemanticFallback(
-			baseModel,
-			'analyze the repo',
-			blockedDecision
-		);
-		assert.strictEqual(workDecision.route_type, 'governed_work_intent');
-		assert.strictEqual(workDecision.confidence, 'high');
-
-		const developDecision = applyDeterministicSemanticFallback(
-			baseModel,
-			'develop the internet connect feature',
-			blockedDecision
-		);
-		assert.strictEqual(developDecision.route_type, 'governed_work_intent');
-		assert.strictEqual(developDecision.confidence, 'high');
-
-		const dialogueDecision = applyDeterministicSemanticFallback(
-			baseModel,
-			'who are you?',
-			blockedDecision
-		);
-		assert.strictEqual(dialogueDecision.route_type, 'governor_dialogue');
-		assert.strictEqual(dialogueDecision.confidence, 'high');
-	});
-
-	test('semantic sidecar skips the model runner for obvious governed work requests', async () => {
+	test('semantic sidecar uses the model runner for obvious governed work requests', async () => {
+		let calls = 0;
 		const sidecar = new SemanticSidecar({
 			classify: async () => {
-				throw new Error('runner should not be called for obvious work requests');
+				calls += 1;
+				return semanticDecision({
+					route_type: 'governed_work_intent',
+					normalized_text: 'develop the internet connect feature',
+					paraphrase: 'Ask Corgi to develop the feature.',
+				});
 			},
 		});
 
 		const resolution = await sidecar.route(
-			'analyze the repo',
+			'develop the internet connect feature',
 			createInitialModel('2026-04-10T10:00:00.000Z')
 		);
 
+		assert.strictEqual(calls, 1);
 		assert.strictEqual(resolution.kind, 'dispatch');
 		if (resolution.kind === 'dispatch') {
 			assert.strictEqual(resolution.action.type, 'submit_prompt');
 			assert.strictEqual(
 				resolution.action.semantic_route_type,
 				'governed_work_intent'
+			);
+		}
+	});
+
+	test('semantic sidecar treats runner failures as internal unavailability', async () => {
+		const sidecar = new SemanticSidecar({
+			classify: async () => {
+				throw new Error('network exploded');
+			},
+		});
+
+		const resolution = await sidecar.route(
+			'develop the internet connect feature',
+			createInitialModel('2026-04-10T10:00:00.000Z')
+		);
+
+		assert.strictEqual(resolution.kind, 'block');
+		if (resolution.kind === 'block') {
+			assert.strictEqual(resolution.blockKind, 'semantic_unavailable');
+			assert.strictEqual(
+				resolution.semantic.semantic_block_reason,
+				'semantic_sidecar_unavailable'
 			);
 		}
 	});

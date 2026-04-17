@@ -447,6 +447,7 @@ export function appendError(
 export function appendControllerSemanticClarification(
 	model: ExecutionWindowModel,
 	rawText: string,
+	title: string,
 	body: string,
 	semantic: SemanticMetadata,
 	now = new Date().toISOString()
@@ -481,7 +482,7 @@ export function appendControllerSemanticClarification(
 			),
 			createFeedItem(
 				'system_status',
-				'Need a clearer instruction',
+				title,
 				body,
 				true,
 				now,
