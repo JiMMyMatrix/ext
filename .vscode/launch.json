@@ -9,6 +9,10 @@
 			"name": "Run Extension",
 			"type": "extensionHost",
 			"request": "launch",
+			"env": {
+				"CORGI_RESET_DEV_SESSION": "1",
+				"CORGI_RESET_WEBVIEW_STATE": "1"
+			},
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}",
 				"${workspaceFolder}"

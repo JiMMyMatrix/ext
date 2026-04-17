@@ -326,13 +326,12 @@ def _build_governor_dialogue(
 
 	if model.get("activeClarification"):
 		body = (
-			"Current progress: intake is waiting on one clarification before the request can continue. "
-			"Answer the clarification or choose one of the suggested options to move forward."
+			"Current progress: one clarification is still open. "
+			"Answer it or choose one of the suggested options to keep moving."
 		)
 	elif snapshot.get("pendingApproval"):
 		body = (
-			"Current progress: orchestration is waiting for explicit acceptance before the request can move into Governor-led work. "
-			"Use Approve or Full access when you want that request to continue."
+			"Current progress: this request is ready, but it is waiting for your approval or full access before Corgi can continue."
 		)
 	elif dispatch_summary:
 		body = (
@@ -355,8 +354,8 @@ def _build_governor_dialogue(
 		)
 	elif snapshot.get("runState") == "running":
 		body = (
-			f"Current progress: Governor-led work is running{f' for {task}' if task else ''}. "
-			"Stop is available if you need to interrupt the current run."
+			f"Current progress: Corgi is actively working{f' on {task}' if task else ''}. "
+			"Stop is available if you need it."
 		)
 	elif model.get("acceptedIntakeSummary"):
 		body = (
@@ -365,8 +364,8 @@ def _build_governor_dialogue(
 		)
 	else:
 		body = (
-			"No governed work is active yet. Send a bounded request when you want to start, "
-			"or ask a progress or idea question like this one anytime."
+			"Nothing is running right now. Start with a bounded request, "
+			"or ask a progress question anytime."
 		)
 
 	details = [
@@ -732,7 +731,7 @@ def _accept_pending_intake(
 	model["feed"].append(
 		_feed_item(
 			"system_status",
-			"Full access enabled" if access_mode == "full_access" else "Ready to continue",
+			"Full access enabled" if access_mode == "full_access" else "Accepted and ready",
 			summary,
 			authoritative=True,
 			now=now,
@@ -936,8 +935,8 @@ def handle_submit_prompt(
 	model["activeClarification"] = None
 	if _current_access_mode(model) == "full_access":
 		model["snapshot"]["pendingApproval"] = _request_card(
-			"Accept intake",
-			"Approve or grant full access when you're ready to continue.",
+			"Approval needed",
+			"Approve this request, or grant full access for the session when you want Corgi to continue.",
 			now,
 		)
 		_accept_pending_intake(
@@ -958,15 +957,15 @@ def handle_submit_prompt(
 		return
 
 	model["snapshot"]["pendingApproval"] = _request_card(
-		"Accept intake",
-		"Approve or grant full access when you're ready to continue.",
+		"Approval needed",
+		"Approve this request, or grant full access for the session when you want Corgi to continue.",
 		now,
 	)
 	model["feed"].append(
 		_feed_item(
 			"approval_request",
-			"Accept intake",
-			"Approve or grant full access when you're ready to continue.",
+			"Approval needed",
+			"Approve this request, or grant full access for the session when you want Corgi to continue.",
 			authoritative=True,
 			now=now,
 			**_semantic_provenance(
@@ -1091,8 +1090,8 @@ def handle_answer_clarification(
 	)
 	model["activeClarification"] = None
 	model["snapshot"]["pendingApproval"] = _request_card(
-		"Accept intake",
-		"Approve or grant full access when you're ready to continue.",
+		"Approval needed",
+		"Approve this request, or grant full access for the session when you want Corgi to continue.",
 		now,
 	)
 	if _current_access_mode(model) == "full_access":
@@ -1115,8 +1114,8 @@ def handle_answer_clarification(
 	model["feed"].append(
 		_feed_item(
 			"approval_request",
-			"Accept intake",
-			"Approve or grant full access when you're ready to continue.",
+			"Approval needed",
+			"Approve this request, or grant full access for the session when you want Corgi to continue.",
 			authoritative=True,
 			now=now,
 			**_semantic_provenance(

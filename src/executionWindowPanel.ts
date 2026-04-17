@@ -18,6 +18,10 @@ import { SemanticSidecar, type SemanticLoopState } from './semanticSidecar';
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
 export const EXECUTION_WINDOW_VIEW_ID = 'ext.executionWindowView';
 
+function shouldResetDevelopmentWebviewState(context: vscode.ExtensionContext): boolean {
+	return context.extensionMode === vscode.ExtensionMode.Development;
+}
+
 type WebviewMessage =
 	| { type: 'ready' }
 	| { type: 'submit_prompt'; text?: string }
@@ -52,6 +56,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private model: ExecutionWindowModel;
 	private readonly transport: ExecutionTransport;
 	private readonly semanticSidecar: SemanticSidecar;
+	private readonly context: vscode.ExtensionContext;
 	private view: vscode.WebviewView | undefined;
 	private readonly workspaceRoot: vscode.Uri | undefined;
 	private readonly disposables: vscode.Disposable[] = [];
@@ -59,6 +64,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private semanticLoopState: SemanticLoopState | undefined;
 
 	private constructor(context: vscode.ExtensionContext) {
+		this.context = context;
 		this.workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 		this.model = createInitialModel();
 		this.transport = createExecutionTransport(
@@ -76,7 +82,11 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		this.view.webview.options = {
 			enableScripts: true,
 		};
-		this.view.webview.html = getExecutionWindowHtml(this.view.webview.cspSource);
+		this.view.webview.html = getExecutionWindowHtml(
+			this.view.webview.cspSource,
+			getNonce(),
+			shouldResetDevelopmentWebviewState(this.context)
+		);
 		this.webviewDisposables.push(
 			this.view.webview.onDidReceiveMessage((message) => {
 				void this.handleMessage(message as WebviewMessage);
@@ -176,11 +186,22 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			return;
 		}
 
-		const resolution = await this.semanticSidecar.route(
-			rawText,
-			this.model,
-			this.semanticLoopState
-		);
+		let resolution;
+		try {
+			resolution = await this.semanticSidecar.route(
+				rawText,
+				this.model,
+				this.semanticLoopState
+			);
+		} catch (error) {
+			this.pushLocalError(
+				'Semantic routing failed',
+				error instanceof Error
+					? error.message
+					: 'Corgi could not classify that request.'
+			);
+			return;
+		}
 
 		if (resolution.kind === 'block') {
 			this.semanticLoopState = resolution.nextLoopState;
@@ -244,7 +265,9 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			return;
 		}
 
-		const artifact = getArtifactById(this.model, artifactId);
+		const artifact =
+			getArtifactById(this.model, artifactId) ??
+			this.resolveArtifactByPath(artifactId);
 		if (!artifact) {
 			this.pushLocalError(
 				'Artifact unavailable',
@@ -296,6 +319,25 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		return vscode.Uri.joinPath(this.workspaceRoot, relativePath);
 	}
 
+	private resolveArtifactByPath(relativePath: string) {
+		for (const artifact of this.model.snapshot.recentArtifacts) {
+			if (artifact.path === relativePath) {
+				return artifact;
+			}
+		}
+
+		for (const item of this.model.feed) {
+			if (
+				item.type === 'artifact_reference' &&
+				item.artifact.path === relativePath
+			) {
+				return item.artifact;
+			}
+		}
+
+		return undefined;
+	}
+
 	private pushLocalError(title: string, body: string, details?: string[]) {
 		this.model = appendError(this.model, title, body, details);
 		this.postState();
@@ -341,7 +383,11 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 }
 
-export function getExecutionWindowHtml(cspSource: string, nonce: string = getNonce()): string {
+export function getExecutionWindowHtml(
+	cspSource: string,
+	nonce: string = getNonce(),
+	resetPersistedState: boolean = false
+): string {
 		return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -486,6 +532,148 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 
 		.status-dot.is-stale {
 			background: var(--warning);
+		}
+
+		.header-subline {
+			margin-top: 8px;
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+			color: var(--muted);
+			font-size: 11px;
+		}
+
+		.session-rail {
+			flex: 0 0 auto;
+			padding: 10px 12px 0;
+			display: grid;
+			gap: 8px;
+		}
+
+		.session-card {
+			border: 1px solid var(--line);
+			border-radius: 13px;
+			background: var(--panel);
+			padding: 10px;
+			display: grid;
+			gap: 8px;
+		}
+
+		.session-card.is-collapsed {
+			padding: 8px 10px;
+			gap: 6px;
+		}
+
+		.session-card-header {
+			display: flex;
+			align-items: flex-start;
+			justify-content: space-between;
+			gap: 8px;
+		}
+
+		.session-label {
+			color: var(--muted);
+			font-size: 11px;
+			font-weight: 600;
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+		}
+
+		.session-title {
+			margin: 2px 0 0;
+			font-size: 13px;
+			font-weight: 600;
+			line-height: 1.4;
+		}
+
+		.session-summary {
+			color: var(--muted);
+			font-size: 12px;
+			line-height: 1.45;
+		}
+
+		.session-card.is-collapsed .session-summary {
+			font-size: 11px;
+			line-height: 1.35;
+		}
+
+		.session-grid {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 8px 12px;
+		}
+
+		.session-field {
+			display: grid;
+			gap: 2px;
+			min-width: 0;
+		}
+
+		.session-field-label {
+			color: var(--muted);
+			font-size: 11px;
+		}
+
+		.session-field-value {
+			font-size: 12px;
+			line-height: 1.35;
+			word-break: break-word;
+		}
+
+		.milestone-card {
+			border: 1px solid var(--line-soft);
+			border-radius: 12px;
+			background: var(--panel-raised);
+			padding: 9px 10px;
+			display: grid;
+			gap: 4px;
+		}
+
+		.milestone-title {
+			font-size: 12px;
+			font-weight: 600;
+			line-height: 1.4;
+		}
+
+		.milestone-body {
+			color: var(--muted);
+			font-size: 12px;
+			line-height: 1.45;
+		}
+
+		.pill-row {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+		}
+
+		.pill {
+			display: inline-flex;
+			align-items: center;
+			gap: 5px;
+			padding: 3px 8px;
+			border-radius: 999px;
+			border: 1px solid var(--line);
+			background: var(--panel-raised);
+			color: var(--muted);
+			font-size: 11px;
+			line-height: 1.2;
+			white-space: nowrap;
+		}
+
+		.pill.is-primary {
+			color: var(--text);
+			border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+		}
+
+		.pill.is-warning {
+			color: var(--text);
+			border-color: color-mix(in srgb, var(--warning) 45%, var(--line));
+		}
+
+		.pill.is-danger {
+			color: var(--text);
+			border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
 		}
 
 		.feed {
@@ -675,8 +863,14 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			border-radius: 14px;
 			background: var(--panel);
 			display: grid;
-			gap: 6px;
+			gap: 8px;
 			padding: 8px;
+		}
+
+		.composer-context {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
 		}
 
 		textarea {
@@ -728,6 +922,12 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 				opacity: 0.45;
 			}
 		}
+
+		@media (max-width: 340px) {
+			.session-grid {
+				grid-template-columns: minmax(0, 1fr);
+			}
+		}
 	</style>
 </head>
 <body>
@@ -739,6 +939,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 		<section class="action-band" id="actionBand" hidden></section>
 		<footer class="footer">
 			<form class="composer" id="composerForm">
+				<div class="composer-context" id="composerContext" hidden></div>
 				<textarea
 					id="composerInput"
 					placeholder="Ask Corgi to work on this repo..."
@@ -753,12 +954,20 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 	<div class="loading" id="loadingState">Loading Corgi...</div>
 	<script nonce="${nonce}">
 		const vscode = acquireVsCodeApi();
-		const persisted = vscode.getState() ?? {
+		const shouldResetPersistedState = ${resetPersistedState ? 'true' : 'false'};
+		const defaultPersistedState = {
 			draft: '',
 			expandedIds: [],
 			scrollTop: 0,
 			initialFeedCount: undefined,
+			railExpanded: false,
 		};
+		if (shouldResetPersistedState) {
+			vscode.setState(defaultPersistedState);
+		}
+		const persisted = shouldResetPersistedState
+			? defaultPersistedState
+			: (vscode.getState() ?? defaultPersistedState);
 
 		let model = undefined;
 		let hasRendered = false;
@@ -770,6 +979,12 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 				typeof persisted.initialFeedCount === 'number'
 					? persisted.initialFeedCount
 					: undefined,
+			railExpanded: Boolean(persisted.railExpanded),
+			pendingSubmissionText: '',
+			pendingSubmissionActive: false,
+			pendingSubmissionTitle: '',
+			pendingSubmissionBody: '',
+			pendingSubmissionHint: '',
 		};
 
 		const app = document.getElementById('app');
@@ -778,6 +993,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 		const feed = document.getElementById('feed');
 		const actionBand = document.getElementById('actionBand');
 		const composerForm = document.getElementById('composerForm');
+		const composerContext = document.getElementById('composerContext');
 		const composerInput = document.getElementById('composerInput');
 		const composerHint = document.getElementById('composerHint');
 		const composerSubmitButton = document.getElementById('composerSubmitButton');
@@ -788,6 +1004,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 				expandedIds: Array.from(ui.expandedIds),
 				scrollTop: feed.scrollTop,
 				initialFeedCount: ui.initialFeedCount,
+				railExpanded: ui.railExpanded,
 			});
 		}
 
@@ -821,6 +1038,252 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			return snapshot.runState === 'running';
 		}
 
+		function statusLabel(snapshot, stale) {
+			if (snapshot.pendingInterrupt) {
+				return 'Stop pending';
+			}
+			if (snapshot.pendingApproval) {
+				return 'Waiting on you';
+			}
+			if (model?.activeClarification) {
+				return 'Needs input';
+			}
+			if (snapshot.runState === 'running') {
+				return 'Running';
+			}
+			if (snapshot.transportState === 'connected' && !stale) {
+				return 'Ready';
+			}
+			return 'Attention';
+		}
+
+		function railTitle(snapshot) {
+			if (snapshot.task) {
+				return snapshot.task;
+			}
+			if (model?.acceptedIntakeSummary?.body) {
+				return model.acceptedIntakeSummary.body;
+			}
+			return 'Nothing active yet';
+		}
+
+		function railSummary(snapshot) {
+			if (model?.activeClarification) {
+				return 'One quick clarification will get this moving.';
+			}
+			if (snapshot.pendingApproval) {
+				return 'Waiting for your go-ahead before Corgi can continue.';
+			}
+			if (snapshot.pendingInterrupt) {
+				return snapshot.pendingInterrupt.body;
+			}
+			if (snapshot.runState === 'running') {
+				return 'Corgi is working on the current request.';
+			}
+			if (model?.acceptedIntakeSummary?.body) {
+				return model.acceptedIntakeSummary.body;
+			}
+			return 'Start with a concrete task, or ask what is happening.';
+		}
+
+		function summarizeToken(value, fallback) {
+			if (!value) {
+				return fallback;
+			}
+
+			return String(value)
+				.replace(/[_-]+/g, ' ')
+				.replace(/\s+/g, ' ')
+				.trim()
+				.replace(/\b\w/g, (char) => char.toUpperCase());
+		}
+
+		function actorSummary(snapshot) {
+			const actor = snapshot.currentActor;
+			if (!actor) {
+				return '';
+			}
+
+			if (actor === 'intake_shell') {
+				return 'Intake';
+			}
+
+			return summarizeToken(actor, '');
+		}
+
+		function stageSummary(snapshot) {
+			return summarizeToken(snapshot.currentStage, '');
+		}
+
+		function isMeaningfulMilestone(item) {
+			if (!item || !item.authoritative) {
+				return false;
+			}
+
+			if (
+				item.type === 'clarification_request' ||
+				item.type === 'approval_request' ||
+				item.type === 'interrupt_request' ||
+				item.type === 'error'
+			) {
+				return true;
+			}
+
+			if (item.type === 'system_status') {
+				return item.title !== 'Ready when you are';
+			}
+
+			return false;
+		}
+
+		function latestMeaningfulMilestone() {
+			if (!model) {
+				return undefined;
+			}
+
+			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
+				const item = model.feed[index];
+				if (isMeaningfulMilestone(item)) {
+					return item;
+				}
+			}
+
+			return undefined;
+		}
+
+		function shouldRenderInTranscript(item) {
+			if (item.type === 'artifact_reference' || item.type === 'shell_event') {
+				return false;
+			}
+			if (item.type === 'system_status' && !isMeaningfulMilestone(item)) {
+				return false;
+			}
+			return true;
+		}
+
+		function milestoneArtifact(item) {
+			if (!model || !item?.source_artifact_ref) {
+				return undefined;
+			}
+
+			return (
+				model.snapshot.recentArtifacts.find(
+					(artifact) => artifact.path === item.source_artifact_ref
+				) ??
+				model.feed.find(
+					(entry) =>
+						entry.type === 'artifact_reference' &&
+						entry.artifact.path === item.source_artifact_ref
+				)?.artifact
+			);
+		}
+
+		function fallbackAcceptedArtifact() {
+			if (!model) {
+				return undefined;
+			}
+
+			return model.snapshot.recentArtifacts.find(
+				(artifact) => artifact.authoritative
+			);
+		}
+
+		function currentQuickArtifact() {
+			const milestone = latestMeaningfulMilestone();
+			return milestoneArtifact(milestone) ?? fallbackAcceptedArtifact();
+		}
+
+		function renderArtifactQuickAction(artifact) {
+			if (!artifact) {
+				return '';
+			}
+
+			return (
+				'<div class="card-actions">' +
+					'<button type="button" class="secondary" data-action="open_artifact" data-artifact-id="' +
+					escapeHtml(artifact.id || artifact.path) +
+					'">View source</button>' +
+				'</div>'
+			);
+		}
+
+		function renderContextChips(snapshot, limit) {
+			const chips = [];
+			if (model?.activeClarification) {
+				chips.push('<span class="pill is-warning">Clarification</span>');
+			}
+			if (snapshot.pendingApproval) {
+				chips.push('<span class="pill is-warning">Approval</span>');
+			}
+			if (snapshot.accessMode === 'full_access') {
+				chips.push('<span class="pill is-primary">Full access</span>');
+			}
+			if (snapshot.pendingInterrupt) {
+				chips.push('<span class="pill is-danger">Stop pending</span>');
+			} else if (snapshot.runState === 'running') {
+				chips.push('<span class="pill is-primary">Running</span>');
+			}
+			if (typeof limit !== 'number' || limit < 0 || chips.length <= limit) {
+				return chips.join('');
+			}
+			return (
+				chips.slice(0, limit).join('') +
+				'<span class="pill">+' + String(chips.length - limit) + '</span>'
+			);
+		}
+
+		function pendingStateForCurrentStep(text) {
+			if (model?.activeClarification) {
+				return {
+					text,
+					title: 'Applying your clarification',
+					body: 'Corgi is updating the request with your answer and preparing the next step.',
+					hint: 'Updating your clarification...',
+				};
+			}
+
+			if (model?.snapshot?.pendingApproval) {
+				return {
+					text,
+					title: 'Reviewing your new request',
+					body: 'Corgi is replacing the previous approval checkpoint and checking the new request.',
+					hint: 'Reviewing your new request...',
+				};
+			}
+
+			if (model?.snapshot?.runState === 'running') {
+				return {
+					text,
+					title: 'Reviewing your message',
+					body: 'Corgi is deciding whether this should become a question, a stop, or a new request.',
+					hint: 'Reviewing your message...',
+				};
+			}
+
+			return {
+				text,
+				title: 'Reviewing your request',
+				body: 'Corgi is reading your prompt and deciding the next step.',
+				hint: 'Reviewing your request...',
+			};
+		}
+
+		function setPendingSubmission(pending) {
+			ui.pendingSubmissionText = pending.text || '';
+			ui.pendingSubmissionTitle = pending.title || '';
+			ui.pendingSubmissionBody = pending.body || '';
+			ui.pendingSubmissionHint = pending.hint || '';
+			ui.pendingSubmissionActive = true;
+		}
+
+		function clearPendingSubmission() {
+			ui.pendingSubmissionText = '';
+			ui.pendingSubmissionTitle = '';
+			ui.pendingSubmissionBody = '';
+			ui.pendingSubmissionHint = '';
+			ui.pendingSubmissionActive = false;
+		}
+
 		function composerMode() {
 			if (model?.activeClarification) {
 				const hasOptions =
@@ -851,14 +1314,16 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 
 			const snapshot = model.snapshot;
 			const stale = isSnapshotStale(snapshot);
-			const statusLabel =
-				snapshot.pendingInterrupt
-					? 'Stop pending'
-					: snapshot.runState === 'running'
-						? 'Running'
-						: snapshot.transportState === 'connected' && !stale
-							? 'Ready'
-							: 'Attention';
+			const railTask = railTitle(snapshot);
+			const subline = [];
+			const actor = actorSummary(snapshot);
+			const stage = stageSummary(snapshot);
+			if (actor) {
+				subline.push('<span class="pill">Actor: ' + escapeHtml(actor) + '</span>');
+			}
+			if (stage) {
+				subline.push('<span class="pill">Stage: ' + escapeHtml(stage) + '</span>');
+			}
 
 			headerContent.innerHTML =
 				'<div class="header-row">' +
@@ -868,8 +1333,12 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 					'</div>' +
 					'<div class="header-status">' +
 						'<span class="status-dot ' + (stale ? 'is-stale' : '') + '"></span>' +
-						'<span>' + escapeHtml(statusLabel) + '</span>' +
+						'<span>' + escapeHtml(statusLabel(snapshot, stale)) + '</span>' +
 					'</div>' +
+				'</div>' +
+				'<div class="header-subline">' +
+					'<span class="pill is-primary">Current work: ' + escapeHtml(railTask) + '</span>' +
+					subline.join('') +
 				'</div>';
 		}
 
@@ -904,9 +1373,10 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 						: '';
 				cards.push(
 					'<section class="action-card">' +
-						'<h2>Choose a direction</h2>' +
-						'<p>Pick one option or type a short answer below.</p>' +
+						'<h2>Choose a focus</h2>' +
+						'<p>Pick one option, or type a short answer below.</p>' +
 						optionButtons +
+						renderArtifactQuickAction(currentQuickArtifact()) +
 					'</section>'
 				);
 			}
@@ -914,12 +1384,13 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			if (snapshot.pendingApproval) {
 				cards.push(
 					'<section class="action-card">' +
-						'<h2>Ready to continue</h2>' +
-						'<p>Approve this intake or grant full access.</p>' +
+						'<h2>' + escapeHtml(snapshot.pendingApproval.title) + '</h2>' +
+						'<p>' + escapeHtml(snapshot.pendingApproval.body) + '</p>' +
 						'<div class="card-actions">' +
 							'<button type="button" data-action="approve">Approve</button>' +
 							'<button type="button" class="secondary" data-action="full_access">Full access</button>' +
 						'</div>' +
+						renderArtifactQuickAction(currentQuickArtifact()) +
 					'</section>'
 				);
 			}
@@ -929,16 +1400,18 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 					'<section class="action-card">' +
 						'<h2>' + escapeHtml(snapshot.pendingInterrupt.title) + '</h2>' +
 						'<p>' + escapeHtml(snapshot.pendingInterrupt.body) + '</p>' +
+						renderArtifactQuickAction(currentQuickArtifact()) +
 					'</section>'
 				);
 			} else if (canStop(snapshot)) {
 				cards.push(
 					'<section class="action-card">' +
-						'<h2>Running</h2>' +
-						'<p>Corgi is working. You can stop the run if needed.</p>' +
+						'<h2>Working now</h2>' +
+						'<p>Corgi is handling the current request. Stop only if you need to interrupt it.</p>' +
 						'<div class="card-actions">' +
 							'<button type="button" class="secondary" data-action="interrupt_run">Stop</button>' +
 						'</div>' +
+						renderArtifactQuickAction(currentQuickArtifact()) +
 					'</section>'
 				);
 			}
@@ -1067,6 +1540,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 						'<div class="message-label">Error</div>' +
 						'<div class="message-body">' + escapeHtml(item.title) + '</div>' +
 						(item.body ? '<div class="activity-summary">' + escapeHtml(item.body) + '</div>' : '') +
+						renderArtifactQuickAction(milestoneArtifact(item)) +
 						renderDetails(item) +
 					'</article>'
 				);
@@ -1086,6 +1560,9 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 				'">' +
 					'<div class="message-label">Corgi</div>' +
 					'<div class="message-body">' + escapeHtml(item.body || item.title) + '</div>' +
+					(isMeaningfulMilestone(item)
+						? renderArtifactQuickAction(milestoneArtifact(item))
+						: '') +
 					renderDetails(item) +
 				'</article>'
 			);
@@ -1096,7 +1573,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 		}
 
 		function renderFeedItem(item) {
-			if (item.type === 'artifact_reference' || item.type === 'shell_event') {
+			if (!shouldRenderInTranscript(item)) {
 				return '';
 			}
 
@@ -1128,7 +1605,41 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 					return dividerMarkup('Current turn') + markup;
 				}
 				return markup;
-			});
+			}).filter((markup) => markup && markup.trim().length > 0);
+			if (ui.pendingSubmissionText) {
+				cards.push(
+					'<article class="message user">' +
+						'<div class="message-body">' +
+						escapeHtml(ui.pendingSubmissionText) +
+						'</div>' +
+					'</article>'
+				);
+				if (ui.pendingSubmissionActive) {
+					cards.push(
+						'<article class="message assistant is-informational">' +
+							'<div class="message-label">Corgi</div>' +
+							'<div class="message-body">' +
+							escapeHtml(ui.pendingSubmissionTitle || 'Working on it...') +
+							'</div>' +
+							(ui.pendingSubmissionBody
+								? '<div class="activity-summary">' + escapeHtml(ui.pendingSubmissionBody) + '</div>'
+								: '') +
+						'</article>'
+					);
+				}
+			} else if (ui.pendingSubmissionActive) {
+				cards.push(
+					'<article class="message assistant is-informational">' +
+						'<div class="message-label">Corgi</div>' +
+						'<div class="message-body">' +
+						escapeHtml(ui.pendingSubmissionTitle || 'Working on it...') +
+						'</div>' +
+						(ui.pendingSubmissionBody
+							? '<div class="activity-summary">' + escapeHtml(ui.pendingSubmissionBody) + '</div>'
+							: '') +
+					'</article>'
+				);
+			}
 
 			feed.innerHTML =
 				cards.length > 0
@@ -1150,14 +1661,20 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 		function renderComposer() {
 			const mode = composerMode();
 			const blocked = model?.snapshot?.transportState === 'disconnected';
+			const busy = ui.pendingSubmissionActive;
+			const chips = model ? renderContextChips(model.snapshot) : '';
 			composerInput.placeholder = mode.placeholder;
 			composerHint.textContent = blocked
 				? 'Open the repo/workspace folder that contains orchestration/scripts/orchestrate.py, then reopen Corgi.'
+				: busy
+					? (ui.pendingSubmissionHint || 'Corgi is processing your request...')
 				: mode.hint;
-			composerSubmitButton.textContent = mode.buttonLabel;
+			composerSubmitButton.textContent = busy ? 'Sending...' : mode.buttonLabel;
 			composerInput.value = ui.draft;
-			composerInput.disabled = blocked;
-			composerSubmitButton.disabled = blocked;
+			composerInput.disabled = blocked || busy;
+			composerSubmitButton.disabled = blocked || busy;
+			composerContext.innerHTML = chips;
+			composerContext.hidden = chips.length === 0;
 		}
 
 		function render() {
@@ -1180,10 +1697,12 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 				return;
 			}
 
+			setPendingSubmission(pendingStateForCurrentStep(text));
 			vscode.postMessage({ type: 'submit_prompt', text });
 
 			ui.draft = '';
 			persistUiState();
+			renderFeed();
 			renderComposer();
 		}
 
@@ -1209,6 +1728,14 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			if (clarificationTarget) {
 				const clarificationAnswer = clarificationTarget.dataset.clarificationAnswer;
 				if (clarificationAnswer) {
+					setPendingSubmission({
+						text: clarificationAnswer,
+						title: 'Applying your clarification',
+						body: 'Corgi is updating the request with your answer and preparing the next step.',
+						hint: 'Updating your clarification...',
+					});
+					renderFeed();
+					renderComposer();
 					vscode.postMessage({
 						type: 'answer_clarification',
 						text: clarificationAnswer,
@@ -1254,6 +1781,30 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 				action === 'full_access' ||
 				action === 'interrupt_run'
 			) {
+				if (action === 'approve') {
+					setPendingSubmission({
+						text: '',
+						title: 'Applying approval',
+						body: 'Corgi is accepting the current request and refreshing the session.',
+						hint: 'Applying your approval...',
+					});
+				} else if (action === 'full_access') {
+					setPendingSubmission({
+						text: '',
+						title: 'Enabling full access',
+						body: 'Corgi is enabling full access for this session and continuing the current request.',
+						hint: 'Enabling full access...',
+					});
+				} else {
+					setPendingSubmission({
+						text: '',
+						title: 'Requesting stop',
+						body: 'Corgi is asking orchestration to stop the current run.',
+						hint: 'Requesting stop...',
+					});
+				}
+				renderFeed();
+				renderComposer();
 				vscode.postMessage({ type: action });
 			}
 		});
@@ -1265,6 +1816,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			}
 
 			model = message.payload;
+			clearPendingSubmission();
 			if (
 				typeof ui.initialFeedCount !== 'number' ||
 				(model?.feed?.length ?? 0) < ui.initialFeedCount
@@ -1279,6 +1831,7 @@ export function getExecutionWindowHtml(cspSource: string, nonce: string = getNon
 			if (model) {
 				renderHeader();
 				renderActionBand();
+				renderComposer();
 			}
 		}, 5000);
 

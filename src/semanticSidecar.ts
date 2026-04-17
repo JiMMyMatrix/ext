@@ -254,6 +254,232 @@ function semanticPrompt(input: SemanticRunnerInput): string {
 	].join('\n');
 }
 
+function normalizedLower(text: string): string {
+	return text.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isShortQuestion(text: string): boolean {
+	return /\?\s*$/.test(text.trim());
+}
+
+function isObviousGovernorDialogue(text: string): boolean {
+	const normalized = normalizedLower(text);
+	if (!normalized) {
+		return false;
+	}
+
+	return (
+		isShortQuestion(text) ||
+		[
+			'what happened',
+			'what happen',
+			'what is happening',
+			"what's happening",
+			'what is going on',
+			"what's going on",
+			'what is the current progress',
+			'what is the progress',
+			'what is the status',
+			'what is the plan',
+			'who are you',
+			'why',
+			'how',
+			'explain',
+			'help me understand',
+			'compare',
+			'status',
+			'progress',
+			'update me',
+			'any update',
+		].some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `))
+	);
+}
+
+function isObviousGovernedWorkIntent(text: string): boolean {
+	const normalized = normalizedLower(text);
+	if (!normalized) {
+		return false;
+	}
+
+	return [
+		'analyze',
+		'review',
+		'inspect',
+		'investigate',
+		'look at',
+		'scan',
+		'summarize',
+		'plan',
+		'implement',
+		'build',
+		'create',
+		'refactor',
+		'fix',
+		'debug',
+		'improve',
+		'update',
+		'check',
+	].some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `));
+}
+
+function explicitActionDecision(
+	model: ExecutionWindowModel,
+	text: string
+): SemanticDecision | undefined {
+	const normalized = normalizedLower(text);
+	if (!normalized) {
+		return undefined;
+	}
+
+	if (model.snapshot.pendingApproval) {
+		if (
+			[
+				'approve',
+				'approved',
+				'go ahead',
+				'continue',
+				'yes',
+				'ok',
+				'okay',
+			].includes(normalized)
+		) {
+			return {
+				route_type: 'explicit_action',
+				action_name: 'approve',
+				normalized_text: text.trim(),
+				paraphrase: 'Approve the pending request.',
+				confidence: 'high',
+				reason: 'deterministic_explicit_approve',
+			};
+		}
+		if (
+			[
+				'full access',
+				'grant full access',
+				'enable full access',
+				'allow full access',
+			].includes(normalized)
+		) {
+			return {
+				route_type: 'explicit_action',
+				action_name: 'full_access',
+				normalized_text: text.trim(),
+				paraphrase: 'Grant full access for the current session.',
+				confidence: 'high',
+				reason: 'deterministic_explicit_full_access',
+			};
+		}
+	}
+
+	if (
+		model.snapshot.runState === 'running' &&
+		!model.snapshot.pendingInterrupt &&
+		['stop', 'interrupt', 'cancel', 'halt', 'stop it'].includes(normalized)
+	) {
+		return {
+			route_type: 'explicit_action',
+			action_name: 'interrupt_run',
+			normalized_text: text.trim(),
+			paraphrase: 'Stop the current run.',
+			confidence: 'high',
+			reason: 'deterministic_explicit_interrupt',
+		};
+	}
+
+	return undefined;
+}
+
+function clarificationReplyDecision(
+	model: ExecutionWindowModel,
+	text: string
+): SemanticDecision | undefined {
+	if (!model.activeClarification) {
+		return undefined;
+	}
+
+	const normalized = normalizedLower(text);
+	const trimmed = text.trim();
+	if (!normalized) {
+		return undefined;
+	}
+
+	const matchesOption = (model.activeClarification.options ?? []).some((option) => {
+		const answer = normalizedLower(option.answer);
+		const label = normalizedLower(option.label);
+		return normalized === answer || normalized === label;
+	});
+
+	if (matchesOption || (!isShortQuestion(trimmed) && normalized.split(' ').length <= 8)) {
+		return {
+			route_type: 'clarification_reply',
+			action_name: 'none',
+			normalized_text: trimmed,
+			paraphrase: 'Answer the active clarification.',
+			confidence: 'high',
+			reason: 'deterministic_clarification_reply',
+		};
+	}
+
+	return undefined;
+}
+
+function deterministicSemanticDecision(
+	model: ExecutionWindowModel,
+	rawText: string
+): SemanticDecision | undefined {
+	const trimmed = rawText.trim();
+	if (!trimmed) {
+		return undefined;
+	}
+
+	return (
+		explicitActionDecision(model, trimmed) ??
+		clarificationReplyDecision(model, trimmed) ??
+		(isObviousGovernorDialogue(trimmed)
+			? {
+					route_type: 'governor_dialogue',
+					action_name: 'none',
+					normalized_text: trimmed,
+					paraphrase: 'Ask Corgi a read-only question about progress or context.',
+					confidence: 'high',
+					reason: 'deterministic_governor_dialogue',
+			  }
+			: undefined) ??
+		(isObviousGovernedWorkIntent(trimmed)
+			? {
+					route_type: 'governed_work_intent',
+					action_name: 'none',
+					normalized_text: trimmed,
+					paraphrase: 'Ask Corgi to perform a new governed work request.',
+					confidence: 'high',
+					reason: 'deterministic_governed_work_intent',
+			  }
+			: undefined)
+	);
+}
+
+export function applyDeterministicSemanticFallback(
+	model: ExecutionWindowModel,
+	rawText: string,
+	decision: SemanticDecision
+): SemanticDecision {
+	const deterministicDecision = deterministicSemanticDecision(model, rawText);
+	if (deterministicDecision) {
+		return deterministicDecision;
+	}
+
+	if (decision.confidence === 'high' && decision.route_type !== 'block') {
+		return decision;
+	}
+
+	const trimmed = rawText.trim();
+	if (!trimmed) {
+		return decision;
+	}
+
+	return decision;
+}
+
 function normalizeDecision(raw: unknown, rawText: string): SemanticDecision {
 	const candidate = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
 	const routeType = candidate.route_type;
@@ -590,7 +816,22 @@ export class SemanticSidecar {
 			rawText,
 			loopState
 		);
-		const decision = await this.runner.classify({ rawText, summary });
+		const fastDecision = deterministicSemanticDecision(model, rawText);
+		if (fastDecision) {
+			return resolveSemanticRouting(
+				model,
+				rawText,
+				fastDecision,
+				loopState,
+				summaryRef,
+				contextFlags
+			);
+		}
+		const decision = applyDeterministicSemanticFallback(
+			model,
+			rawText,
+			await this.runner.classify({ rawText, summary })
+		);
 		return resolveSemanticRouting(
 			model,
 			rawText,

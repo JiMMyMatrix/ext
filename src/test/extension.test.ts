@@ -15,8 +15,10 @@ import {
 	TransportUnavailableError,
 } from '../executionTransport';
 import {
+	applyDeterministicSemanticFallback,
 	DEFAULT_SEMANTIC_SIDECAR_MODEL,
 	resolveSemanticRouting,
+	SemanticSidecar,
 	type SemanticDecision,
 } from '../semanticSidecar';
 import {
@@ -27,6 +29,11 @@ import {
 
 const PACKAGE_JSON_PATH = path.resolve(__dirname, '../../package.json');
 const LAUNCH_JSON_PATH = path.resolve(__dirname, '../../.vscode/launch.json');
+const EXTENSION_TS_PATH = path.resolve(__dirname, '../../src/extension.ts');
+const EXECUTION_WINDOW_PANEL_TS_PATH = path.resolve(
+	__dirname,
+	'../../src/executionWindowPanel.ts'
+);
 
 function loadPackageJson(): Record<string, unknown> {
 	return JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8')) as Record<string, unknown>;
@@ -97,6 +104,17 @@ suite('Corgi Webview UX', () => {
 			launchJson,
 			/"args"\s*:\s*\[\s*"--extensionDevelopmentPath=\$\{workspaceFolder\}"\s*,\s*"\$\{workspaceFolder\}"/s
 		);
+	});
+
+	test('development resets no longer depend on launch env flags', () => {
+		const extensionSource = fs.readFileSync(EXTENSION_TS_PATH, 'utf8');
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+
+		assert.ok(extensionSource.includes('context.extensionMode !== vscode.ExtensionMode.Development'));
+		assert.ok(webviewSource.includes('return context.extensionMode === vscode.ExtensionMode.Development;'));
+		assert.ok(!extensionSource.includes('CORGI_RESET_DEV_SESSION'));
+		assert.ok(!extensionSource.includes('CORGI_RESET_WEBVIEW_STATE'));
+		assert.ok(!webviewSource.includes('CORGI_RESET_WEBVIEW_STATE'));
 	});
 
 	test('transport selection resolves the real orchestration workspace when available', () => {
@@ -257,12 +275,74 @@ suite('Corgi Webview UX', () => {
 		}
 	});
 
+	test('deterministic semantic fallback upgrades obvious work requests and dialogue questions', () => {
+		const baseModel = createInitialModel('2026-04-10T10:00:00.000Z');
+		const blockedDecision = semanticDecision({
+			route_type: 'block',
+			action_name: 'none',
+			confidence: 'low',
+			reason: 'mixed_or_ambiguous',
+			paraphrase: '',
+		});
+
+		const workDecision = applyDeterministicSemanticFallback(
+			baseModel,
+			'analyze the repo',
+			blockedDecision
+		);
+		assert.strictEqual(workDecision.route_type, 'governed_work_intent');
+		assert.strictEqual(workDecision.confidence, 'high');
+
+		const dialogueDecision = applyDeterministicSemanticFallback(
+			baseModel,
+			'who are you?',
+			blockedDecision
+		);
+		assert.strictEqual(dialogueDecision.route_type, 'governor_dialogue');
+		assert.strictEqual(dialogueDecision.confidence, 'high');
+	});
+
+	test('semantic sidecar skips the model runner for obvious governed work requests', async () => {
+		const sidecar = new SemanticSidecar({
+			classify: async () => {
+				throw new Error('runner should not be called for obvious work requests');
+			},
+		});
+
+		const resolution = await sidecar.route(
+			'analyze the repo',
+			createInitialModel('2026-04-10T10:00:00.000Z')
+		);
+
+		assert.strictEqual(resolution.kind, 'dispatch');
+		if (resolution.kind === 'dispatch') {
+			assert.strictEqual(resolution.action.type, 'submit_prompt');
+			assert.strictEqual(
+				resolution.action.semantic_route_type,
+				'governed_work_intent'
+			);
+		}
+	});
+
 	test('webview transcript treats requests as assistant replies and separates new turns', () => {
 		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
 
 		assert.ok(html.includes('feed-divider'));
 		assert.ok(html.includes('Current turn'));
 		assert.ok(html.includes('initialFeedCount'));
+		assert.ok(html.includes('composerContext'));
+		assert.ok(html.includes('Current work: '));
+		assert.ok(html.includes('View source'));
+		assert.ok(html.includes('pendingSubmissionText'));
+		assert.ok(html.includes('pendingSubmissionTitle'));
+		assert.ok(html.includes('pendingSubmissionBody'));
+		assert.ok(html.includes('pendingSubmissionHint'));
+		assert.ok(html.includes('Reviewing your request'));
+		assert.ok(html.includes('Applying your clarification'));
+		assert.ok(html.includes('Applying approval'));
+		assert.ok(html.includes('Enabling full access'));
+		assert.ok(html.includes('Requesting stop'));
+		assert.ok(html.includes("composerSubmitButton.textContent = busy ? 'Sending...' : mode.buttonLabel;"));
 		assert.ok(!html.includes('request-marker'));
 		assert.ok(!html.includes('renderRequestMarker'));
 		assert.ok(!html.includes("return renderRequestMarker(item);"));
@@ -275,6 +355,28 @@ suite('Corgi Webview UX', () => {
 				'Open the repo/workspace folder that contains orchestration/scripts/orchestrate.py, then reopen Corgi.'
 			)
 		);
+		assert.ok(html.includes('const shouldResetPersistedState = false;'));
+	});
+
+	test('webview can reset persisted state for development launches', () => {
+		const html = getExecutionWindowHtml(
+			'vscode-webview-resource://test',
+			'nonce-for-test',
+			true
+		);
+
+		assert.ok(html.includes('const shouldResetPersistedState = true;'));
+		assert.ok(html.includes('vscode.setState(defaultPersistedState);'));
+	});
+
+	test('webview removes the current work panel and keeps context in the header', () => {
+		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
+
+		assert.ok(!html.includes('<section class="session-rail" id="sessionRail"></section>'));
+		assert.ok(!html.includes('data-action="toggle_rail"'));
+		assert.ok(html.includes('Current work: '));
+		assert.ok(!html.includes('Lane: '));
+		assert.ok(!html.includes('Branch: '));
 	});
 
 	test('submit prompt moves the model into clarification state', () => {

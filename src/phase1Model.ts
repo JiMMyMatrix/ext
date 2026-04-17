@@ -743,7 +743,7 @@ function buildGovernorDialogueReply(
 
 	if (model.activeClarification) {
 		return {
-			body: 'Current progress: intake is waiting on one clarification before the request can continue. Answer it or choose one of the suggested options to move forward.',
+			body: 'Current progress: one clarification is still open. Answer it or choose one of the suggested options to keep moving.',
 			details: [
 				`Prompt: ${summarizePrompt(prompt)}`,
 				`Current actor: ${actor}`,
@@ -754,7 +754,7 @@ function buildGovernorDialogueReply(
 
 	if (snapshot.pendingApproval) {
 		return {
-			body: 'Current progress: orchestration is waiting for explicit acceptance before this request can move into Governor-led work. Use Approve or Full access when you want it to continue.',
+			body: 'Current progress: this request is ready, but it is waiting for your approval or full access before Corgi can continue.',
 			details: [
 				`Prompt: ${summarizePrompt(prompt)}`,
 				`Current actor: ${actor}`,
@@ -766,7 +766,7 @@ function buildGovernorDialogueReply(
 
 	if (snapshot.runState === 'running') {
 		return {
-			body: `Current progress: Governor-led work is running${task ? ` for ${task}` : ''}. Stop is available if you need to interrupt the current run.`,
+			body: `Current progress: Corgi is actively working${task ? ` on ${task}` : ''}. Stop is available if you need it.`,
 			details: [
 				`Prompt: ${summarizePrompt(prompt)}`,
 				`Current actor: ${actor}`,
@@ -787,7 +787,7 @@ function buildGovernorDialogueReply(
 	}
 
 	return {
-		body: 'No governed work is active yet. Send a bounded request when you want to start, or keep asking progress and idea questions like this one.',
+		body: 'Nothing is running right now. Start with a bounded request, or ask a progress question anytime.',
 		details: [
 			`Prompt: ${summarizePrompt(prompt)}`,
 			`Current actor: ${actor}`,
@@ -799,7 +799,7 @@ function buildGovernorDialogueReply(
 function humanizeAcceptedSummary(task: string): string {
 	const normalizedTask = task.trim().replace(/[.!?]+$/u, '');
 	if (!normalizedTask) {
-		return 'Ready to continue.';
+		return 'Accepted and ready.';
 	}
 
 	return (
@@ -863,7 +863,7 @@ function acceptIntake(
 			...model.feed,
 			createFeedItem(
 				'system_status',
-				accessMode === 'full_access' ? 'Full access enabled' : 'Ready to continue',
+				accessMode === 'full_access' ? 'Full access enabled' : 'Accepted and ready',
 				acceptedIntakeSummary.body,
 				true,
 				now,
@@ -1078,8 +1078,8 @@ export function applyModelAction(
 			const approval: RequestCard = {
 				id: nextId('approval'),
 				contextRef: buildContextRef('approval'),
-				title: 'Accept intake',
-				body: "Approve or grant full access when you're ready to continue.",
+				title: 'Approval needed',
+				body: 'Approve this request, or grant full access for the session when you want Corgi to continue.',
 				requestedAt: now,
 			};
 
