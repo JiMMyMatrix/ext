@@ -306,6 +306,7 @@ function isObviousGovernedWorkIntent(text: string): boolean {
 	return [
 		'analyze',
 		'review',
+		'develop',
 		'inspect',
 		'investigate',
 		'look at',

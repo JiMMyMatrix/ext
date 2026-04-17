@@ -623,6 +623,24 @@ export function getExecutionWindowHtml(
 			white-space: nowrap;
 		}
 
+		.pill.pill-reveal {
+			max-width: min(100%, 28rem);
+		}
+
+		.pill-reveal-value {
+			display: inline-block;
+			max-width: 0;
+			overflow: hidden;
+			opacity: 0;
+			transition: max-width 140ms ease, opacity 140ms ease;
+			white-space: nowrap;
+		}
+
+		.pill.pill-reveal:hover .pill-reveal-value {
+			max-width: 24rem;
+			opacity: 1;
+		}
+
 		.pill.is-primary {
 			color: var(--text);
 			border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
@@ -949,6 +967,7 @@ export function getExecutionWindowHtml(
 			expandedIds: [],
 			scrollTop: 0,
 			initialFeedCount: undefined,
+			promptHistory: [],
 		};
 		if (shouldResetPersistedState) {
 			vscode.setState(defaultPersistedState);
@@ -967,6 +986,11 @@ export function getExecutionWindowHtml(
 				typeof persisted.initialFeedCount === 'number'
 					? persisted.initialFeedCount
 					: undefined,
+			promptHistory: Array.isArray(persisted.promptHistory)
+				? persisted.promptHistory.filter((entry) => typeof entry === 'string' && entry.trim().length > 0)
+				: [],
+			historyIndex: undefined,
+			historyDraft: '',
 			foregroundRequest: undefined,
 		};
 
@@ -987,7 +1011,72 @@ export function getExecutionWindowHtml(
 				expandedIds: Array.from(ui.expandedIds),
 				scrollTop: feed.scrollTop,
 				initialFeedCount: ui.initialFeedCount,
+				promptHistory: ui.promptHistory.slice(-50),
 			});
+		}
+
+		function renderRevealPill(label, value, className) {
+			if (!value) {
+				return '';
+			}
+			const classes = ['pill', 'pill-reveal'];
+			if (className) {
+				classes.push(className);
+			}
+			return (
+				'<span class="' + classes.join(' ') + '" title="' + escapeHtml(label + ': ' + value) + '">' +
+					'<span class="pill-reveal-label">' + escapeHtml(label) + '</span>' +
+					'<span class="pill-reveal-value">: ' + escapeHtml(value) + '</span>' +
+				'</span>'
+			);
+		}
+
+		function rememberPrompt(text) {
+			const trimmed = text.trim();
+			if (!trimmed) {
+				return;
+			}
+			if (ui.promptHistory[ui.promptHistory.length - 1] !== trimmed) {
+				ui.promptHistory = ui.promptHistory.concat(trimmed).slice(-50);
+			}
+		}
+
+		function resetPromptHistoryNavigation() {
+			ui.historyIndex = undefined;
+			ui.historyDraft = '';
+		}
+
+		function navigatePromptHistory(direction) {
+			if (!ui.promptHistory.length) {
+				return false;
+			}
+
+			if (direction === 'up') {
+				if (ui.historyIndex === undefined) {
+					ui.historyDraft = ui.draft;
+					ui.historyIndex = ui.promptHistory.length - 1;
+				} else if (ui.historyIndex > 0) {
+					ui.historyIndex -= 1;
+				}
+				ui.draft = ui.promptHistory[ui.historyIndex] ?? ui.draft;
+			} else {
+				if (ui.historyIndex === undefined) {
+					return false;
+				}
+				if (ui.historyIndex < ui.promptHistory.length - 1) {
+					ui.historyIndex += 1;
+					ui.draft = ui.promptHistory[ui.historyIndex] ?? ui.draft;
+				} else {
+					ui.draft = ui.historyDraft;
+					resetPromptHistoryNavigation();
+				}
+			}
+
+			persistUiState();
+			renderComposer();
+			const end = composerInput.value.length;
+			composerInput.setSelectionRange(end, end);
+			return true;
 		}
 
 		function escapeHtml(value) {
@@ -1381,10 +1470,10 @@ export function getExecutionWindowHtml(
 			const actor = actorSummary(snapshot);
 			const stage = stageSummary(snapshot);
 			if (actor) {
-				subline.push('<span class="pill">Actor: ' + escapeHtml(actor) + '</span>');
+				subline.push(renderRevealPill('Actor', actor));
 			}
 			if (stage) {
-				subline.push('<span class="pill">Stage: ' + escapeHtml(stage) + '</span>');
+				subline.push(renderRevealPill('Stage', stage));
 			}
 			subline.push(
 				'<span class="pill">' +
@@ -1395,7 +1484,7 @@ export function getExecutionWindowHtml(
 
 			headerContent.innerHTML =
 				'<div class="header-subline">' +
-					'<span class="pill is-primary">Current work: ' + escapeHtml(railTask) + '</span>' +
+					renderRevealPill('Current work', railTask, 'is-primary') +
 					subline.join('') +
 				'</div>';
 		}
@@ -1784,6 +1873,8 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
+			rememberPrompt(text);
+			resetPromptHistoryNavigation();
 			ui.foregroundRequest = undefined;
 			ensureForegroundRequest(text, 'Model clarifying...');
 			appendForegroundBullet('Model clarifying', 'active', 'Model clarifying...');
@@ -1798,9 +1889,39 @@ export function getExecutionWindowHtml(
 		composerForm.addEventListener('submit', handleSubmit);
 		composerInput.addEventListener('input', (event) => {
 			ui.draft = event.target.value;
+			resetPromptHistoryNavigation();
 			persistUiState();
 		});
 		composerInput.addEventListener('keydown', (event) => {
+			if (
+				event.key === 'ArrowUp' &&
+				!event.shiftKey &&
+				!event.altKey &&
+				!event.metaKey &&
+				!event.ctrlKey &&
+				composerInput.selectionStart === 0 &&
+				composerInput.selectionEnd === 0
+			) {
+				if (navigatePromptHistory('up')) {
+					event.preventDefault();
+					return;
+				}
+			}
+			if (
+				event.key === 'ArrowDown' &&
+				!event.shiftKey &&
+				!event.altKey &&
+				!event.metaKey &&
+				!event.ctrlKey &&
+				ui.historyIndex !== undefined &&
+				composerInput.selectionStart === composerInput.value.length &&
+				composerInput.selectionEnd === composerInput.value.length
+			) {
+				if (navigatePromptHistory('down')) {
+					event.preventDefault();
+					return;
+				}
+			}
 			if (event.key === 'Enter' && !event.shiftKey) {
 				event.preventDefault();
 				composerForm.requestSubmit();

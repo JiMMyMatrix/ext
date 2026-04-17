@@ -294,6 +294,14 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(workDecision.route_type, 'governed_work_intent');
 		assert.strictEqual(workDecision.confidence, 'high');
 
+		const developDecision = applyDeterministicSemanticFallback(
+			baseModel,
+			'develop the internet connect feature',
+			blockedDecision
+		);
+		assert.strictEqual(developDecision.route_type, 'governed_work_intent');
+		assert.strictEqual(developDecision.confidence, 'high');
+
 		const dialogueDecision = applyDeterministicSemanticFallback(
 			baseModel,
 			'who are you?',
@@ -332,7 +340,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('Current turn'));
 		assert.ok(html.includes('initialFeedCount'));
 		assert.ok(html.includes('composerContext'));
-		assert.ok(html.includes('Current work: '));
+		assert.ok(html.includes("renderRevealPill('Current work', railTask, 'is-primary')"));
 		assert.ok(html.includes('View source'));
 		assert.ok(html.includes('foregroundRequest'));
 		assert.ok(html.includes('Model clarifying'));
@@ -342,6 +350,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('Permission needed'));
 		assert.ok(html.includes('set_permission_scope'));
 		assert.ok(html.includes('data-permission-scope'));
+		assert.ok(html.includes('promptHistory: []'));
+		assert.ok(html.includes("event.key === 'ArrowUp'"));
 		assert.ok(html.includes("composerSubmitButton.textContent = busy ? 'Sending...' : mode.buttonLabel;"));
 		assert.ok(!html.includes('request-marker'));
 		assert.ok(!html.includes('renderRequestMarker'));
@@ -376,7 +386,8 @@ suite('Corgi Webview UX', () => {
 
 		assert.ok(!html.includes('<section class="session-rail" id="sessionRail"></section>'));
 		assert.ok(!html.includes('data-action="toggle_rail"'));
-		assert.ok(html.includes('Current work: '));
+		assert.ok(html.includes("renderRevealPill('Current work', railTask, 'is-primary')"));
+		assert.ok(html.includes('pill-reveal-value'));
 		assert.ok(html.includes('<span class="status-dot '));
 		assert.ok(!html.includes('Lane: '));
 		assert.ok(!html.includes('Branch: '));
