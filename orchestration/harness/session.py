@@ -483,6 +483,9 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 		snapshot["pendingPermissionRequest"].setdefault(
 			"allowedScopes", ["observe", "plan", "execute"]
 		)
+		snapshot["pendingPermissionRequest"].setdefault(
+			"continuationKind", "intake_acceptance"
+		)
 	if isinstance(snapshot.get("pendingInterrupt"), dict):
 		snapshot["pendingInterrupt"].setdefault(
 			"contextRef",
@@ -683,7 +686,14 @@ def _scope_satisfies(current_scope: str | None, required_scope: str | None) -> b
 	return _permission_rank(current_scope) >= _permission_rank(required_scope)
 
 
-def _permission_request(recommended_scope: str, now: str) -> dict[str, Any]:
+def _permission_request(
+	recommended_scope: str,
+	now: str,
+	*,
+	continuation_kind: str = "intake_acceptance",
+	pending_prompt: str | None = None,
+	pending_normalized_text: str | None = None,
+) -> dict[str, Any]:
 	request_id = _next_id("permission")
 	return {
 		"id": request_id,
@@ -692,6 +702,9 @@ def _permission_request(recommended_scope: str, now: str) -> dict[str, Any]:
 		"body": f"Choose {recommended_scope} if you want Corgi to continue this request.",
 		"recommendedScope": recommended_scope,
 		"allowedScopes": ["observe", "plan", "execute"],
+		"continuationKind": continuation_kind,
+		"pendingPrompt": pending_prompt,
+		"pendingNormalizedText": pending_normalized_text,
 		"requestedAt": now,
 	}
 
@@ -840,6 +853,94 @@ def _accept_pending_intake(
 	return True
 
 
+def _apply_governor_dialogue_permission(
+	session: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	permission_scope: str,
+	request_id: str | None = None,
+	turn_type: str = "governor_dialogue",
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
+) -> bool:
+	model = session["model"]
+	pending_permission = model["snapshot"].get("pendingPermissionRequest")
+	if not pending_permission:
+		_append_error(
+			model,
+			"No permission request is active",
+			"There is no permission request to apply.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return False
+
+	prompt = trim_text(
+		pending_permission.get("pendingNormalizedText")
+		or pending_permission.get("pendingPrompt")
+	)
+	if not prompt:
+		_append_error(
+			model,
+			"Pending dialogue request unavailable",
+			"Corgi lost the pending Governor request before this permission choice was applied. Send the request again.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return False
+
+	model["snapshot"]["permissionScope"] = permission_scope
+	model["snapshot"]["pendingPermissionRequest"] = None
+	model["snapshot"]["pendingInterrupt"] = None
+
+	body, details, primary_ref = _build_governor_dialogue(
+		session,
+		prompt,
+		repo_root=repo_root,
+	)
+	model["feed"].append(
+		_feed_item(
+			"actor_event",
+			"Governor response",
+			body,
+			authoritative=True,
+			now=now,
+			details=details,
+			source_layer="governor",
+			source_actor="governor",
+			source_artifact_ref=primary_ref,
+			**_semantic_provenance(
+				turn_type=turn_type,
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=semantic_paraphrase,
+				semantic_normalized_text=semantic_normalized_text or prompt,
+				in_response_to_request_id=request_id,
+			),
+		)
+	)
+	_refresh_snapshot(
+		model,
+		now,
+		currentActor="governor",
+		currentStage="dialogue_ready",
+		runState="idle",
+		transportState="connected",
+	)
+	return True
+
+
 def handle_submit_prompt(
 	session: dict[str, Any],
 	text: str,
@@ -899,7 +1000,13 @@ def handle_submit_prompt(
 				semantic_normalized_text=semantic_prompt,
 				in_response_to_request_id=request_id,
 			)
-			permission_request = _permission_request("observe", now)
+			permission_request = _permission_request(
+				"observe",
+				now,
+				continuation_kind="governor_dialogue",
+				pending_prompt=prompt,
+				pending_normalized_text=semantic_prompt,
+			)
 			model["snapshot"]["pendingPermissionRequest"] = permission_request
 			model["feed"].append(
 				_feed_item(
@@ -1075,7 +1182,13 @@ def handle_submit_prompt(
 	model["activeClarification"] = None
 	required_scope = _recommended_permission_scope(semantic_prompt)
 	if _scope_satisfies(_current_permission_scope(model), required_scope):
-		model["snapshot"]["pendingPermissionRequest"] = _permission_request(required_scope, now)
+		model["snapshot"]["pendingPermissionRequest"] = _permission_request(
+			required_scope,
+			now,
+			continuation_kind="intake_acceptance",
+			pending_prompt=prompt,
+			pending_normalized_text=semantic_prompt,
+		)
 		_accept_pending_intake(
 			session,
 			now,
@@ -1094,7 +1207,13 @@ def handle_submit_prompt(
 		)
 		return
 
-	model["snapshot"]["pendingPermissionRequest"] = _permission_request(required_scope, now)
+	model["snapshot"]["pendingPermissionRequest"] = _permission_request(
+		required_scope,
+		now,
+		continuation_kind="intake_acceptance",
+		pending_prompt=prompt,
+		pending_normalized_text=semantic_prompt,
+	)
 	model["feed"].append(
 		_feed_item(
 			"permission_request",
@@ -1235,7 +1354,13 @@ def handle_answer_clarification(
 	model["activeClarification"] = None
 	required_scope = _recommended_permission_scope(semantic_answer)
 	if _scope_satisfies(_current_permission_scope(model), required_scope):
-		model["snapshot"]["pendingPermissionRequest"] = _permission_request(required_scope, now)
+		model["snapshot"]["pendingPermissionRequest"] = _permission_request(
+			required_scope,
+			now,
+			continuation_kind="intake_acceptance",
+			pending_prompt=text,
+			pending_normalized_text=semantic_answer,
+		)
 		_accept_pending_intake(
 			session,
 			now,
@@ -1253,7 +1378,13 @@ def handle_answer_clarification(
 			semantic_normalized_text=semantic_answer,
 		)
 		return
-	model["snapshot"]["pendingPermissionRequest"] = _permission_request(required_scope, now)
+	model["snapshot"]["pendingPermissionRequest"] = _permission_request(
+		required_scope,
+		now,
+		continuation_kind="intake_acceptance",
+		pending_prompt=text,
+		pending_normalized_text=semantic_answer,
+	)
 	model["feed"].append(
 		_feed_item(
 			"permission_request",
@@ -1353,6 +1484,29 @@ def handle_set_permission_scope(
 			"Choose Observe, Plan, or Execute to continue.",
 			now,
 			in_response_to_request_id=request_id,
+		)
+		return
+	continuation_kind = (
+		model["snapshot"]["pendingPermissionRequest"].get("continuationKind")
+		if isinstance(model["snapshot"].get("pendingPermissionRequest"), dict)
+		else None
+	)
+	if continuation_kind == "governor_dialogue":
+		_apply_governor_dialogue_permission(
+			session,
+			now,
+			repo_root=repo_root,
+			permission_scope=permission_scope,
+			request_id=request_id,
+			turn_type="governor_dialogue",
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=semantic_paraphrase,
+			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
 		)
 		return
 	_accept_pending_intake(

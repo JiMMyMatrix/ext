@@ -727,6 +727,12 @@ export function getExecutionWindowHtml(
 			border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
 		}
 
+		.pill.is-status {
+			color: var(--text);
+			border-color: color-mix(in srgb, var(--line) 75%, var(--accent));
+			background: color-mix(in srgb, var(--panel-raised) 84%, var(--accent) 16%);
+		}
+
 		.pill.is-warning {
 			color: var(--text);
 			border-color: color-mix(in srgb, var(--warning) 45%, var(--line));
@@ -1353,6 +1359,18 @@ export function getExecutionWindowHtml(
 			if (item.type === 'artifact_reference' || item.type === 'shell_event') {
 				return false;
 			}
+			if (item.type === 'permission_request') {
+				return Boolean(
+					model?.snapshot.pendingPermissionRequest &&
+					item.body === model.snapshot.pendingPermissionRequest.body
+				);
+			}
+			if (item.type === 'clarification_request') {
+				return Boolean(
+					model?.activeClarification &&
+					item.body === model.activeClarification.body
+				);
+			}
 			if (item.type === 'system_status' && !isMeaningfulMilestone(item)) {
 				return false;
 			}
@@ -1414,7 +1432,11 @@ export function getExecutionWindowHtml(
 				chips.push('<span class="pill is-warning">Permission</span>');
 			}
 			if (snapshot.permissionScope && snapshot.permissionScope !== 'unset') {
-				chips.push('<span class="pill is-primary">' + escapeHtml(snapshot.permissionScope) + '</span>');
+				chips.push(
+					'<span class="pill is-status">Scope: ' +
+						escapeHtml(snapshot.permissionScope.charAt(0).toUpperCase() + snapshot.permissionScope.slice(1)) +
+					'</span>'
+				);
 			}
 			if (snapshot.pendingInterrupt) {
 				chips.push('<span class="pill is-danger">Stop pending</span>');
@@ -1490,6 +1512,15 @@ export function getExecutionWindowHtml(
 			if (!ui.foregroundRequest) {
 				return;
 			}
+			ui.foregroundRequest.bullets = ui.foregroundRequest.bullets.map((bullet, index, bullets) => ({
+				...bullet,
+				state:
+					index === bullets.length - 1
+						? bullet.state
+						: bullet.state === 'failed'
+							? 'failed'
+							: 'done',
+			}));
 			if (label) {
 				replaceForegroundTail(label, state || 'done', hint);
 			} else if (ui.foregroundRequest.bullets.length > 0) {

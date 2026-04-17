@@ -123,6 +123,37 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertIsNotNone(model["snapshot"]["pendingPermissionRequest"])
             self.assertFalse((repo_root / ".agent" / "intakes").exists())
 
+    def test_session_observe_permission_resumes_pending_governor_dialogue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="hello!",
+                turn_type="governor_dialogue",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(
+                model["snapshot"]["pendingPermissionRequest"]["continuationKind"],
+                "governor_dialogue",
+            )
+            self.assertIsNone(session.load_session(repo_root)["meta"]["activeIntakeRef"])
+
+            model = session.dispatch_session_action(
+                "set_permission_scope",
+                permission_scope="observe",
+                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["permissionScope"], "observe")
+            self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
+            self.assertEqual(model["snapshot"]["currentActor"], "governor")
+            self.assertEqual(model["snapshot"]["currentStage"], "dialogue_ready")
+            self.assertEqual(model["feed"][-1]["type"], "actor_event")
+            self.assertEqual(model["feed"][-1]["title"], "Governor response")
+            self.assertNotIn("waiting for a observe permission choice", model["feed"][-1]["body"])
+
     def test_scenario_fixture_loader_materializes_checked_in_state(self) -> None:
         self.assertIn("accepted_idle", list_scenarios())
         self.assertIn("completed_with_governor_decision", list_scenarios())

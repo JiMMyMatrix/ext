@@ -115,6 +115,9 @@ export interface RequestCard {
 export interface PermissionRequest extends RequestCard {
 	recommendedScope: PermissionScope;
 	allowedScopes: PermissionScope[];
+	continuationKind?: 'intake_acceptance' | 'governor_dialogue';
+	pendingPrompt?: string;
+	pendingNormalizedText?: string;
 }
 
 export interface ClarificationOption {
@@ -856,7 +859,12 @@ function recommendedPermissionScope(prompt: string): PermissionScope {
 
 function buildPermissionRequest(
 	recommendedScope: PermissionScope,
-	now: string
+	now: string,
+	options: {
+		continuationKind?: 'intake_acceptance' | 'governor_dialogue';
+		pendingPrompt?: string;
+		pendingNormalizedText?: string;
+	} = {}
 ): PermissionRequest {
 	return {
 		id: nextId('permission'),
@@ -866,6 +874,9 @@ function buildPermissionRequest(
 		recommendedScope,
 		allowedScopes: ['observe', 'plan', 'execute'],
 		requestedAt: now,
+		continuationKind: options.continuationKind ?? 'intake_acceptance',
+		pendingPrompt: options.pendingPrompt,
+		pendingNormalizedText: options.pendingNormalizedText,
 	};
 }
 
@@ -880,6 +891,14 @@ function permissionAllowsTurn(
 		return scope === 'plan' || scope === 'execute';
 	}
 	return true;
+}
+
+function pendingPermissionContinuation(
+	request: PermissionRequest | undefined
+): 'intake_acceptance' | 'governor_dialogue' {
+	return request?.continuationKind === 'governor_dialogue'
+		? 'governor_dialogue'
+		: 'intake_acceptance';
 }
 
 function permissionRank(scope: PermissionScope): number {
@@ -1013,7 +1032,11 @@ export function applyModelAction(
 			);
 			if (turnType === 'governor_dialogue') {
 				if (!permissionAllowsTurn(model.snapshot.permissionScope, turnType)) {
-					const permissionRequest = buildPermissionRequest('observe', now);
+					const permissionRequest = buildPermissionRequest('observe', now, {
+						continuationKind: 'governor_dialogue',
+						pendingPrompt: prompt,
+						pendingNormalizedText: prompt,
+					});
 					return {
 						...model,
 						snapshot: refreshSnapshot(model.snapshot, now, {
@@ -1324,6 +1347,58 @@ export function applyModelAction(
 						],
 				  }
 				: model;
+
+			const pendingRequest = withUserTurn.snapshot.pendingPermissionRequest;
+			if (pendingPermissionContinuation(pendingRequest) === 'governor_dialogue') {
+				const prompt =
+					pendingRequest?.pendingNormalizedText ||
+					pendingRequest?.pendingPrompt ||
+					withUserTurn.feed
+						.slice()
+						.reverse()
+						.find(
+							(item) =>
+								item.type === 'user_message' &&
+							item.turn_type === 'governor_dialogue'
+						)?.body ||
+					'';
+				const resumedDialogueModel = {
+					...withUserTurn,
+					snapshot: {
+						...withUserTurn.snapshot,
+						permissionScope: action.permission_scope,
+						pendingPermissionRequest: undefined,
+					},
+				};
+				const reply = buildGovernorDialogueReply(resumedDialogueModel, prompt);
+				return {
+					...resumedDialogueModel,
+					snapshot: refreshSnapshot(resumedDialogueModel.snapshot, now, {
+						permissionScope: action.permission_scope,
+						pendingPermissionRequest: undefined,
+						currentActor: 'governor',
+						currentStage: 'dialogue_ready',
+						runState: 'idle',
+						transportState: 'connected',
+					}),
+					feed: [
+						...withUserTurn.feed,
+						createFeedItem(
+							'actor_event',
+							'Governor response',
+							reply.body,
+							true,
+							now,
+							reply.details,
+							undefined,
+							{
+								turn_type: 'governor_dialogue',
+								...responseProvenanceForAction(action),
+							}
+						),
+					],
+				};
+			}
 
 			return acceptIntake(
 				withUserTurn,

@@ -342,6 +342,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('progress-bullet-text'));
 		assert.ok(html.includes('@keyframes progressShimmer'));
 		assert.ok(!html.includes('@keyframes progressDotPulse'));
+		assert.ok(html.includes("ui.foregroundRequest.bullets = ui.foregroundRequest.bullets.map"));
+		assert.ok(html.includes("if (item.type === 'permission_request')"));
+		assert.ok(html.includes("if (item.type === 'clarification_request')"));
+		assert.ok(html.includes('Scope: '));
 		assert.ok(html.includes('Waiting for clarification'));
 		assert.ok(html.includes('Waiting for permission: '));
 		assert.ok(html.includes('Execution started'));
@@ -445,6 +449,32 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(model.activeClarification, undefined);
 		assert.ok(model.snapshot.pendingPermissionRequest);
 		assert.strictEqual(model.snapshot.pendingPermissionRequest?.recommendedScope, 'observe');
+	});
+
+	test('observe permission resumes the same governor dialogue request', () => {
+		const initialModel = createInitialModel('2026-04-10T10:00:00.000Z');
+		const gatedModel = applyModelAction(initialModel, {
+			type: 'submit_prompt',
+			text: 'hello!',
+			semantic_route_type: 'governor_dialogue',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+
+		const resumedModel = applyModelAction(gatedModel, {
+			type: 'set_permission_scope',
+			permission_scope: 'observe',
+			context_ref: gatedModel.snapshot.pendingPermissionRequest?.contextRef,
+			now: '2026-04-10T10:00:10.000Z',
+		});
+
+		assert.strictEqual(resumedModel.snapshot.permissionScope, 'observe');
+		assert.strictEqual(resumedModel.snapshot.pendingPermissionRequest, undefined);
+		assert.strictEqual(resumedModel.snapshot.currentActor, 'governor');
+		assert.strictEqual(resumedModel.snapshot.currentStage, 'dialogue_ready');
+		const lastItem = resumedModel.feed[resumedModel.feed.length - 1];
+		assert.strictEqual(lastItem.type, 'actor_event');
+		assert.strictEqual(lastItem.title, 'Governor response');
+		assert.ok(!(lastItem.body ?? '').includes('waiting for a observe permission choice'));
 	});
 
 	test('answer clarification produces a permission request', () => {
