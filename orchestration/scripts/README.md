@@ -31,6 +31,13 @@ Current helper-runtime support is intentionally narrow:
 ## Audit
 - `orchestrate.py audit verify-architecture`
 
+## Developer Fixtures
+- `load_scenario_fixture.py`
+
+`load_scenario_fixture.py` is a developer-only helper for copying checked-in
+scenario fixtures into a repo so the webview and harness can read seeded
+`.agent/...` state during tests or manual verification.
+
 ## Rule
 Runtime-facing docs, prompts, skills, and the VS Code extension should point to
 `orchestrate.py`, not to a pile of individual script files and not to the

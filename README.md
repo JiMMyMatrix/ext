@@ -53,3 +53,29 @@ sidebar UX.
 The long-term direction is:
 - keep the UI concise and Codex-like
 - keep the backend architecture custom and harness-driven
+
+## Local Development
+Use the repo itself as the workspace when testing the sidebar locally.
+
+Typical flow:
+1. Open this repo as the current VS Code workspace.
+2. Optionally seed `.agent` state with
+   `python3 orchestration/scripts/load_scenario_fixture.py --scenario <name> --root . --replace`.
+3. Press `F5` to launch the Extension Development Host.
+4. Click the `Corgi` icon in the Activity Bar.
+
+The debug launch now opens this repo as the workspace automatically. If Corgi
+shows a blocking error about a missing orchestration workspace, reopen the repo
+folder that contains `orchestration/scripts/orchestrate.py` and then reopen the
+sidebar.
+
+If the Extension Development Host still opens without a visible workspace,
+Corgi now falls back to the extension development repo root in development mode
+so the real orchestration path can still load. The blocking error means neither
+the opened workspace nor the development repo root contained
+`orchestration/scripts/orchestrate.py`.
+
+If you ever see canned artifact references like `orchestration/README.md` or
+`orchestration/contracts/intake.json` as the active runtime state, that means
+you are on an old mock/demo path rather than the real orchestration-backed
+sidebar flow.
