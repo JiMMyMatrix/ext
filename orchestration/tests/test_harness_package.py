@@ -87,6 +87,7 @@ class HarnessPackageTests(unittest.TestCase):
             model = session.dispatch_session_action(
                 "answer_clarification",
                 text="Keep inline artifact actions visible.",
+                context_ref=model["activeClarification"]["contextRef"],
                 repo_root=repo_root,
             )
             self.assertEqual(model["snapshot"]["currentActor"], "orchestration")
@@ -212,6 +213,7 @@ class HarnessPackageTests(unittest.TestCase):
             model = session.dispatch_session_action(
                 "answer_clarification",
                 text=model["activeClarification"]["options"][0]["answer"],
+                context_ref=model["activeClarification"]["contextRef"],
                 repo_root=repo_root,
             )
             self.assertEqual(model["snapshot"]["currentStage"], "ready_for_acceptance")
@@ -225,15 +227,18 @@ class HarnessPackageTests(unittest.TestCase):
                 text="Build a compact execution window.",
                 repo_root=repo_root,
             )
+            clarification_model = session.load_session(repo_root)["model"]
             model = session.dispatch_session_action(
                 "answer_clarification",
                 text="Keep inline artifact actions visible.",
+                context_ref=clarification_model["activeClarification"]["contextRef"],
                 repo_root=repo_root,
             )
             self.assertIsNotNone(model["snapshot"]["pendingApproval"])
 
             model = session.dispatch_session_action(
                 "full_access",
+                context_ref=model["snapshot"]["pendingApproval"]["contextRef"],
                 repo_root=repo_root,
             )
 
@@ -254,10 +259,13 @@ class HarnessPackageTests(unittest.TestCase):
             session.dispatch_session_action(
                 "answer_clarification",
                 text="Keep inline artifact actions visible.",
+                context_ref=session.load_session(repo_root)["model"]["activeClarification"]["contextRef"],
                 repo_root=repo_root,
             )
+            approval_model = session.load_session(repo_root)["model"]
             session.dispatch_session_action(
                 "full_access",
+                context_ref=approval_model["snapshot"]["pendingApproval"]["contextRef"],
                 repo_root=repo_root,
             )
 
@@ -345,6 +353,64 @@ class HarnessPackageTests(unittest.TestCase):
                 draft["normalized_goal"],
                 "Analyze the repo while focusing on architecture, structure, and subsystem boundaries.",
             )
+
+    def test_session_rejects_stale_clarification_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Build a compact execution window.",
+                request_id="corgi-request:clarification-submit",
+                repo_root=repo_root,
+            )
+
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Keep inline artifact actions visible.",
+                request_id="corgi-request:clarification-answer",
+                context_ref="clarification-context-stale",
+                repo_root=repo_root,
+            )
+
+            last_item = model["feed"][-1]
+            self.assertEqual(last_item["type"], "error")
+            self.assertEqual(
+                last_item["in_response_to_request_id"],
+                "corgi-request:clarification-answer",
+            )
+            self.assertIn("Clarification changed", last_item["title"])
+
+    def test_session_rejects_duplicate_request_id_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Analyze this folder.",
+                request_id="corgi-request:duplicate",
+                repo_root=repo_root,
+            )
+            initial_clarifications = [
+                item for item in model["feed"] if item["type"] == "clarification_request"
+            ]
+
+            replay_model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Analyze this folder.",
+                request_id="corgi-request:duplicate",
+                repo_root=repo_root,
+            )
+
+            replay_clarifications = [
+                item for item in replay_model["feed"] if item["type"] == "clarification_request"
+            ]
+            last_item = replay_model["feed"][-1]
+            self.assertEqual(last_item["type"], "error")
+            self.assertEqual(last_item["title"], "Duplicate request")
+            self.assertEqual(
+                last_item["in_response_to_request_id"],
+                "corgi-request:duplicate",
+            )
+            self.assertEqual(len(replay_clarifications), len(initial_clarifications))
 
     def test_transition_module_records_and_loads_transition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

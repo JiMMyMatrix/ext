@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 import {
 	appendError,
@@ -141,6 +142,34 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		this.postState();
 	}
 
+	private nextRequestId(): string {
+		return `corgi-request:${randomUUID()}`;
+	}
+
+	private contextRefForAction(actionType: ModelAction['type']): string | undefined {
+		switch (actionType) {
+			case 'answer_clarification':
+				return this.model.activeClarification?.contextRef;
+			case 'approve':
+			case 'full_access':
+				return this.model.snapshot.pendingApproval?.contextRef;
+			case 'interrupt_run':
+				return this.model.snapshot.snapshotFreshness.receivedAt
+					? `interrupt:${this.model.snapshot.snapshotFreshness.receivedAt}`
+					: undefined;
+			default:
+				return undefined;
+		}
+	}
+
+	private buildControllerAction(action: ModelAction): ModelAction {
+		return {
+			...action,
+			request_id: action.request_id ?? this.nextRequestId(),
+			context_ref: action.context_ref ?? this.contextRefForAction(action.type),
+		};
+	}
+
 	private async routeFreeText(text: string) {
 		const rawText = text.trim();
 		if (!rawText) {
@@ -165,7 +194,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			return;
 		}
 
-		await this.applyAction(resolution.action);
+		await this.applyAction(this.buildControllerAction(resolution.action));
 	}
 
 	private async handleMessage(message: WebviewMessage) {
@@ -177,19 +206,19 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				await this.routeFreeText(message.text ?? '');
 				return;
 			case 'answer_clarification':
-				await this.applyAction({
+				await this.applyAction(this.buildControllerAction({
 					type: 'answer_clarification',
 					text: message.text ?? '',
-				});
+				}));
 				return;
 			case 'approve':
-				await this.applyAction({ type: 'approve' });
+				await this.applyAction(this.buildControllerAction({ type: 'approve' }));
 				return;
 			case 'full_access':
-				await this.applyAction({ type: 'full_access' });
+				await this.applyAction(this.buildControllerAction({ type: 'full_access' }));
 				return;
 			case 'interrupt_run':
-				await this.applyAction({ type: 'interrupt_run' });
+				await this.applyAction(this.buildControllerAction({ type: 'interrupt_run' }));
 				return;
 			case 'open_artifact':
 				await this.handleArtifactAction(message.artifactId, 'open');

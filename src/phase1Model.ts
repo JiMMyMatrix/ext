@@ -66,6 +66,11 @@ export interface SemanticMetadata {
 	semantic_normalized_text?: string;
 }
 
+export interface ControllerRequestMetadata {
+	request_id?: string;
+	context_ref?: string;
+}
+
 export type ActivityKind =
 	| 'read'
 	| 'search'
@@ -102,6 +107,7 @@ export interface ArtifactReference {
 
 export interface RequestCard {
 	id: string;
+	contextRef: string;
 	title: string;
 	body: string;
 	requestedAt: string;
@@ -116,6 +122,7 @@ export interface ClarificationOption {
 
 export interface ClarificationRequest {
 	id: string;
+	contextRef: string;
 	title: string;
 	body: string;
 	kind?: string;
@@ -170,6 +177,7 @@ interface FeedItemShared {
 	semantic_block_reason?: string;
 	semantic_paraphrase?: string;
 	semantic_normalized_text?: string;
+	in_response_to_request_id?: string;
 }
 
 interface FeedItemBase extends FeedItemShared {
@@ -191,12 +199,12 @@ export interface ExecutionWindowModel {
 }
 
 export type ModelAction =
-	| ({ type: 'submit_prompt'; text: string; now?: string } & SemanticMetadata)
-	| ({ type: 'answer_clarification'; text: string; now?: string } & SemanticMetadata)
-	| ({ type: 'approve'; text?: string; now?: string } & SemanticMetadata)
-	| ({ type: 'full_access'; text?: string; now?: string } & SemanticMetadata)
-	| ({ type: 'interrupt_run'; text?: string; now?: string } & SemanticMetadata)
-	| { type: 'reconnect'; now?: string };
+	| ({ type: 'submit_prompt'; text: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
+	| ({ type: 'answer_clarification'; text: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
+	| ({ type: 'approve'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
+	| ({ type: 'full_access'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
+	| ({ type: 'interrupt_run'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
+	| ({ type: 'reconnect'; now?: string } & ControllerRequestMetadata);
 
 let idCounter = 0;
 
@@ -291,6 +299,7 @@ function createFeedItem(
 			| 'semantic_block_reason'
 			| 'semantic_paraphrase'
 			| 'semantic_normalized_text'
+			| 'in_response_to_request_id'
 		>
 	>
 ): FeedItemBase {
@@ -316,7 +325,16 @@ function createFeedItem(
 		semantic_block_reason: provenance?.semantic_block_reason,
 		semantic_paraphrase: provenance?.semantic_paraphrase,
 		semantic_normalized_text: provenance?.semantic_normalized_text,
+		in_response_to_request_id: provenance?.in_response_to_request_id,
 	};
+}
+
+function buildContextRef(prefix: string): string {
+	return nextId(`${prefix}-context`);
+}
+
+function currentInterruptContextRef(model: ExecutionWindowModel): string {
+	return `interrupt:${model.snapshot.snapshotFreshness.receivedAt}`;
 }
 
 function createArtifactFeedItem(
@@ -404,14 +422,17 @@ export function appendError(
 	title: string,
 	body: string,
 	details?: string[],
-	now = new Date().toISOString()
+	now = new Date().toISOString(),
+	requestId?: string
 ): ExecutionWindowModel {
 	return {
 		...model,
 		snapshot: refreshSnapshot(model.snapshot, now, {}),
 		feed: [
 			...model.feed,
-			createFeedItem('error', title, body, true, now, details),
+			createFeedItem('error', title, body, true, now, details, undefined, {
+				in_response_to_request_id: requestId,
+			}),
 		],
 	};
 }
@@ -478,7 +499,8 @@ export function appendControllerSemanticClarification(
 
 function supersedePendingApproval(
 	model: ExecutionWindowModel,
-	now: string
+	now: string,
+	requestId?: string
 ): FeedItem[] {
 	if (!model.snapshot.pendingApproval) {
 		return [];
@@ -490,7 +512,12 @@ function supersedePendingApproval(
 			'Pending approval superseded',
 			'A new request replaced the previous approval checkpoint.',
 			true,
-			now
+			now,
+			undefined,
+			undefined,
+			{
+				in_response_to_request_id: requestId,
+			}
 		),
 	];
 }
@@ -560,6 +587,52 @@ function semanticProvenanceForAction(action: ModelAction): SemanticMetadata {
 	};
 }
 
+function responseProvenanceForAction(
+	action: ModelAction
+): Partial<
+	Pick<
+		FeedItemShared,
+		| 'semantic_input_version'
+		| 'semantic_summary_ref'
+		| 'semantic_context_flags'
+		| 'semantic_route_type'
+		| 'semantic_confidence'
+		| 'semantic_block_reason'
+		| 'semantic_paraphrase'
+		| 'semantic_normalized_text'
+		| 'in_response_to_request_id'
+	>
+> {
+	return {
+		...semanticProvenanceForAction(action),
+		in_response_to_request_id: action.request_id,
+	};
+}
+
+function staleContextError(command: string): string {
+	switch (command) {
+		case 'answer_clarification':
+			return 'The clarification changed before this answer was applied. Refresh and answer the current clarification instead.';
+		case 'approve':
+		case 'full_access':
+			return 'The approval request changed before this action was applied. Refresh and confirm the current approval card.';
+		case 'interrupt_run':
+			return 'The interruptible run state changed before this stop request was applied. Refresh and try again if stop is still available.';
+		default:
+			return 'The referenced session state is no longer current. Refresh and try again.';
+	}
+}
+
+function hasFreshContextRef(
+	action: ModelAction,
+	expectedContextRef: string | undefined
+): boolean {
+	if (action.type === 'reconnect' || !expectedContextRef) {
+		return true;
+	}
+	return action.context_ref === expectedContextRef;
+}
+
 function buildClarificationRequest(
 	prompt: string,
 	now: string
@@ -576,6 +649,7 @@ function buildClarificationRequest(
 	) {
 		return {
 			id: nextId('clarification'),
+			contextRef: buildContextRef('clarification'),
 			title: 'Clarification required',
 			body: 'What kind of analysis do you want for this folder?',
 			placeholder: 'Optional: add a short detail if none of these fit exactly.',
@@ -612,6 +686,7 @@ function buildClarificationRequest(
 	) {
 		return {
 			id: nextId('clarification'),
+			contextRef: buildContextRef('clarification'),
 			title: 'Clarification required',
 			body: 'What should this change preserve while I work?',
 			placeholder:
@@ -646,6 +721,7 @@ function buildClarificationRequest(
 
 	return {
 		id: nextId('clarification'),
+		contextRef: buildContextRef('clarification'),
 		title: 'Clarification required',
 		body: 'Name one detail Corgi must keep visible at all times.',
 		placeholder:
@@ -753,7 +829,21 @@ function acceptIntake(
 	model: ExecutionWindowModel,
 	now: string,
 	accessMode: AccessMode,
-	turnType: TurnType = 'system'
+	turnType: TurnType = 'system',
+	provenance?: Partial<
+		Pick<
+			FeedItemShared,
+			| 'semantic_input_version'
+			| 'semantic_summary_ref'
+			| 'semantic_context_flags'
+			| 'semantic_route_type'
+			| 'semantic_confidence'
+			| 'semantic_block_reason'
+			| 'semantic_paraphrase'
+			| 'semantic_normalized_text'
+			| 'in_response_to_request_id'
+		>
+	>
 ): ExecutionWindowModel {
 	const artifacts = defaultArtifacts();
 	const acceptedIntakeSummary = buildAcceptedSummary(model, accessMode);
@@ -779,7 +869,10 @@ function acceptIntake(
 				now,
 				undefined,
 				undefined,
-				{ turn_type: turnType }
+				{
+					turn_type: turnType,
+					...provenance,
+				}
 			),
 		],
 		activeClarification: undefined,
@@ -833,7 +926,8 @@ export function applyModelAction(
 					'Prompt required',
 					'Enter a prompt before sending it to Corgi.',
 					undefined,
-					now
+					now,
+					action.request_id
 				);
 			}
 
@@ -852,7 +946,7 @@ export function applyModelAction(
 						...model.feed,
 						createFeedItem('user_message', 'Governor question', prompt, false, now, undefined, undefined, {
 							turn_type: turnType,
-							...semanticProvenanceForAction(action),
+							...responseProvenanceForAction(action),
 						}),
 						createFeedItem(
 							'actor_event',
@@ -866,7 +960,7 @@ export function applyModelAction(
 								source_layer: 'governor',
 								source_actor: 'governor',
 								turn_type: turnType,
-								...semanticProvenanceForAction(action),
+								...responseProvenanceForAction(action),
 							}
 						),
 					],
@@ -875,7 +969,11 @@ export function applyModelAction(
 
 			const clarification = buildClarificationRequest(prompt, now);
 
-			const pendingSupersededFeed = supersedePendingApproval(model, now);
+			const pendingSupersededFeed = supersedePendingApproval(
+				model,
+				now,
+				action.request_id
+			);
 
 			return {
 				snapshot: refreshSnapshot(model.snapshot, now, {
@@ -901,7 +999,7 @@ export function applyModelAction(
 						undefined,
 						{
 							turn_type: turnType,
-							...semanticProvenanceForAction(action),
+							...responseProvenanceForAction(action),
 						}
 					),
 					createFeedItem(
@@ -921,7 +1019,7 @@ export function applyModelAction(
 						},
 						{
 							turn_type: turnType,
-							...semanticProvenanceForAction(action),
+							...responseProvenanceForAction(action),
 						}
 					),
 					createFeedItem(
@@ -934,7 +1032,7 @@ export function applyModelAction(
 						undefined,
 						{
 							turn_type: turnType,
-							...semanticProvenanceForAction(action),
+							...responseProvenanceForAction(action),
 						}
 					),
 				],
@@ -949,7 +1047,19 @@ export function applyModelAction(
 					'No clarification is active',
 					'There is no active clarification request to answer right now.',
 					undefined,
-					now
+					now,
+					action.request_id
+				);
+			}
+
+			if (!hasFreshContextRef(action, model.activeClarification.contextRef)) {
+				return appendError(
+					model,
+					'Clarification changed',
+					staleContextError('answer_clarification'),
+					undefined,
+					now,
+					action.request_id
 				);
 			}
 
@@ -960,12 +1070,14 @@ export function applyModelAction(
 					'Clarification answer required',
 					'Enter a clarification answer before sending it.',
 					undefined,
-					now
+					now,
+					action.request_id
 				);
 			}
 
 			const approval: RequestCard = {
 				id: nextId('approval'),
+				contextRef: buildContextRef('approval'),
 				title: 'Accept intake',
 				body: "Approve or grant full access when you're ready to continue.",
 				requestedAt: now,
@@ -991,7 +1103,7 @@ export function applyModelAction(
 						undefined,
 						{
 							turn_type: 'clarification_reply',
-							...semanticProvenanceForAction(action),
+							...responseProvenanceForAction(action),
 						}
 					),
 					createFeedItem(
@@ -1008,7 +1120,7 @@ export function applyModelAction(
 						},
 						{
 							turn_type: 'clarification_reply',
-							...semanticProvenanceForAction(action),
+							...responseProvenanceForAction(action),
 						}
 					),
 					createFeedItem(
@@ -1021,7 +1133,7 @@ export function applyModelAction(
 						undefined,
 						{
 							turn_type: 'clarification_reply',
-							...semanticProvenanceForAction(action),
+							...responseProvenanceForAction(action),
 						}
 					),
 				],
@@ -1037,7 +1149,19 @@ export function applyModelAction(
 					'No approval is active',
 					'There is no approval request to approve right now.',
 					undefined,
-					now
+					now,
+					action.request_id
+				);
+			}
+
+			if (!hasFreshContextRef(action, model.snapshot.pendingApproval.contextRef)) {
+				return appendError(
+					model,
+					'Approval changed',
+					staleContextError('approve'),
+					undefined,
+					now,
+					action.request_id
 				);
 			}
 
@@ -1056,7 +1180,7 @@ export function applyModelAction(
 								undefined,
 								{
 									turn_type: 'approval_action',
-									...semanticProvenanceForAction(action),
+									...responseProvenanceForAction(action),
 								}
 							),
 						],
@@ -1067,7 +1191,8 @@ export function applyModelAction(
 				withUserTurn,
 				now,
 				model.snapshot.accessMode,
-				'approval_action'
+				'approval_action',
+				responseProvenanceForAction(action)
 			);
 		}
 
@@ -1078,7 +1203,19 @@ export function applyModelAction(
 					'No approval is active',
 					'There is no approval request to grant full access for right now.',
 					undefined,
-					now
+					now,
+					action.request_id
+				);
+			}
+
+			if (!hasFreshContextRef(action, model.snapshot.pendingApproval.contextRef)) {
+				return appendError(
+					model,
+					'Approval changed',
+					staleContextError('full_access'),
+					undefined,
+					now,
+					action.request_id
 				);
 			}
 
@@ -1097,14 +1234,20 @@ export function applyModelAction(
 								undefined,
 								{
 									turn_type: 'approval_action',
-									...semanticProvenanceForAction(action),
+									...responseProvenanceForAction(action),
 								}
 							),
 						],
 				  }
 				: model;
 
-			return acceptIntake(withUserTurn, now, 'full_access', 'approval_action');
+			return acceptIntake(
+				withUserTurn,
+				now,
+				'full_access',
+				'approval_action',
+				responseProvenanceForAction(action)
+			);
 		}
 
 		case 'interrupt_run': {
@@ -1114,7 +1257,19 @@ export function applyModelAction(
 					'Nothing is running',
 					'Stop is only available while governed work is actively running.',
 					undefined,
-					now
+					now,
+					action.request_id
+				);
+			}
+
+			if (!hasFreshContextRef(action, currentInterruptContextRef(model))) {
+				return appendError(
+					model,
+					'Interrupt state changed',
+					staleContextError('interrupt_run'),
+					undefined,
+					now,
+					action.request_id
 				);
 			}
 
@@ -1127,18 +1282,24 @@ export function applyModelAction(
 					feed: [
 						...model.feed,
 						createFeedItem(
-						'system_status',
-						'Stop already pending',
-						'Wait for the authoritative stop status to change before sending another request.',
-						false,
-						now
-					),
-				],
-			};
-		}
+							'system_status',
+							'Stop already pending',
+							'Wait for the authoritative stop status to change before sending another request.',
+							false,
+							now,
+							undefined,
+							undefined,
+							{
+								in_response_to_request_id: action.request_id,
+							}
+						),
+					],
+				};
+			}
 
 			const interrupt: RequestCard = {
 				id: nextId('interrupt'),
+				contextRef: currentInterruptContextRef(model),
 				title: 'Stop requested',
 				body: 'Stop has been requested and is awaiting authoritative follow-up.',
 				requestedAt: now,
@@ -1166,7 +1327,7 @@ export function applyModelAction(
 									undefined,
 									{
 										turn_type: 'stop_action',
-										...semanticProvenanceForAction(action),
+										...responseProvenanceForAction(action),
 									}
 								),
 						  ]
@@ -1181,7 +1342,7 @@ export function applyModelAction(
 						undefined,
 						{
 							turn_type: 'stop_action',
-							...semanticProvenanceForAction(action),
+							...responseProvenanceForAction(action),
 						}
 					),
 				],
@@ -1189,6 +1350,19 @@ export function applyModelAction(
 		}
 
 		case 'reconnect':
+			if (
+				model.snapshot.transportState === 'connected' &&
+				!isSnapshotStale(model.snapshot.snapshotFreshness, Date.parse(now))
+			) {
+				return appendError(
+					model,
+					'Nothing to reconnect',
+					'The current session is already connected and fresh.',
+					undefined,
+					now,
+					action.request_id
+				);
+			}
 			return {
 				...model,
 				snapshot: refreshSnapshot(model.snapshot, now, {
@@ -1202,7 +1376,12 @@ export function applyModelAction(
 						'Connection refreshed',
 						'A fresh snapshot is now available in Corgi.',
 						true,
-						now
+						now,
+						undefined,
+						undefined,
+						{
+							in_response_to_request_id: action.request_id,
+						}
 					),
 				],
 			};

@@ -155,6 +155,12 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		if (action && 'text' in action && typeof action.text === 'string') {
 			args.push('--text', action.text);
 		}
+		if (action?.request_id) {
+			args.push('--request-id', action.request_id);
+		}
+		if (action?.context_ref) {
+			args.push('--context-ref', action.context_ref);
+		}
 		if (action && action.type !== 'reconnect') {
 			if (action.semantic_route_type) {
 				switch (action.semantic_route_type) {

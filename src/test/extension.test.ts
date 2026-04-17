@@ -181,6 +181,7 @@ suite('Corgi Webview UX', () => {
 		const approvalModel = applyModelAction(promptModel, {
 			type: 'answer_clarification',
 			text: 'Keep current actor and current stage visible.',
+			context_ref: promptModel.activeClarification?.contextRef,
 			now: '2026-04-10T10:00:10.000Z',
 		});
 		const resolution = resolveSemanticRouting(
@@ -340,6 +341,7 @@ suite('Corgi Webview UX', () => {
 		const acceptedModel = applyModelAction(draftModel, {
 			type: 'answer_clarification',
 			text: 'Keep current actor and current stage visible.',
+			context_ref: draftModel.activeClarification?.contextRef,
 			now: '2026-04-10T10:00:10.000Z',
 		});
 
@@ -360,10 +362,12 @@ suite('Corgi Webview UX', () => {
 		const approvalModel = applyModelAction(promptModel, {
 			type: 'answer_clarification',
 			text: 'Keep current actor and current stage visible.',
+			context_ref: promptModel.activeClarification?.contextRef,
 			now: '2026-04-10T10:00:10.000Z',
 		});
 		const runningModel = applyModelAction(approvalModel, {
 			type: 'approve',
+			context_ref: approvalModel.snapshot.pendingApproval?.contextRef,
 			now: '2026-04-10T10:00:15.000Z',
 		});
 
@@ -384,10 +388,12 @@ suite('Corgi Webview UX', () => {
 		const approvalModel = applyModelAction(promptModel, {
 			type: 'answer_clarification',
 			text: 'Keep current actor and current stage visible.',
+			context_ref: promptModel.activeClarification?.contextRef,
 			now: '2026-04-10T10:00:10.000Z',
 		});
 		const runningModel = applyModelAction(approvalModel, {
 			type: 'full_access',
+			context_ref: approvalModel.snapshot.pendingApproval?.contextRef,
 			now: '2026-04-10T10:00:15.000Z',
 		});
 
@@ -396,6 +402,27 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(runningModel.snapshot.currentActor, 'governor');
 		assert.strictEqual(runningModel.snapshot.currentStage, 'running');
 		assert.ok(runningModel.acceptedIntakeSummary?.body.includes('Full access'));
+	});
+
+	test('state-bound actions fail closed when the context token is stale', () => {
+		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+			type: 'submit_prompt',
+			text: 'Build a compact execution window for phase 1.',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+
+		const failedModel = applyModelAction(promptModel, {
+			type: 'answer_clarification',
+			text: 'Keep current actor and current stage visible.',
+			context_ref: 'clarification-context-stale',
+			request_id: 'corgi-request:test-stale',
+			now: '2026-04-10T10:00:10.000Z',
+		});
+
+		const lastItem = failedModel.feed[failedModel.feed.length - 1];
+		assert.strictEqual(lastItem.type, 'error');
+		assert.strictEqual(lastItem.in_response_to_request_id, 'corgi-request:test-stale');
+		assert.match(lastItem.body ?? '', /clarification changed/i);
 	});
 
 	test('new prompts supersede a pending approval instead of holding it', () => {
@@ -407,6 +434,7 @@ suite('Corgi Webview UX', () => {
 		const approvalModel = applyModelAction(promptModel, {
 			type: 'answer_clarification',
 			text: 'Keep current actor and current stage visible.',
+			context_ref: promptModel.activeClarification?.contextRef,
 			now: '2026-04-10T10:00:10.000Z',
 		});
 		const supersededModel = applyModelAction(approvalModel, {
@@ -447,6 +475,7 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Analyze this folder.',
+			request_id: 'corgi-request:test-provenance',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -457,5 +486,9 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(clarificationItem?.source_layer, 'intake');
 		assert.strictEqual(clarificationItem?.source_actor, 'intake_shell');
 		assert.strictEqual(clarificationItem?.turn_type, 'governed_work_intent');
+		assert.strictEqual(
+			clarificationItem?.in_response_to_request_id,
+			'corgi-request:test-provenance'
+		);
 	});
 });

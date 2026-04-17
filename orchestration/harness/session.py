@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,7 @@ def _feed_item(
 	semantic_block_reason: str | None = None,
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
+	in_response_to_request_id: str | None = None,
 ) -> dict[str, Any]:
 	default_provenance = _default_feed_provenance(item_type)
 	payload: dict[str, Any] = {
@@ -89,6 +91,8 @@ def _feed_item(
 		payload["semantic_paraphrase"] = semantic_paraphrase
 	if semantic_normalized_text:
 		payload["semantic_normalized_text"] = semantic_normalized_text
+	if in_response_to_request_id:
+		payload["in_response_to_request_id"] = in_response_to_request_id
 	return payload
 
 
@@ -103,7 +107,9 @@ def _artifact(path: str, *, summary: str | None, authoritative: bool, status: st
 	}
 
 
-def _artifact_feed_item(artifact: dict[str, Any], now: str) -> dict[str, Any]:
+def _artifact_feed_item(
+	artifact: dict[str, Any], now: str, *, in_response_to_request_id: str | None = None
+) -> dict[str, Any]:
 	return {
 		"id": _next_id("artifact_reference"),
 		"type": "artifact_reference",
@@ -115,6 +121,7 @@ def _artifact_feed_item(artifact: dict[str, Any], now: str) -> dict[str, Any]:
 		"source_actor": "orchestration",
 		"source_artifact_ref": artifact["path"],
 		"turn_type": "system",
+		"in_response_to_request_id": in_response_to_request_id,
 		"artifact": artifact,
 		"activity": {
 			"kind": "artifact",
@@ -126,7 +133,14 @@ def _artifact_feed_item(artifact: dict[str, Any], now: str) -> dict[str, Any]:
 
 
 def _request_card(title: str, body: str, now: str) -> dict[str, Any]:
-	return {"id": _next_id("request"), "title": title, "body": body, "requestedAt": now}
+	request_id = _next_id("request")
+	return {
+		"id": request_id,
+		"contextRef": request_id,
+		"title": title,
+		"body": body,
+		"requestedAt": now,
+	}
 
 
 def _default_feed_provenance(item_type: str) -> dict[str, str]:
@@ -425,6 +439,7 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Path | None = None) -> None:
 	session.setdefault("meta", {})
 	session["meta"].setdefault("activeIntakeRef", None)
+	session["meta"].setdefault("processedRequestIds", {})
 	model = session.setdefault("model", _initial_model(now, repo_root=repo_root))
 	snapshot = model.setdefault("snapshot", {})
 	snapshot.setdefault("lane", None)
@@ -442,6 +457,19 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	model.setdefault("feed", [])
 	model.setdefault("activeClarification", None)
 	model.setdefault("acceptedIntakeSummary", None)
+	if isinstance(model.get("activeClarification"), dict):
+		model["activeClarification"].setdefault(
+			"contextRef", model["activeClarification"].get("id")
+		)
+	if isinstance(snapshot.get("pendingApproval"), dict):
+		snapshot["pendingApproval"].setdefault(
+			"contextRef", snapshot["pendingApproval"].get("id")
+		)
+	if isinstance(snapshot.get("pendingInterrupt"), dict):
+		snapshot["pendingInterrupt"].setdefault(
+			"contextRef",
+			f"interrupt:{snapshot['snapshotFreshness'].get('receivedAt', now)}",
+		)
 
 
 def load_session(repo_root: str | Path | None = None) -> dict[str, Any]:
@@ -478,6 +506,7 @@ def _semantic_provenance(
 	semantic_block_reason: str | None = None,
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
+	in_response_to_request_id: str | None = None,
 ) -> dict[str, Any]:
 	return {
 		"turn_type": turn_type,
@@ -489,6 +518,7 @@ def _semantic_provenance(
 		"semantic_block_reason": semantic_block_reason,
 		"semantic_paraphrase": semantic_paraphrase,
 		"semantic_normalized_text": semantic_normalized_text,
+		"in_response_to_request_id": in_response_to_request_id,
 	}
 
 
@@ -507,6 +537,7 @@ def _append_user_turn(
 	semantic_block_reason: str | None = None,
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
+	in_response_to_request_id: str | None = None,
 ) -> None:
 	model["feed"].append(
 		_feed_item(
@@ -525,6 +556,7 @@ def _append_user_turn(
 				semantic_block_reason=semantic_block_reason,
 				semantic_paraphrase=semantic_paraphrase,
 				semantic_normalized_text=semantic_normalized_text,
+				in_response_to_request_id=in_response_to_request_id,
 			),
 		)
 	)
@@ -534,14 +566,81 @@ def _current_access_mode(model: dict[str, Any]) -> str:
 	return model["snapshot"].get("accessMode") or "approval_required"
 
 
-def _append_error(model: dict[str, Any], title: str, body: str, now: str) -> None:
+def _append_error(
+	model: dict[str, Any],
+	title: str,
+	body: str,
+	now: str,
+	*,
+	in_response_to_request_id: str | None = None,
+) -> None:
 	model["feed"].append(
-		_feed_item("error", title, body, authoritative=True, now=now)
+		_feed_item(
+			"error",
+			title,
+			body,
+			authoritative=True,
+			now=now,
+			in_response_to_request_id=in_response_to_request_id,
+		)
 	)
 	_refresh_snapshot(model, now)
 
 
-def _supersede_pending_approval(model: dict[str, Any], now: str) -> None:
+def _processed_request_ids(session: dict[str, Any]) -> dict[str, Any]:
+	meta = session.setdefault("meta", {})
+	processed = meta.setdefault("processedRequestIds", {})
+	if isinstance(processed, dict):
+		return processed
+	meta["processedRequestIds"] = {}
+	return meta["processedRequestIds"]
+
+
+def _is_duplicate_request(session: dict[str, Any], request_id: str | None) -> bool:
+	if not request_id:
+		return False
+	return request_id in _processed_request_ids(session)
+
+
+def _remember_request(session: dict[str, Any], request_id: str | None, command: str, now: str) -> None:
+	if not request_id:
+		return
+	_processed_request_ids(session)[request_id] = {"command": command, "handledAt": now}
+
+
+def _parse_received_at(value: str | None) -> datetime | None:
+	if not value:
+		return None
+	try:
+		return datetime.fromisoformat(value.replace("Z", "+00:00"))
+	except ValueError:
+		return None
+
+
+def _is_snapshot_stale(snapshot: dict[str, Any], now: str) -> bool:
+	freshness = snapshot.get("snapshotFreshness") or {}
+	if freshness.get("stale") is True:
+		return True
+	received_at = _parse_received_at(freshness.get("receivedAt"))
+	current = _parse_received_at(now)
+	if received_at is None or current is None:
+		return False
+	return (current - received_at).total_seconds() > 45
+
+
+def _current_interrupt_context_ref(model: dict[str, Any]) -> str:
+	return f"interrupt:{model['snapshot']['snapshotFreshness'].get('receivedAt') or utc_now()}"
+
+
+def _context_matches(expected_context_ref: str | None, provided_context_ref: str | None) -> bool:
+	if expected_context_ref is None:
+		return True
+	return provided_context_ref == expected_context_ref
+
+
+def _supersede_pending_approval(
+	model: dict[str, Any], now: str, *, request_id: str | None = None
+) -> None:
 	pending = model["snapshot"].get("pendingApproval")
 	if not pending:
 		return
@@ -553,6 +652,7 @@ def _supersede_pending_approval(model: dict[str, Any], now: str) -> None:
 			"A new request replaced the previous approval checkpoint.",
 			authoritative=True,
 			now=now,
+			in_response_to_request_id=request_id,
 		)
 	)
 
@@ -563,6 +663,7 @@ def _accept_pending_intake(
 	*,
 	repo_root: str | Path | None = None,
 	enable_full_access: bool = False,
+	request_id: str | None = None,
 	turn_type: str = "system",
 	semantic_input_version: str | None = None,
 	semantic_summary_ref: str | None = None,
@@ -577,7 +678,13 @@ def _accept_pending_intake(
 	intake_ref = session["meta"].get("activeIntakeRef")
 	pending_approval = model["snapshot"].get("pendingApproval")
 	if not intake_ref or not pending_approval:
-		_append_error(model, "No approval is active", "There is no approval to apply.", now)
+		_append_error(
+			model,
+			"No approval is active",
+			"There is no approval to apply.",
+			now,
+			in_response_to_request_id=request_id,
+		)
 		return False
 
 	branch = model["snapshot"].get("branch") or git_branch_name(repo_root)
@@ -639,6 +746,7 @@ def _accept_pending_intake(
 				semantic_block_reason=semantic_block_reason,
 				semantic_paraphrase=semantic_paraphrase,
 				semantic_normalized_text=semantic_normalized_text,
+				in_response_to_request_id=request_id,
 			),
 		)
 	)
@@ -658,6 +766,7 @@ def handle_submit_prompt(
 	text: str,
 	*,
 	repo_root: str | Path | None = None,
+	request_id: str | None = None,
 	turn_type: str | None = None,
 	normalized_text: str | None = None,
 	paraphrase: str | None = None,
@@ -672,7 +781,13 @@ def handle_submit_prompt(
 	model = session["model"]
 	prompt = trim_text(text)
 	if not prompt:
-		_append_error(model, "Prompt required", "Enter a prompt before sending it.", now)
+		_append_error(
+			model,
+			"Prompt required",
+			"Enter a prompt before sending it.",
+			now,
+			in_response_to_request_id=request_id,
+		)
 		return
 
 	semantic_prompt = trim_text(normalized_text) or prompt
@@ -697,6 +812,7 @@ def handle_submit_prompt(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=semantic_prompt,
+			in_response_to_request_id=request_id,
 		)
 		model["feed"].append(
 			_feed_item(
@@ -719,13 +835,14 @@ def handle_submit_prompt(
 					semantic_block_reason=semantic_block_reason,
 					semantic_paraphrase=paraphrase,
 					semantic_normalized_text=semantic_prompt,
+					in_response_to_request_id=request_id,
 				),
 			)
 		)
 		_refresh_snapshot(model, now, transportState="connected")
 		return
 
-	_supersede_pending_approval(model, now)
+	_supersede_pending_approval(model, now, request_id=request_id)
 	envelope = start_intake(prompt, normalized_text=semantic_prompt, repo_root=repo_root)
 	session["meta"]["activeIntakeRef"] = envelope["intake_ref"]
 
@@ -743,6 +860,7 @@ def handle_submit_prompt(
 		semantic_block_reason=semantic_block_reason,
 		semantic_paraphrase=paraphrase,
 		semantic_normalized_text=semantic_prompt,
+		in_response_to_request_id=request_id,
 	)
 	model["feed"].append(
 		_feed_item(
@@ -766,6 +884,7 @@ def handle_submit_prompt(
 				semantic_block_reason=semantic_block_reason,
 				semantic_paraphrase=paraphrase,
 				semantic_normalized_text=semantic_prompt,
+				in_response_to_request_id=request_id,
 			),
 		)
 	)
@@ -776,7 +895,11 @@ def handle_submit_prompt(
 	model["snapshot"]["branch"] = model["snapshot"].get("branch") or git_branch_name(repo_root)
 
 	if envelope["shell_state"] == "clarification_needed":
-		clarification = envelope["clarification_request"]
+		clarification = {
+			**envelope["clarification_request"],
+			"contextRef": envelope["clarification_request"].get("contextRef")
+			or envelope["clarification_request"]["id"],
+		}
 		model["activeClarification"] = clarification
 		model["snapshot"]["pendingApproval"] = None
 		model["feed"].append(
@@ -796,6 +919,7 @@ def handle_submit_prompt(
 					semantic_block_reason=semantic_block_reason,
 					semantic_paraphrase=paraphrase,
 					semantic_normalized_text=semantic_prompt,
+					in_response_to_request_id=request_id,
 				),
 			)
 		)
@@ -820,6 +944,7 @@ def handle_submit_prompt(
 			session,
 			now,
 			repo_root=repo_root,
+			request_id=request_id,
 			turn_type=resolved_turn_type,
 			semantic_input_version=semantic_input_version,
 			semantic_summary_ref=semantic_summary_ref,
@@ -854,6 +979,7 @@ def handle_submit_prompt(
 				semantic_block_reason=semantic_block_reason,
 				semantic_paraphrase=paraphrase,
 				semantic_normalized_text=semantic_prompt,
+				in_response_to_request_id=request_id,
 			),
 		)
 	)
@@ -872,6 +998,8 @@ def handle_answer_clarification(
 	text: str,
 	*,
 	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
 	normalized_text: str | None = None,
 	paraphrase: str | None = None,
 	semantic_input_version: str | None = None,
@@ -890,6 +1018,18 @@ def handle_answer_clarification(
 			"No clarification is active",
 			"There is no active clarification request to answer.",
 			now,
+			in_response_to_request_id=request_id,
+		)
+		return
+
+	expected_context_ref = model["activeClarification"].get("contextRef") or model["activeClarification"].get("id")
+	if not _context_matches(expected_context_ref, context_ref):
+		_append_error(
+			model,
+			"Clarification changed",
+			"The clarification changed before this answer was applied. Refresh and answer the current clarification instead.",
+			now,
+			in_response_to_request_id=request_id,
 		)
 		return
 
@@ -900,6 +1040,7 @@ def handle_answer_clarification(
 			"Clarification answer required",
 			"Enter a clarification answer before sending it.",
 			now,
+			in_response_to_request_id=request_id,
 		)
 		return
 
@@ -924,6 +1065,7 @@ def handle_answer_clarification(
 		semantic_block_reason=semantic_block_reason,
 		semantic_paraphrase=paraphrase,
 		semantic_normalized_text=semantic_answer,
+		in_response_to_request_id=request_id,
 	)
 	model["feed"].append(
 		_feed_item(
@@ -943,6 +1085,7 @@ def handle_answer_clarification(
 				semantic_block_reason=semantic_block_reason,
 				semantic_paraphrase=paraphrase,
 				semantic_normalized_text=semantic_answer,
+				in_response_to_request_id=request_id,
 			),
 		)
 	)
@@ -957,6 +1100,7 @@ def handle_answer_clarification(
 			session,
 			now,
 			repo_root=repo_root,
+			request_id=request_id,
 			turn_type="clarification_reply",
 			semantic_input_version=semantic_input_version,
 			semantic_summary_ref=semantic_summary_ref,
@@ -985,6 +1129,7 @@ def handle_answer_clarification(
 				semantic_block_reason=semantic_block_reason,
 				semantic_paraphrase=paraphrase,
 				semantic_normalized_text=semantic_answer,
+				in_response_to_request_id=request_id,
 			),
 		)
 	)
@@ -1002,6 +1147,8 @@ def handle_approve(
 	session: dict[str, Any],
 	*,
 	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
 	text: str | None = None,
 	semantic_input_version: str | None = None,
 	semantic_summary_ref: str | None = None,
@@ -1030,11 +1177,27 @@ def handle_approve(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=semantic_paraphrase,
 			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text,
+			in_response_to_request_id=request_id,
 		)
+	expected_context_ref = (
+		model["snapshot"]["pendingApproval"].get("contextRef")
+		if isinstance(model["snapshot"].get("pendingApproval"), dict)
+		else None
+	)
+	if not _context_matches(expected_context_ref, context_ref):
+		_append_error(
+			model,
+			"Approval changed",
+			"The approval request changed before this action was applied. Refresh and confirm the current approval card.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
 	_accept_pending_intake(
 		session,
 		now,
 		repo_root=repo_root,
+		request_id=request_id,
 		turn_type="approval_action",
 		semantic_input_version=semantic_input_version,
 		semantic_summary_ref=semantic_summary_ref,
@@ -1051,6 +1214,8 @@ def handle_full_access(
 	session: dict[str, Any],
 	*,
 	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
 	text: str | None = None,
 	semantic_input_version: str | None = None,
 	semantic_summary_ref: str | None = None,
@@ -1079,12 +1244,28 @@ def handle_full_access(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=semantic_paraphrase,
 			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text,
+			in_response_to_request_id=request_id,
 		)
+	expected_context_ref = (
+		model["snapshot"]["pendingApproval"].get("contextRef")
+		if isinstance(model["snapshot"].get("pendingApproval"), dict)
+		else None
+	)
+	if not _context_matches(expected_context_ref, context_ref):
+		_append_error(
+			model,
+			"Approval changed",
+			"The approval request changed before this action was applied. Refresh and confirm the current approval card.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
 	_accept_pending_intake(
 		session,
 		now,
 		repo_root=repo_root,
 		enable_full_access=True,
+		request_id=request_id,
 		turn_type="approval_action",
 		semantic_input_version=semantic_input_version,
 		semantic_summary_ref=semantic_summary_ref,
@@ -1097,11 +1278,38 @@ def handle_full_access(
 	)
 
 
-def handle_decline_or_hold(session: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+def handle_decline_or_hold(
+	session: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
+) -> None:
 	now = utc_now()
 	model = session["model"]
 	if not model["snapshot"].get("pendingApproval"):
-		_append_error(model, "Nothing to hold", "There is no approval request to hold.", now)
+		_append_error(
+			model,
+			"Nothing to hold",
+			"There is no approval request to hold.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
+
+	expected_context_ref = (
+		model["snapshot"]["pendingApproval"].get("contextRef")
+		if isinstance(model["snapshot"].get("pendingApproval"), dict)
+		else None
+	)
+	if not _context_matches(expected_context_ref, context_ref):
+		_append_error(
+			model,
+			"Approval changed",
+			"The approval request changed before this action was applied. Refresh and confirm the current approval card.",
+			now,
+			in_response_to_request_id=request_id,
+		)
 		return
 
 	model["snapshot"]["pendingApproval"] = None
@@ -1112,6 +1320,7 @@ def handle_decline_or_hold(session: dict[str, Any], *, repo_root: str | Path | N
 			"Approval was declined or deferred. No canonical intake was written.",
 			authoritative=True,
 			now=now,
+			in_response_to_request_id=request_id,
 		)
 	)
 	_refresh_snapshot(
@@ -1128,6 +1337,8 @@ def handle_interrupt(
 	session: dict[str, Any],
 	*,
 	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
 	text: str | None = None,
 	semantic_input_version: str | None = None,
 	semantic_summary_ref: str | None = None,
@@ -1147,6 +1358,7 @@ def handle_interrupt(
 			"Nothing is running",
 			"Stop is only available while governed work is actively running.",
 			now,
+			in_response_to_request_id=request_id,
 		)
 		return
 	if model["snapshot"].get("pendingInterrupt"):
@@ -1155,6 +1367,17 @@ def handle_interrupt(
 			"Stop already requested",
 			"A stop request is already waiting for orchestration handling.",
 			now,
+			in_response_to_request_id=request_id,
+		)
+		return
+	expected_context_ref = _current_interrupt_context_ref(model)
+	if not _context_matches(expected_context_ref, context_ref):
+		_append_error(
+			model,
+			"Interrupt state changed",
+			"The interruptible run state changed before this stop request was applied. Refresh and try again if stop is still available.",
+			now,
+			in_response_to_request_id=request_id,
 		)
 		return
 	model["snapshot"]["pendingInterrupt"] = _request_card(
@@ -1177,6 +1400,7 @@ def handle_interrupt(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=semantic_paraphrase,
 			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text,
+			in_response_to_request_id=request_id,
 		)
 	model["feed"].append(
 		_feed_item(
@@ -1195,6 +1419,7 @@ def handle_interrupt(
 				semantic_block_reason=semantic_block_reason,
 				semantic_paraphrase=semantic_paraphrase,
 				semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
+				in_response_to_request_id=request_id,
 			),
 		)
 	)
@@ -1208,9 +1433,26 @@ def handle_interrupt(
 	)
 
 
-def handle_reconnect(session: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+def handle_reconnect(
+	session: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+) -> None:
 	now = utc_now()
 	model = session["model"]
+	if (
+		model["snapshot"].get("transportState") == "connected"
+		and not _is_snapshot_stale(model["snapshot"], now)
+	):
+		_append_error(
+			model,
+			"Nothing to reconnect",
+			"The current session is already connected and fresh.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
 	model["feed"].append(
 		_feed_item(
 			"system_status",
@@ -1218,6 +1460,7 @@ def handle_reconnect(session: dict[str, Any], *, repo_root: str | Path | None = 
 			"Reloaded the latest orchestration-backed session snapshot.",
 			authoritative=True,
 			now=now,
+			in_response_to_request_id=request_id,
 		)
 	)
 	_refresh_snapshot(model, now, transportState="connected")
@@ -1228,6 +1471,8 @@ def dispatch_session_action(
 	*,
 	text: str | None = None,
 	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
 	turn_type: str | None = None,
 	normalized_text: str | None = None,
 	paraphrase: str | None = None,
@@ -1239,11 +1484,23 @@ def dispatch_session_action(
 	semantic_block_reason: str | None = None,
 ) -> dict[str, Any]:
 	session = load_session(repo_root)
+	now = utc_now()
+	if command != "state" and _is_duplicate_request(session, request_id):
+		_append_error(
+			session["model"],
+			"Duplicate request",
+			"The same controller request was already handled. Refresh and send a new action if you still want to proceed.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		save_session(session, repo_root=repo_root)
+		return public_model(session)
 	if command == "submit_prompt":
 		handle_submit_prompt(
 			session,
 			text or "",
 			repo_root=repo_root,
+			request_id=request_id,
 			turn_type=turn_type,
 			normalized_text=normalized_text,
 			paraphrase=paraphrase,
@@ -1259,6 +1516,8 @@ def dispatch_session_action(
 			session,
 			text or "",
 			repo_root=repo_root,
+			request_id=request_id,
+			context_ref=context_ref,
 			normalized_text=normalized_text,
 			paraphrase=paraphrase,
 			semantic_input_version=semantic_input_version,
@@ -1272,6 +1531,8 @@ def dispatch_session_action(
 		handle_approve(
 			session,
 			repo_root=repo_root,
+			request_id=request_id,
+			context_ref=context_ref,
 			text=text,
 			semantic_input_version=semantic_input_version,
 			semantic_summary_ref=semantic_summary_ref,
@@ -1286,6 +1547,8 @@ def dispatch_session_action(
 		handle_full_access(
 			session,
 			repo_root=repo_root,
+			request_id=request_id,
+			context_ref=context_ref,
 			text=text,
 			semantic_input_version=semantic_input_version,
 			semantic_summary_ref=semantic_summary_ref,
@@ -1297,11 +1560,18 @@ def dispatch_session_action(
 			semantic_normalized_text=normalized_text,
 		)
 	elif command == "decline_or_hold":
-		handle_decline_or_hold(session, repo_root=repo_root)
+		handle_decline_or_hold(
+			session,
+			repo_root=repo_root,
+			request_id=request_id,
+			context_ref=context_ref,
+		)
 	elif command == "interrupt_run":
 		handle_interrupt(
 			session,
 			repo_root=repo_root,
+			request_id=request_id,
+			context_ref=context_ref,
 			text=text,
 			semantic_input_version=semantic_input_version,
 			semantic_summary_ref=semantic_summary_ref,
@@ -1313,10 +1583,12 @@ def dispatch_session_action(
 			semantic_normalized_text=normalized_text,
 		)
 	elif command == "reconnect":
-		handle_reconnect(session, repo_root=repo_root)
+		handle_reconnect(session, repo_root=repo_root, request_id=request_id)
 	elif command != "state":
 		raise ValueError(f"unsupported session command: {command}")
 
+	if command != "state":
+		_remember_request(session, request_id, command, now)
 	save_session(session, repo_root=repo_root)
 	return public_model(session)
 
@@ -1329,6 +1601,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 	submit = subparsers.add_parser("submit_prompt")
 	submit.add_argument("--text", required=True)
+	submit.add_argument("--request-id")
+	submit.add_argument("--context-ref")
 	submit.add_argument("--turn-type")
 	submit.add_argument("--normalized-text")
 	submit.add_argument("--paraphrase")
@@ -1341,6 +1615,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 	answer = subparsers.add_parser("answer_clarification")
 	answer.add_argument("--text", required=True)
+	answer.add_argument("--request-id")
+	answer.add_argument("--context-ref")
 	answer.add_argument("--turn-type")
 	answer.add_argument("--normalized-text")
 	answer.add_argument("--paraphrase")
@@ -1353,6 +1629,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 	approve = subparsers.add_parser("approve")
 	approve.add_argument("--text")
+	approve.add_argument("--request-id")
+	approve.add_argument("--context-ref")
 	approve.add_argument("--turn-type")
 	approve.add_argument("--normalized-text")
 	approve.add_argument("--paraphrase")
@@ -1364,6 +1642,8 @@ def build_parser() -> argparse.ArgumentParser:
 	approve.add_argument("--semantic-block-reason")
 	full_access = subparsers.add_parser("full_access")
 	full_access.add_argument("--text")
+	full_access.add_argument("--request-id")
+	full_access.add_argument("--context-ref")
 	full_access.add_argument("--turn-type")
 	full_access.add_argument("--normalized-text")
 	full_access.add_argument("--paraphrase")
@@ -1373,9 +1653,13 @@ def build_parser() -> argparse.ArgumentParser:
 	full_access.add_argument("--semantic-route-type")
 	full_access.add_argument("--semantic-confidence")
 	full_access.add_argument("--semantic-block-reason")
-	subparsers.add_parser("decline_or_hold")
+	decline = subparsers.add_parser("decline_or_hold")
+	decline.add_argument("--request-id")
+	decline.add_argument("--context-ref")
 	interrupt = subparsers.add_parser("interrupt_run")
 	interrupt.add_argument("--text")
+	interrupt.add_argument("--request-id")
+	interrupt.add_argument("--context-ref")
 	interrupt.add_argument("--turn-type")
 	interrupt.add_argument("--normalized-text")
 	interrupt.add_argument("--paraphrase")
@@ -1385,7 +1669,8 @@ def build_parser() -> argparse.ArgumentParser:
 	interrupt.add_argument("--semantic-route-type")
 	interrupt.add_argument("--semantic-confidence")
 	interrupt.add_argument("--semantic-block-reason")
-	subparsers.add_parser("reconnect")
+	reconnect = subparsers.add_parser("reconnect")
+	reconnect.add_argument("--request-id")
 	return parser
 
 
@@ -1399,6 +1684,8 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
 			args.command,
 			text=getattr(args, "text", None),
 			repo_root=repo_root,
+			request_id=getattr(args, "request_id", None),
+			context_ref=getattr(args, "context_ref", None),
 			turn_type=getattr(args, "turn_type", None),
 			normalized_text=getattr(args, "normalized_text", None),
 			paraphrase=getattr(args, "paraphrase", None),
