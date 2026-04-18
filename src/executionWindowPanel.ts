@@ -70,6 +70,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly webviewDisposables: vscode.Disposable[] = [];
 	private semanticLoopState: SemanticLoopState | undefined;
+	private hasAuthoritativeTransportState = false;
 
 	private constructor(context: vscode.ExtensionContext) {
 		this.context = context;
@@ -127,6 +128,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private async refreshState() {
 		try {
 			this.model = await this.transport.load();
+			this.hasAuthoritativeTransportState = true;
 		} catch (error) {
 			this.pushTransportError(
 				error,
@@ -145,6 +147,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	) {
 		try {
 			this.model = await this.transport.dispatch(action);
+			this.hasAuthoritativeTransportState = true;
 		} catch (error) {
 			this.pushTransportError(
 				error,
@@ -185,7 +188,11 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			...action,
 			request_id: action.request_id ?? this.nextRequestId(),
 			context_ref: action.context_ref ?? this.contextRefForAction(action.type),
-			session_ref: action.session_ref ?? this.model.snapshot.sessionRef,
+			session_ref:
+				action.session_ref ??
+				(this.hasAuthoritativeTransportState
+					? this.model.snapshot.sessionRef
+					: undefined),
 		};
 	}
 
@@ -1491,6 +1498,25 @@ export function getExecutionWindowHtml(
 			return Boolean(requestKey && String(requestKey).startsWith('corgi-request:'));
 		}
 
+		function foregroundRequestKeyForAction(action) {
+			if (
+				(action === 'set_permission_scope' || action === 'decline_permission') &&
+				model?.snapshot?.pendingPermissionRequest?.foregroundRequestId
+			) {
+				return model.snapshot.pendingPermissionRequest.foregroundRequestId;
+			}
+			if (action === 'interrupt_run' && model?.activeForegroundRequestId) {
+				return model.activeForegroundRequestId;
+			}
+			if (ui.foregroundRequest?.requestKey) {
+				return ui.foregroundRequest.requestKey;
+			}
+			if (model?.activeForegroundRequestId) {
+				return model.activeForegroundRequestId;
+			}
+			return nextForegroundRequestKey();
+		}
+
 		function startForegroundRequest(userText, hint, requestKey) {
 			ui.foregroundRequest = {
 				id: 'foreground-' + String(Date.now()),
@@ -2352,7 +2378,8 @@ export function getExecutionWindowHtml(
 				if (action === 'set_permission_scope') {
 					const scope = target.dataset.permissionScope;
 					const requestId = nextForegroundRequestKey();
-					ensureForegroundRequest('', '', requestId);
+					const requestKey = foregroundRequestKeyForAction(action);
+					ensureForegroundRequest('', '', requestKey);
 					appendForegroundBullet(
 						scope
 							? 'Permission confirmed: ' + scope.charAt(0).toUpperCase() + scope.slice(1)
@@ -2372,13 +2399,15 @@ export function getExecutionWindowHtml(
 				}
 				if (action === 'decline_permission') {
 					const requestId = nextForegroundRequestKey();
-					ensureForegroundRequest('', '', requestId);
+					const requestKey = foregroundRequestKeyForAction(action);
+					ensureForegroundRequest('', '', requestKey);
 					appendForegroundBullet('Permission declined', 'failed', 'This request will not continue.');
 					freezeForegroundRequest(undefined, 'failed', 'This request will not continue.');
 					vscode.postMessage({ type: action, requestId });
 				} else {
 					const requestId = nextForegroundRequestKey();
-					ensureForegroundRequest('', '', requestId);
+					const requestKey = foregroundRequestKeyForAction(action);
+					ensureForegroundRequest('', '', requestKey);
 					appendForegroundBullet('Stop requested', 'waiting', 'Requesting stop...');
 					vscode.postMessage({ type: action, requestId });
 				}

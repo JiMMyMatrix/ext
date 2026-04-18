@@ -118,6 +118,7 @@ export interface PermissionRequest extends RequestCard {
 	continuationKind?: 'intake_acceptance' | 'governor_dialogue';
 	pendingPrompt?: string;
 	pendingNormalizedText?: string;
+	foregroundRequestId?: string;
 }
 
 export interface ClarificationOption {
@@ -867,6 +868,7 @@ function buildPermissionRequest(
 		continuationKind?: 'intake_acceptance' | 'governor_dialogue';
 		pendingPrompt?: string;
 		pendingNormalizedText?: string;
+		foregroundRequestId?: string;
 	} = {}
 ): PermissionRequest {
 	return {
@@ -880,6 +882,7 @@ function buildPermissionRequest(
 		continuationKind: options.continuationKind ?? 'intake_acceptance',
 		pendingPrompt: options.pendingPrompt,
 		pendingNormalizedText: options.pendingNormalizedText,
+		foregroundRequestId: options.foregroundRequestId,
 	};
 }
 
@@ -902,6 +905,13 @@ function pendingPermissionContinuation(
 	return request?.continuationKind === 'governor_dialogue'
 		? 'governor_dialogue'
 		: 'intake_acceptance';
+}
+
+function pendingPermissionForegroundRequestId(
+	request: PermissionRequest | undefined,
+	fallbackRequestId?: string
+): string | undefined {
+	return request?.foregroundRequestId || fallbackRequestId;
 }
 
 function permissionRank(scope: PermissionScope): number {
@@ -1039,6 +1049,7 @@ export function applyModelAction(
 						continuationKind: 'governor_dialogue',
 						pendingPrompt: prompt,
 						pendingNormalizedText: prompt,
+						foregroundRequestId: action.request_id,
 					});
 					return {
 						...model,
@@ -1242,7 +1253,9 @@ export function applyModelAction(
 				);
 			}
 
-			const permissionRequest = buildPermissionRequest(requiredScope, now);
+			const permissionRequest = buildPermissionRequest(requiredScope, now, {
+				foregroundRequestId: model.activeForegroundRequestId ?? action.request_id,
+			});
 
 			return {
 				snapshot: refreshSnapshot(model.snapshot, now, {
@@ -1329,6 +1342,11 @@ export function applyModelAction(
 				);
 			}
 
+			const continuedRequestId = pendingPermissionForegroundRequestId(
+				model.snapshot.pendingPermissionRequest,
+				model.activeForegroundRequestId ?? action.request_id
+			);
+
 			const withUserTurn = action.text
 				? {
 						...model,
@@ -1345,6 +1363,7 @@ export function applyModelAction(
 								{
 									turn_type: 'permission_action',
 									...responseProvenanceForAction(action),
+									in_response_to_request_id: continuedRequestId,
 								}
 							),
 						],
@@ -1397,6 +1416,7 @@ export function applyModelAction(
 							{
 								turn_type: 'governor_dialogue',
 								...responseProvenanceForAction(action),
+								in_response_to_request_id: continuedRequestId,
 							}
 						),
 					],
@@ -1409,7 +1429,10 @@ export function applyModelAction(
 				now,
 				action.permission_scope,
 				'permission_action',
-				responseProvenanceForAction(action)
+				{
+					...responseProvenanceForAction(action),
+					in_response_to_request_id: continuedRequestId,
+				}
 			);
 		}
 

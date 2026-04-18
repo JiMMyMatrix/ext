@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import tempfile
+import tomllib
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +23,7 @@ from orchestration.harness.paths import (
 	default_lane,
 	git_branch_name,
 	load_json,
+	prompt_path,
 	repo_relative,
 	resolve_paths,
 	summarize,
@@ -302,9 +307,9 @@ def _transition_summary(lane: str | None, *, repo_root: str | Path | None = None
 	}
 
 
-def _build_governor_dialogue(
+def _governor_dialogue_context(
 	session: dict[str, Any], prompt: str, *, repo_root: str | Path | None = None
-) -> tuple[str, list[str], str | None]:
+) -> dict[str, Any]:
 	model = session["model"]
 	snapshot = model["snapshot"]
 	task = snapshot.get("task")
@@ -325,47 +330,44 @@ def _build_governor_dialogue(
 	)
 
 	if model.get("activeClarification"):
-		body = (
-			"Current progress: one clarification is still open. "
-			"Answer it or choose one of the suggested options to keep moving."
+		orchestration_summary = (
+			"A clarification is still active. The request cannot continue until the user answers it."
 		)
 	elif snapshot.get("pendingPermissionRequest"):
-		body = (
-			f"Current progress: this request is ready, but it is waiting for a {snapshot['pendingPermissionRequest'].get('recommendedScope') or 'plan'} permission choice before Corgi can continue."
+		recommended_scope = snapshot["pendingPermissionRequest"].get("recommendedScope") or "plan"
+		orchestration_summary = (
+			f"The current request is blocked on a permission choice. Recommended scope: {recommended_scope}."
 		)
 	elif dispatch_summary:
-		body = (
-			f"Current progress: the latest dispatch is {dispatch_summary['dispatch_ref']} "
-			f"with state {dispatch_summary.get('state_status') or 'unknown'}."
+		orchestration_summary = (
+			f"The latest dispatch is {dispatch_summary.get('dispatch_ref')} with state "
+			f"{dispatch_summary.get('state_status') or 'unknown'}."
 		)
 		if dispatch_summary.get("result_status"):
-			body += f" Result status is {dispatch_summary['result_status']}."
+			orchestration_summary += f" Result status is {dispatch_summary['result_status']}."
 		if dispatch_summary.get("decision"):
-			body += f" Governor decision is {dispatch_summary['decision']}."
+			orchestration_summary += f" Governor decision is {dispatch_summary['decision']}."
 	elif accepted_intake:
-		body = (
-			f"Current progress: the accepted intake is bound to {accepted_intake.get('lane') or lane or 'the current lane'} "
+		orchestration_summary = (
+			f"The accepted intake is bound to {accepted_intake.get('lane') or lane or 'the current lane'} "
 			f"for {accepted_intake.get('task') or accepted_intake.get('goal') or task or 'the current task'}."
 		)
 	elif request_draft:
-		body = (
-			f"Current progress: intake has a draft for {request_draft.get('task_hint') or request_draft.get('normalized_goal') or task or 'the current request'}, "
+		orchestration_summary = (
+			f"Intake has a draft for {request_draft.get('task_hint') or request_draft.get('normalized_goal') or task or 'the current request'}, "
 			f"and it is currently {request_draft.get('shell_state') or stage}."
 		)
 	elif snapshot.get("runState") == "running":
-		body = (
-			f"Current progress: Corgi is actively working{f' on {task}' if task else ''}. "
-			"Stop is available if you need it."
+		orchestration_summary = (
+			f"Corgi is actively working{f' on {task}' if task else ''}. Stop is available if the user needs it."
 		)
 	elif model.get("acceptedIntakeSummary"):
-		body = (
-			f"The latest accepted intake is {task or 'ready'}, and the session is currently idle. "
-			"Send a new governed request when you want the workflow to move again."
+		orchestration_summary = (
+			f"The latest accepted intake is {task or 'ready'}, and the session is currently idle."
 		)
 	else:
-		body = (
-			"Nothing is running right now. Start with a bounded request, "
-			"or ask a progress question anytime."
+		orchestration_summary = (
+			"Nothing is currently running. The user may start a bounded request or ask a progress question."
 		)
 
 	details = [
@@ -401,7 +403,299 @@ def _build_governor_dialogue(
 			details.append(
 				f"Next internal action: {transition_summary['next_action_kind']} -> {transition_summary.get('next_action_ref') or 'none'}"
 			)
-	return body, details, primary_ref
+	context_lines = [
+		"Processed Governor dialogue input",
+		"This request already passed through controller/orchestration gating.",
+		"Reply only with the user-facing answer in plain text.",
+		"Do not expose request ids, session refs, context refs, semantic provenance, or raw orchestration/control-plane metadata.",
+		"If you need evidence, inspect the repository and authoritative artifacts directly before answering.",
+		"",
+		"Current session state:",
+		f"- permission_scope: {snapshot.get('permissionScope') or 'unset'}",
+		f"- current_actor: {actor}",
+		f"- current_stage: {stage}",
+		f"- run_state: {snapshot.get('runState') or 'idle'}",
+	]
+	if task:
+		context_lines.append(f"- current_task: {task}")
+	if lane:
+		context_lines.append(f"- lane: {lane}")
+	context_lines.append(f"- orchestration_summary: {orchestration_summary}")
+	context_lines.extend(["", "Authoritative artifact hints:"])
+	artifact_lines: list[str] = []
+	if accepted_intake_ref:
+		artifact_lines.append(f"- accepted_intake_ref: {accepted_intake_ref}")
+	if request_draft_ref:
+		artifact_lines.append(f"- request_draft_ref: {request_draft_ref}")
+	if dispatch_summary:
+		if dispatch_summary.get("request_ref"):
+			artifact_lines.append(f"- latest_dispatch_request_ref: {dispatch_summary['request_ref']}")
+		if dispatch_summary.get("state_ref"):
+			artifact_lines.append(f"- latest_dispatch_state_ref: {dispatch_summary['state_ref']}")
+		if dispatch_summary.get("result_ref"):
+			artifact_lines.append(f"- latest_dispatch_result_ref: {dispatch_summary['result_ref']}")
+		if dispatch_summary.get("decision_ref"):
+			artifact_lines.append(f"- latest_governor_decision_ref: {dispatch_summary['decision_ref']}")
+	if transition_summary and transition_summary.get("ref"):
+		artifact_lines.append(f"- proposed_transition_ref: {transition_summary['ref']}")
+	if artifact_lines:
+		context_lines.extend(artifact_lines)
+	else:
+		context_lines.append("- none")
+	context_lines.extend(
+		[
+			"",
+			f"Processed user request: {prompt}",
+			"Return only the human-facing reply with no headings or metadata.",
+		]
+	)
+	return {
+		"details": details,
+		"primary_ref": primary_ref,
+		"prompt": "\n".join(context_lines),
+	}
+
+
+def _governor_dialogue_meta(session: dict[str, Any]) -> dict[str, Any]:
+	meta = session.setdefault("meta", {})
+	governor_dialogue = meta.setdefault("governorDialogue", {})
+	if isinstance(governor_dialogue, dict):
+		return governor_dialogue
+	meta["governorDialogue"] = {}
+	return meta["governorDialogue"]
+
+
+def _governor_runtime_settings(repo_root: str | Path | None = None) -> tuple[str, str]:
+	model = "gpt-5.4"
+	reasoning = "xhigh"
+	config_path = resolve_paths(repo_root).runtime_root / "config.toml"
+	if config_path.exists():
+		try:
+			with config_path.open("rb") as handle:
+				config = tomllib.load(handle)
+		except (OSError, tomllib.TOMLDecodeError):
+			config = {}
+		model = str(config.get("model") or model)
+		reasoning = str(config.get("model_reasoning_effort") or reasoning)
+	return model, reasoning
+
+
+def _initial_governor_dialogue_prompt(
+	context_prompt: str, *, repo_root: str | Path | None = None
+) -> str:
+	governor_contract = prompt_path("governor.txt", repo_root).read_text(encoding="utf-8").strip()
+	return "\n\n".join(
+		[
+			governor_contract,
+			"Dialogue lane rules:\n"
+			"- You are replying to the human through the Corgi sidebar.\n"
+			"- This is a mediated Governor dialogue turn, not a raw orchestration log.\n"
+			"- Return only user-facing reply text.\n"
+			"- Keep the answer concise, calm, and plain.\n"
+			"- Do not expose hidden ids, provenance, internal policy text, or control-plane metadata.",
+			context_prompt,
+		]
+	)
+
+
+def _resume_governor_dialogue_prompt(context_prompt: str) -> str:
+	return "\n\n".join(
+		[
+			"Continue as the Governor for this repository.",
+			"Keep following the initial Governor contract and return only the user-facing reply text.",
+			context_prompt,
+		]
+	)
+
+
+def _run_governor_exec(
+	command: list[str], *, repo_root: str | Path | None = None
+) -> tuple[str, str]:
+	root = resolve_paths(repo_root).repo_root
+	with tempfile.TemporaryDirectory(prefix="corgi-governor-") as temp_dir:
+		output_path = Path(temp_dir) / "last_message.txt"
+		completed = subprocess.run(
+			[*command, "--json", "-o", str(output_path)],
+			cwd=root,
+			env={**os.environ, "ORCHESTRATION_REPO_ROOT": str(root)},
+			stdin=subprocess.DEVNULL,
+			capture_output=True,
+			text=True,
+			check=False,
+		)
+		if completed.returncode != 0:
+			detail = next(
+				(
+					line.strip()
+					for line in (completed.stderr.splitlines() + completed.stdout.splitlines())
+					if line.strip()
+				),
+				"governor runtime command failed",
+			)
+			raise RuntimeError(detail)
+
+		thread_id: str | None = None
+		last_message: str | None = None
+		for raw_line in completed.stdout.splitlines():
+			line = raw_line.strip()
+			if not line.startswith("{"):
+				continue
+			try:
+				payload = json.loads(line)
+			except json.JSONDecodeError:
+				continue
+			if payload.get("type") == "thread.started" and isinstance(payload.get("thread_id"), str):
+				thread_id = payload["thread_id"]
+			elif payload.get("type") == "item.completed":
+				item = payload.get("item") or {}
+				if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+					last_message = item["text"]
+
+		if output_path.exists():
+			file_message = trim_text(output_path.read_text(encoding="utf-8"))
+			if file_message:
+				last_message = file_message
+
+		if not thread_id:
+			raise RuntimeError("governor runtime did not return a thread id")
+		if not trim_text(last_message):
+			raise RuntimeError("governor runtime returned no user-facing reply")
+		return thread_id, trim_text(last_message)
+
+
+def _continue_governor_dialogue(
+	session: dict[str, Any], prompt: str, *, repo_root: str | Path | None = None
+) -> tuple[str, list[str], str | None]:
+	context = _governor_dialogue_context(session, prompt, repo_root=repo_root)
+	governor_meta = _governor_dialogue_meta(session)
+	thread_id = governor_meta.get("threadId") if isinstance(governor_meta.get("threadId"), str) else None
+	model_name, reasoning = _governor_runtime_settings(repo_root)
+
+	def create_session() -> tuple[str, str]:
+		initial_prompt = _initial_governor_dialogue_prompt(context["prompt"], repo_root=repo_root)
+		return _run_governor_exec(
+			[
+				"codex",
+				"exec",
+				"--skip-git-repo-check",
+				"--cd",
+				str(resolve_paths(repo_root).repo_root),
+				"--sandbox",
+				"read-only",
+				"--model",
+				model_name,
+				"-c",
+				f'model_reasoning_effort="{reasoning}"',
+				initial_prompt,
+			],
+			repo_root=repo_root,
+		)
+
+	if thread_id:
+		try:
+			thread_id, body = _run_governor_exec(
+				[
+					"codex",
+					"exec",
+					"resume",
+					thread_id,
+					_resume_governor_dialogue_prompt(context["prompt"]),
+					"--model",
+					model_name,
+					"-c",
+					f'model_reasoning_effort="{reasoning}"',
+				],
+				repo_root=repo_root,
+			)
+		except RuntimeError:
+			governor_meta["threadId"] = None
+			thread_id, body = create_session()
+	else:
+		thread_id, body = create_session()
+
+	governor_meta["threadId"] = thread_id
+	governor_meta["lastUsedAt"] = utc_now()
+	return body, context["details"], context["primary_ref"]
+
+
+def _append_governor_dialogue_response(
+	session: dict[str, Any],
+	prompt: str,
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	turn_type: str = "governor_dialogue",
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
+) -> bool:
+	model = session["model"]
+	try:
+		body, details, primary_ref = _continue_governor_dialogue(
+			session,
+			prompt,
+			repo_root=repo_root,
+		)
+	except RuntimeError:
+		_append_error(
+			model,
+			"Governor unavailable",
+			"Corgi couldn't get a Governor reply right now. Please try again.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="orchestration",
+			currentStage="dialogue_failed",
+			runState="idle",
+			transportState="connected",
+		)
+		model["activeForegroundRequestId"] = None
+		return False
+
+	model["feed"].append(
+		_feed_item(
+			"actor_event",
+			"Governor response",
+			body,
+			authoritative=True,
+			now=now,
+			details=details,
+			source_layer="governor",
+			source_actor="governor",
+			source_artifact_ref=primary_ref,
+			**_semantic_provenance(
+				turn_type=turn_type,
+				semantic_input_version=semantic_input_version,
+				semantic_summary_ref=semantic_summary_ref,
+				semantic_context_flags=semantic_context_flags,
+				semantic_route_type=semantic_route_type,
+				semantic_confidence=semantic_confidence,
+				semantic_block_reason=semantic_block_reason,
+				semantic_paraphrase=semantic_paraphrase,
+				semantic_normalized_text=semantic_normalized_text or prompt,
+				in_response_to_request_id=request_id,
+			),
+		)
+	)
+	_refresh_snapshot(
+		model,
+		now,
+		currentActor="governor",
+		currentStage="dialogue_ready",
+		runState="idle",
+		transportState="connected",
+	)
+	model["activeForegroundRequestId"] = None
+	return True
 
 
 def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str, Any]:
@@ -432,6 +726,7 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 			)
 		],
 		"activeClarification": None,
+		"activeForegroundRequestId": None,
 		"acceptedIntakeSummary": None,
 	}
 
@@ -440,6 +735,7 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	session.setdefault("meta", {})
 	session["meta"].setdefault("activeIntakeRef", None)
 	session["meta"].setdefault("processedRequestIds", {})
+	session["meta"].setdefault("governorDialogue", {})
 	model = session.setdefault("model", _initial_model(now, repo_root=repo_root))
 	snapshot = model.setdefault("snapshot", {})
 	snapshot.setdefault("sessionRef", _next_id("session"))
@@ -470,6 +766,7 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	snapshot.setdefault("snapshotFreshness", {"receivedAt": now})
 	model.setdefault("feed", [])
 	model.setdefault("activeClarification", None)
+	model.setdefault("activeForegroundRequestId", None)
 	model.setdefault("acceptedIntakeSummary", None)
 	if isinstance(model.get("activeClarification"), dict):
 		model["activeClarification"].setdefault(
@@ -485,6 +782,9 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 		)
 		snapshot["pendingPermissionRequest"].setdefault(
 			"continuationKind", "intake_acceptance"
+		)
+		snapshot["pendingPermissionRequest"].setdefault(
+			"foregroundRequestId", None
 		)
 	if isinstance(snapshot.get("pendingInterrupt"), dict):
 		snapshot["pendingInterrupt"].setdefault(
@@ -693,6 +993,7 @@ def _permission_request(
 	continuation_kind: str = "intake_acceptance",
 	pending_prompt: str | None = None,
 	pending_normalized_text: str | None = None,
+	foreground_request_id: str | None = None,
 ) -> dict[str, Any]:
 	request_id = _next_id("permission")
 	return {
@@ -705,6 +1006,7 @@ def _permission_request(
 		"continuationKind": continuation_kind,
 		"pendingPrompt": pending_prompt,
 		"pendingNormalizedText": pending_normalized_text,
+		"foregroundRequestId": foreground_request_id,
 		"requestedAt": now,
 	}
 
@@ -766,6 +1068,7 @@ def _accept_pending_intake(
 	semantic_normalized_text: str | None = None,
 ) -> bool:
 	model = session["model"]
+	current_foreground_request_id = model.get("activeForegroundRequestId") or request_id
 	intake_ref = session["meta"].get("activeIntakeRef")
 	pending_permission = model["snapshot"].get("pendingPermissionRequest")
 	if not intake_ref or not pending_permission:
@@ -819,6 +1122,9 @@ def _accept_pending_intake(
 	model["snapshot"]["task"] = envelope["task"]
 	model["snapshot"]["recentArtifacts"] = artifacts
 	model["snapshot"]["permissionScope"] = permission_scope
+	model["activeForegroundRequestId"] = (
+		current_foreground_request_id if permission_scope == "execute" else None
+	)
 	model["feed"].append(
 		_feed_item(
 			"system_status",
@@ -899,46 +1205,28 @@ def _apply_governor_dialogue_permission(
 	model["snapshot"]["permissionScope"] = permission_scope
 	model["snapshot"]["pendingPermissionRequest"] = None
 	model["snapshot"]["pendingInterrupt"] = None
-
-	body, details, primary_ref = _build_governor_dialogue(
+	continuation_request_id = (
+		pending_permission.get("foregroundRequestId")
+		or model.get("activeForegroundRequestId")
+		or request_id
+	)
+	model["activeForegroundRequestId"] = continuation_request_id
+	return _append_governor_dialogue_response(
 		session,
 		prompt,
-		repo_root=repo_root,
-	)
-	model["feed"].append(
-		_feed_item(
-			"actor_event",
-			"Governor response",
-			body,
-			authoritative=True,
-			now=now,
-			details=details,
-			source_layer="governor",
-			source_actor="governor",
-			source_artifact_ref=primary_ref,
-			**_semantic_provenance(
-				turn_type=turn_type,
-				semantic_input_version=semantic_input_version,
-				semantic_summary_ref=semantic_summary_ref,
-				semantic_context_flags=semantic_context_flags,
-				semantic_route_type=semantic_route_type,
-				semantic_confidence=semantic_confidence,
-				semantic_block_reason=semantic_block_reason,
-				semantic_paraphrase=semantic_paraphrase,
-				semantic_normalized_text=semantic_normalized_text or prompt,
-				in_response_to_request_id=request_id,
-			),
-		)
-	)
-	_refresh_snapshot(
-		model,
 		now,
-		currentActor="governor",
-		currentStage="dialogue_ready",
-		runState="idle",
-		transportState="connected",
+		repo_root=repo_root,
+		request_id=continuation_request_id,
+		turn_type=turn_type,
+		semantic_input_version=semantic_input_version,
+		semantic_summary_ref=semantic_summary_ref,
+		semantic_context_flags=semantic_context_flags,
+		semantic_route_type=semantic_route_type,
+		semantic_confidence=semantic_confidence,
+		semantic_block_reason=semantic_block_reason,
+		semantic_paraphrase=semantic_paraphrase,
+		semantic_normalized_text=semantic_normalized_text,
 	)
-	return True
 
 
 def handle_submit_prompt(
@@ -982,6 +1270,8 @@ def handle_submit_prompt(
 
 	semantic_prompt = trim_text(normalized_text) or prompt
 	resolved_turn_type = turn_type or _classify_turn(semantic_prompt)
+	if request_id is not None:
+		model["activeForegroundRequestId"] = request_id
 	if resolved_turn_type == "governor_dialogue":
 		if not _scope_satisfies(_current_permission_scope(model), "observe"):
 			_append_user_turn(
@@ -1006,6 +1296,7 @@ def handle_submit_prompt(
 				continuation_kind="governor_dialogue",
 				pending_prompt=prompt,
 				pending_normalized_text=semantic_prompt,
+				foreground_request_id=request_id,
 			)
 			model["snapshot"]["pendingPermissionRequest"] = permission_request
 			model["feed"].append(
@@ -1039,11 +1330,6 @@ def handle_submit_prompt(
 			)
 			return
 
-		body, details, primary_ref = _build_governor_dialogue(
-			session,
-			semantic_prompt,
-			repo_root=repo_root,
-		)
 		_append_user_turn(
 			model,
 			now,
@@ -1060,32 +1346,22 @@ def handle_submit_prompt(
 			semantic_normalized_text=semantic_prompt,
 			in_response_to_request_id=request_id,
 		)
-		model["feed"].append(
-			_feed_item(
-				"actor_event",
-				"Governor response",
-				body,
-				authoritative=True,
-				now=now,
-				details=details,
-				source_layer="governor",
-				source_actor="governor",
-				source_artifact_ref=primary_ref,
-				**_semantic_provenance(
-					turn_type=resolved_turn_type,
-					semantic_input_version=semantic_input_version,
-					semantic_summary_ref=semantic_summary_ref,
-					semantic_context_flags=semantic_context_flags,
-					semantic_route_type=semantic_route_type,
-					semantic_confidence=semantic_confidence,
-					semantic_block_reason=semantic_block_reason,
-					semantic_paraphrase=paraphrase,
-					semantic_normalized_text=semantic_prompt,
-					in_response_to_request_id=request_id,
-				),
-			)
+		_append_governor_dialogue_response(
+			session,
+			semantic_prompt,
+			now,
+			repo_root=repo_root,
+			request_id=request_id,
+			turn_type=resolved_turn_type,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=paraphrase,
+			semantic_normalized_text=semantic_prompt,
 		)
-		_refresh_snapshot(model, now, transportState="connected")
 		return
 
 	_supersede_pending_permission_request(model, now, request_id=request_id)
@@ -1188,6 +1464,7 @@ def handle_submit_prompt(
 			continuation_kind="intake_acceptance",
 			pending_prompt=prompt,
 			pending_normalized_text=semantic_prompt,
+			foreground_request_id=model.get("activeForegroundRequestId") or request_id,
 		)
 		_accept_pending_intake(
 			session,
@@ -1213,6 +1490,7 @@ def handle_submit_prompt(
 		continuation_kind="intake_acceptance",
 		pending_prompt=prompt,
 		pending_normalized_text=semantic_prompt,
+		foreground_request_id=model.get("activeForegroundRequestId") or request_id,
 	)
 	model["feed"].append(
 		_feed_item(
@@ -1264,6 +1542,8 @@ def handle_answer_clarification(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
+	if model.get("activeForegroundRequestId") is None and request_id is not None:
+		model["activeForegroundRequestId"] = request_id
 	if session_ref is not None and not _session_ref_matches(model, session_ref):
 		_append_error(
 			model,
@@ -1360,6 +1640,7 @@ def handle_answer_clarification(
 			continuation_kind="intake_acceptance",
 			pending_prompt=text,
 			pending_normalized_text=semantic_answer,
+			foreground_request_id=model.get("activeForegroundRequestId") or request_id,
 		)
 		_accept_pending_intake(
 			session,
@@ -1384,6 +1665,7 @@ def handle_answer_clarification(
 		continuation_kind="intake_acceptance",
 		pending_prompt=text,
 		pending_normalized_text=semantic_answer,
+		foreground_request_id=model.get("activeForegroundRequestId") or request_id,
 	)
 	model["feed"].append(
 		_feed_item(
@@ -1572,6 +1854,7 @@ def handle_decline_permission(
 		return
 
 	model["snapshot"]["pendingPermissionRequest"] = None
+	model["activeForegroundRequestId"] = None
 	model["feed"].append(
 		_feed_item(
 			"system_status",
@@ -1719,6 +2002,7 @@ def handle_reconnect(
 		model["acceptedIntakeSummary"] = None
 		model["snapshot"]["pendingInterrupt"] = None
 		model["snapshot"]["recentArtifacts"] = []
+		_governor_dialogue_meta(session).clear()
 		model["feed"].append(
 			_feed_item(
 				"system_status",

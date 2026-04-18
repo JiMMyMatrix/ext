@@ -116,6 +116,28 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!webviewSource.includes('CORGI_RESET_WEBVIEW_STATE'));
 	});
 
+	test('first-turn requests only send sessionRef after transport state is authoritative', () => {
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+
+		assert.ok(webviewSource.includes('private hasAuthoritativeTransportState = false;'));
+		assert.ok(webviewSource.includes('this.hasAuthoritativeTransportState = true;'));
+		assert.match(
+			webviewSource,
+			/session_ref:\s*action\.session_ref\s*\?\?\s*\(\s*this\.hasAuthoritativeTransportState\s*\?\s*this\.model\.snapshot\.sessionRef\s*:\s*undefined\s*\)/
+		);
+	});
+
+	test('permission clicks keep the foreground request key while sending a fresh command request id', () => {
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+
+		assert.ok(webviewSource.includes('function foregroundRequestKeyForAction(action) {'));
+		assert.ok(webviewSource.includes('pendingPermissionRequest?.foregroundRequestId'));
+		assert.match(
+			webviewSource,
+			/const requestId = nextForegroundRequestKey\(\);\s*const requestKey = foregroundRequestKeyForAction\(action\);\s*ensureForegroundRequest\('', '', requestKey\);/
+		);
+	});
+
 	test('transport selection resolves the real orchestration workspace when available', () => {
 		const target = resolveExecutionTransportTarget(
 			vscode.ExtensionMode.Development,
@@ -465,6 +487,7 @@ suite('Corgi Webview UX', () => {
 			type: 'submit_prompt',
 			text: 'hello!',
 			semantic_route_type: 'governor_dialogue',
+			request_id: 'req-hello',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -472,6 +495,7 @@ suite('Corgi Webview UX', () => {
 			type: 'set_permission_scope',
 			permission_scope: 'observe',
 			context_ref: gatedModel.snapshot.pendingPermissionRequest?.contextRef,
+			request_id: 'req-observe-click',
 			now: '2026-04-10T10:00:10.000Z',
 		});
 
@@ -483,6 +507,7 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(lastItem.type, 'actor_event');
 		assert.strictEqual(lastItem.title, 'Governor response');
 		assert.ok(!(lastItem.body ?? '').includes('waiting for a observe permission choice'));
+		assert.strictEqual(lastItem.in_response_to_request_id, 'req-hello');
 	});
 
 	test('a new governed request keeps its own foreground flow after an observe dialogue completes', () => {

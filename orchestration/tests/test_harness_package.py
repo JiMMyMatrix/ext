@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from orchestration.harness import (
@@ -27,6 +29,18 @@ from orchestration.harness.scenario_fixtures import (
 
 
 class HarnessPackageTests(unittest.TestCase):
+    def _mock_governor_dialogue(
+        self,
+        *,
+        body: str = "Governor interactive reply.",
+        primary_ref: str | None = None,
+    ) -> mock._patch:
+        return mock.patch.object(
+            session,
+            "_continue_governor_dialogue",
+            return_value=(body, ["Governor interactive thread"], primary_ref),
+        )
+
     def test_intake_module_ready_and_acceptance_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
@@ -130,6 +144,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="hello!",
                 turn_type="governor_dialogue",
+                request_id="req-hello",
                 repo_root=repo_root,
             )
 
@@ -139,12 +154,14 @@ class HarnessPackageTests(unittest.TestCase):
             )
             self.assertIsNone(session.load_session(repo_root)["meta"]["activeIntakeRef"])
 
-            model = session.dispatch_session_action(
-                "set_permission_scope",
-                permission_scope="observe",
-                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
-                repo_root=repo_root,
-            )
+            with self._mock_governor_dialogue(body="Hello from the interactive governor."):
+                model = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="observe",
+                    request_id="req-observe-click",
+                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                    repo_root=repo_root,
+                )
 
             self.assertEqual(model["snapshot"]["permissionScope"], "observe")
             self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
@@ -152,7 +169,8 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["snapshot"]["currentStage"], "dialogue_ready")
             self.assertEqual(model["feed"][-1]["type"], "actor_event")
             self.assertEqual(model["feed"][-1]["title"], "Governor response")
-            self.assertNotIn("waiting for a observe permission choice", model["feed"][-1]["body"])
+            self.assertEqual(model["feed"][-1]["body"], "Hello from the interactive governor.")
+            self.assertEqual(model["feed"][-1]["in_response_to_request_id"], "req-hello")
 
     def test_scenario_fixture_loader_materializes_checked_in_state(self) -> None:
         self.assertIn("accepted_idle", list_scenarios())
@@ -167,41 +185,37 @@ class HarnessPackageTests(unittest.TestCase):
                 (repo_root / ".agent" / "intakes" / "fixture-accepted-idle" / "accepted_intake.json").exists()
             )
 
-    def test_session_governor_dialogue_reads_accepted_intake_artifact(self) -> None:
+    def test_governor_dialogue_context_includes_accepted_intake_artifact(self) -> None:
         with temporary_scenario_repo("accepted_idle") as repo_root:
             payload = session.load_session(repo_root)
             payload["model"]["snapshot"]["permissionScope"] = "observe"
             session.save_session(payload, repo_root=repo_root)
-            model = session.dispatch_session_action(
-                "submit_prompt",
-                text="What is the current progress?",
+            context = session._governor_dialogue_context(
+                session.load_session(repo_root),
+                "What is the current progress?",
                 repo_root=repo_root,
             )
+            self.assertIn("accepted_intake_ref:", context["prompt"])
+            self.assertIn("accepted intake is bound", context["prompt"])
+            self.assertTrue(str(context["primary_ref"]).endswith("accepted_intake.json"))
 
-            actor_events = [item for item in model["feed"] if item["type"] == "actor_event"]
-            latest = actor_events[-1]
-            self.assertIn("accepted intake", latest["body"])
-            self.assertTrue(str(latest.get("source_artifact_ref", "")).endswith("accepted_intake.json"))
-
-    def test_session_governor_dialogue_reads_dispatch_and_transition_artifacts(self) -> None:
+    def test_governor_dialogue_context_includes_dispatch_and_transition_artifacts(self) -> None:
         with temporary_scenario_repo("completed_with_governor_decision") as repo_root:
             payload = session.load_session(repo_root)
             payload["model"]["snapshot"]["permissionScope"] = "observe"
             session.save_session(payload, repo_root=repo_root)
-            model = session.dispatch_session_action(
-                "submit_prompt",
-                text="What is the current progress?",
+            context = session._governor_dialogue_context(
+                session.load_session(repo_root),
+                "What is the current progress?",
                 repo_root=repo_root,
             )
-            actor_events = [item for item in model["feed"] if item["type"] == "actor_event"]
-            latest = actor_events[-1]
-            self.assertIn("lane/intake/dispatch-001", latest["body"])
-            self.assertIn("Result status is completed", latest["body"])
+            self.assertIn("latest_dispatch_request_ref: .agent/dispatches/lane/intake/dispatch-001/request.json", context["prompt"])
+            self.assertIn("Result status is completed", context["prompt"])
             self.assertEqual(
-                latest["source_artifact_ref"],
+                context["primary_ref"],
                 ".agent/dispatches/lane/intake/dispatch-001/governor_decision.json",
             )
-            self.assertTrue(any("Proposed transition:" in detail for detail in latest.get("details", [])))
+            self.assertTrue(any("Proposed transition:" in detail for detail in context.get("details", [])))
 
     def test_session_state_reads_ready_for_acceptance_fixture(self) -> None:
         with temporary_scenario_repo("ready_for_acceptance") as repo_root:
@@ -216,15 +230,66 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["snapshot"]["runState"], "running")
             self.assertEqual(model["snapshot"]["currentActor"], "governor")
 
-            progress_model = session.dispatch_session_action(
-                "submit_prompt",
-                text="What is the current progress?",
-                repo_root=repo_root,
-            )
+            with self._mock_governor_dialogue(
+                body="Interactive governor progress reply.",
+                primary_ref=".agent/dispatches/lane/intake/dispatch-001/state.json",
+            ):
+                progress_model = session.dispatch_session_action(
+                    "submit_prompt",
+                    text="What is the current progress?",
+                    repo_root=repo_root,
+                )
             actor_events = [item for item in progress_model["feed"] if item["type"] == "actor_event"]
             latest = actor_events[-1]
-            self.assertIn("lane/intake/dispatch-001", latest["body"])
-            self.assertIn("state in_progress", latest["body"])
+            self.assertEqual(latest["body"], "Interactive governor progress reply.")
+            self.assertEqual(
+                latest["source_artifact_ref"],
+                ".agent/dispatches/lane/intake/dispatch-001/state.json",
+            )
+
+    def test_governor_dialogue_runner_reuses_persistent_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            payload = session.load_session(repo_root)
+            calls: list[list[str]] = []
+
+            def fake_run(*args, **kwargs):
+                command = list(args[0])
+                calls.append(command)
+                if "resume" in command:
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        stdout=(
+                            '{"type":"thread.started","thread_id":"thread-1"}\n'
+                            '{"type":"item.completed","item":{"type":"agent_message","text":"follow-up reply"}}\n'
+                        ),
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        '{"type":"thread.started","thread_id":"thread-1"}\n'
+                        '{"type":"item.completed","item":{"type":"agent_message","text":"first reply"}}\n'
+                    ),
+                    stderr="",
+                )
+
+            prompt_root = Path(__file__).resolve().parents[2] / "orchestration" / "prompts" / "governor.txt"
+            with mock.patch.object(session.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(session, "prompt_path", return_value=prompt_root):
+                    first = session._continue_governor_dialogue(
+                        payload, "hello!", repo_root=repo_root
+                    )
+                    second = session._continue_governor_dialogue(
+                        payload, "what happened?", repo_root=repo_root
+                    )
+
+            self.assertEqual(first[0], "first reply")
+            self.assertEqual(second[0], "follow-up reply")
+            self.assertEqual(payload["meta"]["governorDialogue"]["threadId"], "thread-1")
+            self.assertTrue(any(command[:3] == ["codex", "exec", "resume"] for command in calls))
 
     def test_session_analysis_prompt_returns_structured_clarification_options(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
