@@ -183,14 +183,17 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		}
 	}
 
-	private buildControllerAction(action: ModelAction): ModelAction {
+	private buildControllerAction(
+		action: ModelAction,
+		includeSessionRef = this.hasAuthoritativeTransportState
+	): ModelAction {
 		return {
 			...action,
 			request_id: action.request_id ?? this.nextRequestId(),
 			context_ref: action.context_ref ?? this.contextRefForAction(action.type),
 			session_ref:
 				action.session_ref ??
-				(this.hasAuthoritativeTransportState
+				(includeSessionRef
 					? this.model.snapshot.sessionRef
 					: undefined),
 		};
@@ -270,7 +273,11 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		}
 	}
 
-	private async routeFreeText(text: string, requestId?: string) {
+	private async routeFreeText(
+		text: string,
+		requestId?: string,
+		includeSessionRef = this.hasAuthoritativeTransportState
+	) {
 		const rawText = text.trim();
 		if (!rawText) {
 			return;
@@ -314,7 +321,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			this.buildControllerAction({
 				...resolution.action,
 				request_id: requestId ?? resolution.action.request_id,
-			})
+			}, includeSessionRef)
 		);
 	}
 
@@ -324,7 +331,11 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				await this.refreshState();
 				return;
 			case 'submit_prompt':
-				await this.routeFreeText(message.text ?? '', message.requestId);
+				await this.routeFreeText(
+					message.text ?? '',
+					message.requestId,
+					this.hasAuthoritativeTransportState
+				);
 				return;
 			case 'answer_clarification':
 				await this.applyAction(this.buildControllerAction({
@@ -1978,6 +1989,10 @@ export function getExecutionWindowHtml(
 		}
 
 		function renderDetails(item) {
+			if (item.type === 'actor_event' && item.source_actor === 'governor') {
+				return '';
+			}
+
 			const details = Array.isArray(item.details) && item.details.length > 0;
 			if (!details) {
 				return '';

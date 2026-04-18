@@ -121,9 +121,18 @@ suite('Corgi Webview UX', () => {
 
 		assert.ok(webviewSource.includes('private hasAuthoritativeTransportState = false;'));
 		assert.ok(webviewSource.includes('this.hasAuthoritativeTransportState = true;'));
+		assert.ok(
+			webviewSource.includes(
+				'includeSessionRef = this.hasAuthoritativeTransportState'
+			)
+		);
 		assert.match(
 			webviewSource,
-			/session_ref:\s*action\.session_ref\s*\?\?\s*\(\s*this\.hasAuthoritativeTransportState\s*\?\s*this\.model\.snapshot\.sessionRef\s*:\s*undefined\s*\)/
+			/await this\.routeFreeText\(\s*message\.text \?\? '',\s*message\.requestId,\s*this\.hasAuthoritativeTransportState\s*\)/
+		);
+		assert.match(
+			webviewSource,
+			/session_ref:\s*action\.session_ref\s*\?\?\s*\(\s*includeSessionRef\s*\?\s*this\.model\.snapshot\.sessionRef\s*:\s*undefined\s*\)/
 		);
 	});
 
@@ -136,6 +145,17 @@ suite('Corgi Webview UX', () => {
 			webviewSource,
 			/const requestId = nextForegroundRequestKey\(\);\s*const requestKey = foregroundRequestKeyForAction\(action\);\s*ensureForegroundRequest\('', '', requestKey\);/
 		);
+	});
+
+	test('governor replies do not render debug details in the transcript', () => {
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+
+		assert.ok(
+			webviewSource.includes(
+				"if (item.type === 'actor_event' && item.source_actor === 'governor') {"
+			)
+		);
+		assert.ok(webviewSource.includes("return '';"));
 	});
 
 	test('transport selection resolves the real orchestration workspace when available', () => {
