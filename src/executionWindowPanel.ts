@@ -28,11 +28,15 @@ function shouldResetDevelopmentWebviewState(context: vscode.ExtensionContext): b
 
 type WebviewMessage =
 	| { type: 'ready' }
-	| { type: 'submit_prompt'; text?: string }
-	| { type: 'answer_clarification'; text?: string }
-	| { type: 'set_permission_scope'; permissionScope?: 'observe' | 'plan' | 'execute' }
-	| { type: 'decline_permission' }
-	| { type: 'interrupt_run' }
+	| { type: 'submit_prompt'; text?: string; requestId?: string }
+	| { type: 'answer_clarification'; text?: string; requestId?: string }
+	| {
+			type: 'set_permission_scope';
+			permissionScope?: 'observe' | 'plan' | 'execute';
+			requestId?: string;
+	  }
+	| { type: 'decline_permission'; requestId?: string }
+	| { type: 'interrupt_run'; requestId?: string }
 	| { type: 'open_artifact'; artifactId?: string }
 	| { type: 'reveal_artifact_path'; artifactId?: string }
 	| { type: 'copy_artifact_path'; artifactId?: string };
@@ -259,7 +263,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		}
 	}
 
-	private async routeFreeText(text: string) {
+	private async routeFreeText(text: string, requestId?: string) {
 		const rawText = text.trim();
 		if (!rawText) {
 			return;
@@ -291,13 +295,20 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				rawText,
 				presentation.title,
 				presentation.body,
-				resolution.semantic
+				resolution.semantic,
+				undefined,
+				requestId
 			);
 			this.postState();
 			return;
 		}
 
-		await this.applyAction(this.buildControllerAction(resolution.action));
+		await this.applyAction(
+			this.buildControllerAction({
+				...resolution.action,
+				request_id: requestId ?? resolution.action.request_id,
+			})
+		);
 	}
 
 	private async handleMessage(message: WebviewMessage) {
@@ -306,12 +317,13 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				await this.refreshState();
 				return;
 			case 'submit_prompt':
-				await this.routeFreeText(message.text ?? '');
+				await this.routeFreeText(message.text ?? '', message.requestId);
 				return;
 			case 'answer_clarification':
 				await this.applyAction(this.buildControllerAction({
 					type: 'answer_clarification',
 					text: message.text ?? '',
+					request_id: message.requestId,
 				}));
 				return;
 			case 'set_permission_scope':
@@ -321,13 +333,24 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				await this.applyAction(this.buildControllerAction({
 					type: 'set_permission_scope',
 					permission_scope: message.permissionScope,
+					request_id: message.requestId,
 				}));
 				return;
 			case 'decline_permission':
-				await this.applyAction(this.buildControllerAction({ type: 'decline_permission' }));
+				await this.applyAction(
+					this.buildControllerAction({
+						type: 'decline_permission',
+						request_id: message.requestId,
+					})
+				);
 				return;
 			case 'interrupt_run':
-				await this.applyAction(this.buildControllerAction({ type: 'interrupt_run' }));
+				await this.applyAction(
+					this.buildControllerAction({
+						type: 'interrupt_run',
+						request_id: message.requestId,
+					})
+				);
 				return;
 			case 'open_artifact':
 				await this.handleArtifactAction(message.artifactId, 'open');
@@ -520,6 +543,10 @@ export function getExecutionWindowHtml(
 		button,
 		textarea {
 			font: inherit;
+		}
+
+		[hidden] {
+			display: none !important;
 		}
 
 		button {
@@ -1456,15 +1483,32 @@ export function getExecutionWindowHtml(
 			return 'bullet-' + String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8);
 		}
 
-		function ensureForegroundRequest(userText, hint) {
+		function nextForegroundRequestKey() {
+			return 'corgi-request:' + String(Date.now()) + ':' + Math.random().toString(36).slice(2, 8);
+		}
+
+		function isAuthoritativeForegroundRequestKey(requestKey) {
+			return Boolean(requestKey && String(requestKey).startsWith('corgi-request:'));
+		}
+
+		function startForegroundRequest(userText, hint, requestKey) {
+			ui.foregroundRequest = {
+				id: 'foreground-' + String(Date.now()),
+				requestKey: requestKey || nextForegroundRequestKey(),
+				userText: userText || '',
+				status: 'live',
+				hint: hint || '',
+				bullets: [],
+			};
+		}
+
+		function ensureForegroundRequest(userText, hint, requestKey) {
 			if (!ui.foregroundRequest) {
-				ui.foregroundRequest = {
-					id: 'foreground-' + String(Date.now()),
-					userText: userText || '',
-					status: 'live',
-					hint: hint || '',
-					bullets: [],
-				};
+				startForegroundRequest(userText, hint, requestKey);
+				return;
+			}
+			if (requestKey) {
+				ui.foregroundRequest.requestKey = requestKey;
 			}
 			if (userText) {
 				ui.foregroundRequest.userText = userText;
@@ -1472,6 +1516,27 @@ export function getExecutionWindowHtml(
 			if (hint) {
 				ui.foregroundRequest.hint = hint;
 			}
+		}
+
+		function latestForegroundUserTextFromModel(requestKey) {
+			if (!model) {
+				return '';
+			}
+
+			const matchesRequest = (item) =>
+				item.type === 'user_message' &&
+				item.turn_type !== 'permission_action' &&
+				(!isAuthoritativeForegroundRequestKey(requestKey) ||
+					item.in_response_to_request_id === requestKey);
+
+			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
+				const item = model.feed[index];
+				if (matchesRequest(item)) {
+					return item.body || item.title || '';
+				}
+			}
+
+			return '';
 		}
 
 		function appendForegroundBullet(label, state, hint) {
@@ -1532,21 +1597,28 @@ export function getExecutionWindowHtml(
 			}
 		}
 
-		function latestRequestError() {
-			if (!model) {
+		function latestRequestError(requestKey) {
+			if (!model || !isAuthoritativeForegroundRequestKey(requestKey)) {
 				return undefined;
 			}
 			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
 				const item = model.feed[index];
-				if (item.type === 'error') {
+				if (
+					item.type === 'error' &&
+					item.in_response_to_request_id === requestKey
+				) {
 					return item;
 				}
 			}
 			return undefined;
 		}
 
-		function latestSemanticBlockStatus() {
-			if (!model) {
+		function latestSemanticBlockStatus(requestKey) {
+			if (!model || !ui.foregroundRequest) {
+				return undefined;
+			}
+			const expectedUserText = normalizeUiText(ui.foregroundRequest.userText);
+			if (!expectedUserText) {
 				return undefined;
 			}
 			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
@@ -1556,25 +1628,84 @@ export function getExecutionWindowHtml(
 					item.source_layer === 'dialog_controller' &&
 					item.source_actor === 'semantic_sidecar'
 				) {
+					const previous = model.feed[index - 1];
+					if (
+						previous?.type === 'user_message' &&
+						normalizeUiText(previous.body || previous.title) === expectedUserText &&
+						(!isAuthoritativeForegroundRequestKey(requestKey) ||
+							!previous.in_response_to_request_id ||
+							previous.in_response_to_request_id === requestKey)
+					) {
+						return item;
+					}
+				}
+			}
+			return undefined;
+		}
+
+		function latestRequestActorEvent(requestKey) {
+			if (!model || !isAuthoritativeForegroundRequestKey(requestKey)) {
+				return undefined;
+			}
+			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
+				const item = model.feed[index];
+				if (
+					item.type === 'actor_event' &&
+					item.in_response_to_request_id === requestKey
+				) {
 					return item;
 				}
 			}
 			return undefined;
 		}
 
+		function syncForegroundRequestIdentityFromModel() {
+			if (!model) {
+				return;
+			}
+			const requestKey = model.activeForegroundRequestId;
+			if (!requestKey) {
+				return;
+			}
+			const userText = latestForegroundUserTextFromModel(requestKey);
+			if (!ui.foregroundRequest) {
+				startForegroundRequest(userText, '', requestKey);
+				return;
+			}
+			if (ui.foregroundRequest.requestKey === requestKey) {
+				if (!ui.foregroundRequest.userText && userText) {
+					ui.foregroundRequest.userText = userText;
+				}
+				return;
+			}
+			if (!isAuthoritativeForegroundRequestKey(ui.foregroundRequest.requestKey)) {
+				ui.foregroundRequest.requestKey = requestKey;
+				if (!ui.foregroundRequest.userText && userText) {
+					ui.foregroundRequest.userText = userText;
+				}
+				return;
+			}
+			startForegroundRequest(userText || ui.foregroundRequest.userText, '', requestKey);
+		}
+
 		function syncForegroundRequestFromModel() {
-			if (!ui.foregroundRequest || !model) {
+			if (!model) {
+				return;
+			}
+			syncForegroundRequestIdentityFromModel();
+			if (!ui.foregroundRequest) {
 				return;
 			}
 
 			const snapshot = model.snapshot;
-			const latestError = latestRequestError();
+			const requestKey = ui.foregroundRequest.requestKey;
+			const latestError = latestRequestError(requestKey);
 			if (latestError) {
 				freezeForegroundRequest(latestError.title, 'failed', 'Corgi needs your input before this can continue.');
 				return;
 			}
 
-			const latestSemanticBlock = latestSemanticBlockStatus();
+			const latestSemanticBlock = latestSemanticBlockStatus(requestKey);
 			if (latestSemanticBlock) {
 				freezeForegroundRequest(
 					latestSemanticBlock.title,
@@ -1610,13 +1741,13 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
-			const latestItem = model.feed[model.feed.length - 1];
-			if (latestItem?.type === 'actor_event') {
+			const latestActorEvent = latestRequestActorEvent(requestKey);
+			if (latestActorEvent) {
 				freezeForegroundRequest('Governor responded', 'done', 'Corgi finished this request.');
 				return;
 			}
 
-			if (model.acceptedIntakeSummary) {
+			if (model.acceptedIntakeSummary && isAuthoritativeForegroundRequestKey(requestKey)) {
 				freezeForegroundRequest('Completed', 'done', 'Corgi finished this request.');
 				return;
 			}
@@ -2103,10 +2234,10 @@ export function getExecutionWindowHtml(
 
 			rememberPrompt(text);
 			resetPromptHistoryNavigation();
-			ui.foregroundRequest = undefined;
-			ensureForegroundRequest(text, 'Model clarifying...');
+			const requestId = nextForegroundRequestKey();
+			startForegroundRequest(text, 'Model clarifying...', requestId);
 			appendForegroundBullet('Model clarifying', 'active', 'Model clarifying...');
-			vscode.postMessage({ type: 'submit_prompt', text });
+			vscode.postMessage({ type: 'submit_prompt', text, requestId });
 
 			ui.draft = '';
 			persistUiState();
@@ -2166,6 +2297,8 @@ export function getExecutionWindowHtml(
 			if (clarificationTarget) {
 				const clarificationAnswer = clarificationTarget.dataset.clarificationAnswer;
 				if (clarificationAnswer) {
+					const requestId = nextForegroundRequestKey();
+					ensureForegroundRequest('', '', requestId);
 					appendForegroundBullet('Clarification received', 'done', 'Applying your clarification...');
 					appendForegroundBullet('Continuing request', 'active', 'Applying your clarification...');
 					renderFeed();
@@ -2173,6 +2306,7 @@ export function getExecutionWindowHtml(
 					vscode.postMessage({
 						type: 'answer_clarification',
 						text: clarificationAnswer,
+						requestId,
 					});
 				}
 				return;
@@ -2217,6 +2351,8 @@ export function getExecutionWindowHtml(
 			) {
 				if (action === 'set_permission_scope') {
 					const scope = target.dataset.permissionScope;
+					const requestId = nextForegroundRequestKey();
+					ensureForegroundRequest('', '', requestId);
 					appendForegroundBullet(
 						scope
 							? 'Permission confirmed: ' + scope.charAt(0).toUpperCase() + scope.slice(1)
@@ -2227,18 +2363,27 @@ export function getExecutionWindowHtml(
 					appendForegroundBullet('Continuing request', 'active', 'Applying your permission choice...');
 					renderFeed();
 					renderComposer();
-					vscode.postMessage({ type: 'set_permission_scope', permissionScope: scope });
+					vscode.postMessage({
+						type: 'set_permission_scope',
+						permissionScope: scope,
+						requestId,
+					});
 					return;
 				}
 				if (action === 'decline_permission') {
+					const requestId = nextForegroundRequestKey();
+					ensureForegroundRequest('', '', requestId);
 					appendForegroundBullet('Permission declined', 'failed', 'This request will not continue.');
 					freezeForegroundRequest(undefined, 'failed', 'This request will not continue.');
+					vscode.postMessage({ type: action, requestId });
 				} else {
+					const requestId = nextForegroundRequestKey();
+					ensureForegroundRequest('', '', requestId);
 					appendForegroundBullet('Stop requested', 'waiting', 'Requesting stop...');
+					vscode.postMessage({ type: action, requestId });
 				}
 				renderFeed();
 				renderComposer();
-				vscode.postMessage({ type: action });
 			}
 		});
 

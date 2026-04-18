@@ -453,7 +453,8 @@ export function appendControllerSemanticClarification(
 	title: string,
 	body: string,
 	semantic: SemanticMetadata,
-	now = new Date().toISOString()
+	now = new Date().toISOString(),
+	requestId?: string
 ): ExecutionWindowModel {
 	return {
 		...model,
@@ -481,6 +482,7 @@ export function appendControllerSemanticClarification(
 					semantic_block_reason: semantic.semantic_block_reason,
 					semantic_paraphrase: semantic.semantic_paraphrase,
 					semantic_normalized_text: semantic.semantic_normalized_text,
+					in_response_to_request_id: requestId,
 				}
 			),
 			createFeedItem(
@@ -502,6 +504,7 @@ export function appendControllerSemanticClarification(
 					semantic_block_reason: semantic.semantic_block_reason,
 					semantic_paraphrase: semantic.semantic_paraphrase,
 					semantic_normalized_text: semantic.semantic_normalized_text,
+					in_response_to_request_id: requestId,
 				}
 			),
 		],
@@ -1397,6 +1400,7 @@ export function applyModelAction(
 							}
 						),
 					],
+					activeForegroundRequestId: undefined,
 				};
 			}
 

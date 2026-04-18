@@ -338,11 +338,18 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('foregroundRequest'));
 		assert.ok(html.includes('Model clarifying'));
 		assert.ok(html.includes('normalizeUiText'));
+		assert.ok(html.includes('[hidden]'));
+		assert.ok(html.includes('display: none !important;'));
 		assert.ok(html.includes('latestRenderedAssistantItem'));
+		assert.ok(html.includes('requestId'));
+		assert.ok(html.includes("type: 'submit_prompt', text, requestId"));
+		assert.ok(html.includes("type: 'set_permission_scope'"));
+		assert.ok(html.includes('permissionScope: scope'));
 		assert.ok(html.includes('progress-bullet-text'));
 		assert.ok(html.includes('@keyframes progressShimmer'));
 		assert.ok(!html.includes('@keyframes progressDotPulse'));
 		assert.ok(html.includes("ui.foregroundRequest.bullets = ui.foregroundRequest.bullets.map"));
+		assert.ok(html.includes('function latestRequestActorEvent(requestKey)'));
 		assert.ok(html.includes("if (item.type === 'permission_request')"));
 		assert.ok(html.includes("if (item.type === 'clarification_request')"));
 		assert.ok(html.includes('Scope: '));
@@ -361,6 +368,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!html.includes('Open</button>'));
 		assert.ok(!html.includes('Reveal</button>'));
 		assert.ok(!html.includes('Copy path</button>'));
+		assert.ok(!html.includes('const latestItem = model.feed[model.feed.length - 1];'));
 		assert.ok(!html.includes('<h1 class="header-title">Corgi</h1>'));
 		assert.ok(!html.includes('<div class="brand-mark">C</div>'));
 		assert.ok(!html.includes('<div class="message-label">Corgi</div>'));
@@ -475,6 +483,49 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(lastItem.type, 'actor_event');
 		assert.strictEqual(lastItem.title, 'Governor response');
 		assert.ok(!(lastItem.body ?? '').includes('waiting for a observe permission choice'));
+	});
+
+	test('a new governed request keeps its own foreground flow after an observe dialogue completes', () => {
+		const initialModel = createInitialModel('2026-04-10T10:00:00.000Z');
+		const gatedDialogueModel = applyModelAction(initialModel, {
+			type: 'submit_prompt',
+			text: 'hello!',
+			semantic_route_type: 'governor_dialogue',
+			request_id: 'req-hello',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+		const observedDialogueModel = applyModelAction(gatedDialogueModel, {
+			type: 'set_permission_scope',
+			permission_scope: 'observe',
+			context_ref: gatedDialogueModel.snapshot.pendingPermissionRequest?.contextRef,
+			request_id: 'req-observe',
+			now: '2026-04-10T10:00:10.000Z',
+		});
+		const governedPromptModel = applyModelAction(observedDialogueModel, {
+			type: 'submit_prompt',
+			text: 'analyze the repo',
+			semantic_route_type: 'governed_work_intent',
+			request_id: 'req-analyze',
+			now: '2026-04-10T10:00:15.000Z',
+		});
+		const clarifiedModel = applyModelAction(governedPromptModel, {
+			type: 'answer_clarification',
+			text: 'Focus on architecture, structure, and subsystem boundaries.',
+			context_ref: governedPromptModel.activeClarification?.contextRef,
+			request_id: 'req-clarify',
+			now: '2026-04-10T10:00:20.000Z',
+		});
+
+		assert.strictEqual(observedDialogueModel.activeForegroundRequestId, undefined);
+		assert.strictEqual(governedPromptModel.activeForegroundRequestId, 'req-analyze');
+		assert.strictEqual(clarifiedModel.activeForegroundRequestId, 'req-analyze');
+		assert.strictEqual(
+			clarifiedModel.snapshot.pendingPermissionRequest?.recommendedScope,
+			'plan'
+		);
+		const lastItem = clarifiedModel.feed[clarifiedModel.feed.length - 1];
+		assert.strictEqual(lastItem.type, 'permission_request');
+		assert.strictEqual(lastItem.in_response_to_request_id, 'req-clarify');
 	});
 
 	test('answer clarification produces a permission request', () => {
