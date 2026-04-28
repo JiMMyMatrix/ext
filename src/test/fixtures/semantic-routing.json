@@ -36,6 +36,24 @@
     "notes": "A direct request to review project material is governed work."
   },
   {
+    "name": "polite inspection work",
+    "input": "please inspect this codebase for risks",
+    "session_state": "idle",
+    "expected_route_type": "governed_work_intent",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Polite phrasing still asks Corgi to perform repo work."
+  },
+  {
+    "name": "question shaped fix work",
+    "input": "can you fix the stuck chat window?",
+    "session_state": "idle",
+    "expected_route_type": "governed_work_intent",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Question-shaped bug fix requests remain governed work."
+  },
+  {
     "name": "governor dialogue status",
     "input": "what happened?",
     "session_state": "idle",
@@ -52,6 +70,15 @@
     "expected_action_name": "none",
     "expected_outcome": "submit_prompt",
     "notes": "Read-only progress question."
+  },
+  {
+    "name": "governor dialogue status update",
+    "input": "status update please",
+    "session_state": "idle",
+    "expected_route_type": "governor_dialogue",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Natural status phrasing is dialogue, not new work."
   },
   {
     "name": "active clarification architecture",

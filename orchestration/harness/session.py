@@ -184,38 +184,6 @@ def _default_feed_provenance(item_type: str) -> dict[str, str]:
 	}
 
 
-def _classify_turn(prompt: str) -> str:
-	lower = prompt.lower()
-	dialogue_tokens = (
-		"progress",
-		"status",
-		"where are we",
-		"what are you doing",
-		"what is the current",
-		"what's the current",
-		"what happened",
-		"what happen",
-		"what's happening",
-		"what is happening",
-		"what's going on",
-		"what is going on",
-		"how is it going",
-		"how's it going",
-		"any update",
-		"update me",
-		"why",
-		"explain",
-		"help me understand",
-		"what do you think",
-		"should we",
-		"which option",
-		"compare",
-	)
-	if any(token in lower for token in dialogue_tokens):
-		return "governor_dialogue"
-	return "governed_work_intent"
-
-
 def _load_request_draft_summary(
 	session: dict[str, Any], *, repo_root: str | Path | None = None
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -1305,7 +1273,21 @@ def handle_submit_prompt(
 		return
 
 	semantic_prompt = trim_text(normalized_text) or prompt
-	resolved_turn_type = turn_type or _classify_turn(semantic_prompt)
+	resolved_turn_type = turn_type or (
+		semantic_route_type
+		if semantic_route_type in ("governor_dialogue", "governed_work_intent")
+		else None
+	)
+	if resolved_turn_type not in ("governor_dialogue", "governed_work_intent"):
+		_append_error(
+			model,
+			"Semantic route required",
+			"The controller must classify this prompt before dispatch.",
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key="error.semantic_route_required",
+		)
+		return
 	if request_id is not None:
 		model["activeForegroundRequestId"] = request_id
 	if resolved_turn_type == "governor_dialogue":

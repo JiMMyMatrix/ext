@@ -2131,6 +2131,11 @@ export function getExecutionWindowHtml(
 						title: fallback.title,
 						body: fallback.body || 'Restate the request more directly.',
 					};
+				case 'error.semantic_route_required':
+					return {
+						title: 'Could not route request',
+						body: 'Try again after Corgi finishes classifying the prompt.',
+					};
 				case 'error.session_changed':
 					return {
 						title: 'Session changed',

@@ -86,6 +86,9 @@ preconditions must fail closed and must not trigger route guessing.
 - `submit-prompt`
   - requires non-empty prompt text
   - requires semantic classification to have completed for free-text routing
+  - requires explicit route metadata such as `turn_type` or a compatible
+    `semantic_route_type`
+  - must not infer routing from raw prompt keywords when route metadata is absent
   - may omit `session_ref`, including first-turn/bootstrap submission
   - must still carry a unique `request_id`
   - must fail closed if it does provide a mismatched `session_ref`

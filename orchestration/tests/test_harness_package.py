@@ -41,6 +41,13 @@ class HarnessPackageTests(unittest.TestCase):
             return_value=(body, ["Governor interactive thread"], primary_ref),
         )
 
+    def _semantic_submit(self, route_type: str = "governed_work_intent") -> dict[str, str]:
+        return {
+            "turn_type": route_type,
+            "semantic_route_type": route_type,
+            "semantic_confidence": "high",
+        }
+
     def test_intake_module_ready_and_acceptance_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
@@ -93,6 +100,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="Build a compact execution window.",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
             self.assertEqual(model["snapshot"]["currentActor"], "intake_shell")
             self.assertEqual(model["snapshot"]["currentStage"], "clarification_needed")
@@ -115,6 +123,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="What is the current progress?",
                 repo_root=repo_root,
+                **self._semantic_submit("governor_dialogue"),
             )
 
             self.assertEqual(model["snapshot"]["currentActor"], "orchestration")
@@ -130,6 +139,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="what happen?",
                 repo_root=repo_root,
+                **self._semantic_submit("governor_dialogue"),
             )
 
             self.assertEqual(model["snapshot"]["currentStage"], "permission_needed")
@@ -144,6 +154,8 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="hello!",
                 turn_type="governor_dialogue",
+                semantic_route_type="governor_dialogue",
+                semantic_confidence="high",
                 request_id="req-hello",
                 repo_root=repo_root,
             )
@@ -238,6 +250,7 @@ class HarnessPackageTests(unittest.TestCase):
                     "submit_prompt",
                     text="What is the current progress?",
                     repo_root=repo_root,
+                    **self._semantic_submit("governor_dialogue"),
                 )
             actor_events = [item for item in progress_model["feed"] if item["type"] == "actor_event"]
             latest = actor_events[-1]
@@ -298,6 +311,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="Analyze this folder.",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
 
             self.assertEqual(model["snapshot"]["currentStage"], "clarification_needed")
@@ -321,6 +335,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="Build a compact execution window.",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
             clarification_model = session.load_session(repo_root)["model"]
             model = session.dispatch_session_action(
@@ -351,6 +366,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="Build a compact execution window.",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
             session.dispatch_session_action(
                 "answer_clarification",
@@ -370,6 +386,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="Implement a quieter Chat transcript while keeping the VS Code Chat host, preserving inline artifact actions, and replacing visible hold and reconnect controls with cleaner approval affordances.",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
 
             self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
@@ -384,7 +401,18 @@ class HarnessPackageTests(unittest.TestCase):
             os.environ["ORCHESTRATION_REPO_ROOT"] = str(repo_root)
             try:
                 result = cli.main(
-                    ["session", "submit-prompt", "--text", "Build a compact execution window."]
+                    [
+                        "session",
+                        "submit-prompt",
+                        "--text",
+                        "Build a compact execution window.",
+                        "--turn-type",
+                        "governed_work_intent",
+                        "--semantic-route-type",
+                        "governed_work_intent",
+                        "--semantic-confidence",
+                        "high",
+                    ]
                 )
             finally:
                 if previous is None:
@@ -401,6 +429,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "submit_prompt",
                 text="Analyze this folder.",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
 
             clarification_items = [
@@ -459,6 +488,7 @@ class HarnessPackageTests(unittest.TestCase):
                 text="Build a compact execution window.",
                 request_id="corgi-request:clarification-submit",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
 
             model = session.dispatch_session_action(
@@ -486,6 +516,7 @@ class HarnessPackageTests(unittest.TestCase):
                 text="Analyze this folder.",
                 request_id="corgi-request:duplicate",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
             initial_clarifications = [
                 item for item in model["feed"] if item["type"] == "clarification_request"
@@ -496,6 +527,7 @@ class HarnessPackageTests(unittest.TestCase):
                 text="Analyze this folder.",
                 request_id="corgi-request:duplicate",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
 
             replay_clarifications = [
@@ -519,10 +551,32 @@ class HarnessPackageTests(unittest.TestCase):
                 text="analyze the repo",
                 request_id="corgi-request:no-session-ref",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
 
             self.assertNotEqual(model["feed"][-1]["type"], "error")
             self.assertEqual(model["snapshot"]["currentStage"], "clarification_needed")
+
+    def test_submit_prompt_without_semantic_routing_metadata_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="what happened?",
+                request_id="corgi-request:missing-semantic-route",
+                repo_root=repo_root,
+            )
+
+            last_item = model["feed"][-1]
+            self.assertEqual(last_item["type"], "error")
+            self.assertEqual(last_item["title"], "Semantic route required")
+            self.assertEqual(last_item.get("presentation_key"), "error.semantic_route_required")
+            self.assertEqual(
+                last_item["in_response_to_request_id"],
+                "corgi-request:missing-semantic-route",
+            )
+            self.assertIsNone(model["snapshot"].get("pendingPermissionRequest"))
+            self.assertIsNone(model.get("activeClarification"))
 
     def test_submit_prompt_with_wrong_session_ref_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -533,6 +587,7 @@ class HarnessPackageTests(unittest.TestCase):
                 session_ref="session-wrong",
                 request_id="corgi-request:wrong-session-ref",
                 repo_root=repo_root,
+                **self._semantic_submit("governor_dialogue"),
             )
 
             last_item = model["feed"][-1]
@@ -548,6 +603,7 @@ class HarnessPackageTests(unittest.TestCase):
                 text="Build a compact execution window.",
                 request_id="corgi-request:permission-submit",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
             model = session.dispatch_session_action(
                 "answer_clarification",
@@ -577,6 +633,7 @@ class HarnessPackageTests(unittest.TestCase):
                 text="Build a compact execution window.",
                 request_id="corgi-request:decline-submit",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
             model = session.dispatch_session_action(
                 "answer_clarification",
@@ -605,6 +662,7 @@ class HarnessPackageTests(unittest.TestCase):
                 text="Build a compact execution window.",
                 request_id="corgi-request:interrupt-submit",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
             model = session.dispatch_session_action(
                 "answer_clarification",
@@ -644,6 +702,7 @@ class HarnessPackageTests(unittest.TestCase):
                 session_ref=session_ref,
                 request_id="corgi-request:first-request",
                 repo_root=repo_root,
+                **self._semantic_submit(),
             )
 
             self.assertNotEqual(next_model["feed"][-1]["type"], "error")

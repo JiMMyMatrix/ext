@@ -253,6 +253,7 @@ suite('Corgi Webview UX', () => {
 
 		assert.ok(webviewSource.includes('function displayCopy(item) {'));
 		assert.ok(webviewSource.includes("case 'permission.needed':"));
+		assert.ok(webviewSource.includes("case 'error.semantic_route_required':"));
 		assert.ok(webviewSource.includes("case 'error.stale_context':"));
 		assert.ok(
 			webviewSource.includes(
@@ -387,6 +388,7 @@ suite('Corgi Webview UX', () => {
 		const runningModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'What is happening?',
+			semantic_route_type: 'governor_dialogue',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const activeRunModel = {
@@ -525,6 +527,16 @@ suite('Corgi Webview UX', () => {
 		}
 	});
 
+	test('semantic routing fixtures are not runtime lookup data', () => {
+		const runtimeSources = [
+			fs.readFileSync(path.resolve(__dirname, '../../src/phase1Model.ts'), 'utf8'),
+			fs.readFileSync(path.resolve(__dirname, '../../src/semanticSidecar.ts'), 'utf8'),
+			fs.readFileSync(path.resolve(__dirname, '../../src/executionWindowPanel.ts'), 'utf8'),
+		].join('\n');
+
+		assert.ok(!runtimeSources.includes('semantic-routing.json'));
+	});
+
 	test('semantic sidecar uses the model runner for obvious governed work requests', async () => {
 		let calls = 0;
 		const sidecar = new SemanticSidecar({
@@ -658,6 +670,7 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -671,6 +684,7 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Analyze this folder.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -685,6 +699,7 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(initialModel, {
 			type: 'submit_prompt',
 			text: 'What is the current progress?',
+			semantic_route_type: 'governor_dialogue',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -700,6 +715,7 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(initialModel, {
 			type: 'submit_prompt',
 			text: 'what happen?',
+			semantic_route_type: 'governor_dialogue',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -707,6 +723,22 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(model.activeClarification, undefined);
 		assert.ok(model.snapshot.pendingPermissionRequest);
 		assert.strictEqual(model.snapshot.pendingPermissionRequest?.recommendedScope, 'observe');
+	});
+
+	test('submit prompt without semantic route metadata fails closed', () => {
+		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+			type: 'submit_prompt',
+			text: 'what happened?',
+			request_id: 'req-missing-route',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+
+		const lastItem = model.feed[model.feed.length - 1];
+		assert.strictEqual(lastItem.type, 'error');
+		assert.strictEqual(lastItem.presentation_key, 'error.semantic_route_required');
+		assert.strictEqual(lastItem.in_response_to_request_id, 'req-missing-route');
+		assert.strictEqual(model.snapshot.pendingPermissionRequest, undefined);
+		assert.strictEqual(model.activeClarification, undefined);
 	});
 
 	test('observe permission resumes the same governor dialogue request', () => {
@@ -785,6 +817,7 @@ suite('Corgi Webview UX', () => {
 		const draftModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const acceptedModel = applyModelAction(draftModel, {
@@ -806,6 +839,7 @@ suite('Corgi Webview UX', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const approvalModel = applyModelAction(promptModel, {
@@ -834,6 +868,7 @@ suite('Corgi Webview UX', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const approvalModel = applyModelAction(promptModel, {
@@ -860,6 +895,7 @@ suite('Corgi Webview UX', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const permissionModel = applyModelAction(promptModel, {
@@ -883,6 +919,7 @@ suite('Corgi Webview UX', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -904,6 +941,7 @@ suite('Corgi Webview UX', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const approvalModel = applyModelAction(promptModel, {
@@ -915,6 +953,7 @@ suite('Corgi Webview UX', () => {
 		const supersededModel = applyModelAction(approvalModel, {
 			type: 'submit_prompt',
 			text: 'Start over with a quieter transcript.',
+			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:15.000Z',
 		});
 
@@ -950,6 +989,7 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Analyze this folder.',
+			semantic_route_type: 'governed_work_intent',
 			request_id: 'corgi-request:test-provenance',
 			now: '2026-04-10T10:00:05.000Z',
 		});

@@ -552,53 +552,16 @@ function supersedePendingApproval(
 	];
 }
 
-function classifyTurn(text: string): TurnType {
-	const lower = text.toLowerCase();
-	const dialogueTokens = [
-		'progress',
-		'status',
-		'where are we',
-		'what are you doing',
-		'what is the current',
-		"what's the current",
-		'what happened',
-		'what happen',
-		"what's happening",
-		'what is happening',
-		"what's going on",
-		'what is going on',
-		'how is it going',
-		"how's it going",
-		'any update',
-		'update me',
-		'why',
-		'explain',
-		'help me understand',
-		'what do you think',
-		'should we',
-		'which option',
-		'compare',
-	];
-
-	return dialogueTokens.some((token) => lower.includes(token))
-		? 'governor_dialogue'
-		: 'governed_work_intent';
-}
-
 function resolveTurnTypeFromSemanticRoute(
-	routeType: SemanticRouteType | undefined,
-	fallbackText: string
-): TurnType {
+	routeType: SemanticRouteType | undefined
+): TurnType | undefined {
 	if (routeType === 'governor_dialogue') {
 		return 'governor_dialogue';
 	}
-	if (routeType === 'clarification_reply') {
-		return 'clarification_reply';
+	if (routeType === 'governed_work_intent') {
+		return 'governed_work_intent';
 	}
-	if (routeType === 'explicit_action' || routeType === 'block') {
-		return 'system';
-	}
-	return classifyTurn(fallbackText);
+	return undefined;
 }
 
 function semanticProvenanceForAction(action: ModelAction): SemanticMetadata {
@@ -1054,10 +1017,19 @@ export function applyModelAction(
 				);
 			}
 
-			const turnType = resolveTurnTypeFromSemanticRoute(
-				action.semantic_route_type,
-				prompt
-			);
+			const turnType = resolveTurnTypeFromSemanticRoute(action.semantic_route_type);
+			if (!turnType) {
+				return appendError(
+					model,
+					'Semantic route required',
+					'Corgi needs a semantic sidecar route before dispatching this prompt.',
+					undefined,
+					now,
+					action.request_id,
+					'error.semantic_route_required'
+				);
+			}
+
 			if (turnType === 'governor_dialogue') {
 				if (!permissionAllowsTurn(model.snapshot.permissionScope, turnType)) {
 					const permissionRequest = buildPermissionRequest('observe', now, {
