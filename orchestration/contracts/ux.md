@@ -86,6 +86,9 @@ preconditions must fail closed and must not trigger route guessing.
 - `submit-prompt`
   - requires non-empty prompt text
   - requires semantic classification to have completed for free-text routing
+  - may omit `session_ref`, including first-turn/bootstrap submission
+  - must still carry a unique `request_id`
+  - must fail closed if it does provide a mismatched `session_ref`
 - `answer-clarification`
   - requires an active clarification
   - should carry the current `session_ref` once a session exists
@@ -132,6 +135,11 @@ Commands tied to active session state should carry a current `context_ref`.
 
 - stale or mismatched `context_ref` values must fail closed
 - once a session exists, state-bound commands should normally carry `session_ref`
+- `submit-prompt` is not state-bound for freshness purposes; it may omit
+  `session_ref` so first-turn startup races do not fail solely because the
+  local webview has not yet received authoritative session state
+- if any command provides a mismatched `session_ref`, the session bridge must
+  fail closed
 - the controller must not assume a rendered UI card is still valid without
   state confirmation
 - this especially applies to:
@@ -166,6 +174,23 @@ debugging:
 
 This provenance is internal only and must not create visible multi-speaker
 personas in the transcript.
+
+## Presentation Boundary
+Feed items may carry optional presentation metadata:
+- `presentation_key`
+- `presentation_args`
+
+The extension may use these fields to map non-Governor control-plane events to
+controller-owned user-facing copy. Existing `title` and `body` fields remain
+fallbacks for compatibility.
+
+- Governor `actor_event` output is already user-facing Governor output and
+  should not be remapped unless explicitly required
+- semantic provenance, request ids, session refs, context refs, model reasons,
+  and artifact/control-plane metadata must not be rendered as normal transcript
+  copy
+- permission, clarification, system, and error items should prefer mapped
+  presentation copy when `presentation_key` is present
 
 ## Command Boundary
 The extension should talk to the project orchestration layer through:

@@ -193,7 +193,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			context_ref: action.context_ref ?? this.contextRefForAction(action.type),
 			session_ref:
 				action.session_ref ??
-				(includeSessionRef
+				(action.type !== 'submit_prompt' && includeSessionRef
 					? this.model.snapshot.sessionRef
 					: undefined),
 		};
@@ -273,6 +273,23 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		}
 	}
 
+	private semanticPresentationKey(blockKind: SemanticBlockKind): string {
+		switch (blockKind) {
+			case 'semantic_unavailable':
+				return 'semantic.unavailable';
+			case 'control_unmappable':
+				return 'semantic.control_unmappable';
+			case 'nothing_running':
+				return 'semantic.nothing_running';
+			case 'interrupt_pending':
+				return 'semantic.interrupt_pending';
+			case 'no_active_clarification':
+				return 'semantic.no_active_clarification';
+			case 'needs_disambiguation':
+				return 'semantic.needs_clearer_request';
+		}
+	}
+
 	private async routeFreeText(
 		text: string,
 		requestId?: string,
@@ -311,7 +328,8 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				presentation.body,
 				resolution.semantic,
 				undefined,
-				requestId
+				requestId,
+				this.semanticPresentationKey(resolution.blockKind)
 			);
 			this.postState();
 			return;
@@ -917,16 +935,26 @@ export function getExecutionWindowHtml(
 		}
 
 		.progress-cluster {
-			padding-top: 4px;
+			align-self: flex-start;
+			max-width: min(100%, 24rem);
+			padding: 8px 10px;
+			border-radius: 12px;
+			background: transparent;
+			border: 1px solid transparent;
 		}
 
 		.progress-list {
 			list-style: none;
-			margin-top: 2px;
+			margin: 0;
 			padding-left: 0;
 			font-size: 12px;
 			display: grid;
 			gap: 4px;
+		}
+
+		.progress-cluster .activity-summary {
+			margin-top: 6px;
+			font-size: 11px;
 		}
 
 		.progress-bullet {
@@ -1696,6 +1724,14 @@ export function getExecutionWindowHtml(
 			return undefined;
 		}
 
+		function latestGovernorReplyForRequest(requestKey) {
+			const actorEvent = latestRequestActorEvent(requestKey);
+			if (actorEvent?.source_actor === 'governor') {
+				return actorEvent;
+			}
+			return undefined;
+		}
+
 		function syncForegroundRequestIdentityFromModel() {
 			if (!model) {
 				return;
@@ -2024,6 +2060,112 @@ export function getExecutionWindowHtml(
 			return '';
 		}
 
+		function displayScope(value) {
+			const scope = String(value || '').trim().toLowerCase();
+			if (scope === 'observe' || scope === 'plan' || scope === 'execute') {
+				return scope.charAt(0).toUpperCase() + scope.slice(1);
+			}
+			return 'Plan';
+		}
+
+		function presentationArgs(item) {
+			return item && typeof item.presentation_args === 'object' && item.presentation_args
+				? item.presentation_args
+				: {};
+		}
+
+		function displayCopy(item) {
+			const fallback = {
+				title: item.title || '',
+				body: item.body || '',
+			};
+
+			if (item.type === 'actor_event' && item.source_actor === 'governor') {
+				return fallback;
+			}
+
+			const args = presentationArgs(item);
+			switch (item.presentation_key) {
+				case 'permission.needed':
+					return {
+						title: 'Permission needed',
+						body: 'Choose ' + displayScope(args.scope) + ' to continue this request.',
+					};
+				case 'permission.declined':
+					return {
+						title: 'Permission declined',
+						body: 'This request will not continue, and the session permission scope stayed unchanged.',
+					};
+				case 'permission.superseded':
+					return {
+						title: 'Previous permission skipped',
+						body: 'A new request replaced the previous permission choice.',
+					};
+				case 'semantic.unavailable':
+					return {
+						title: 'Could not classify request',
+						body: 'Corgi could not classify that request right now. Try again or restate it directly.',
+					};
+				case 'semantic.control_unmappable':
+					return {
+						title: 'Need a clearer control request',
+						body: 'Restate this as stop, a progress question, or a new work request.',
+					};
+				case 'semantic.nothing_running':
+					return {
+						title: 'Nothing is running',
+						body: 'Ask for progress, or send a new work request.',
+					};
+				case 'semantic.interrupt_pending':
+					return {
+						title: 'Stop already requested',
+						body: 'A stop request is already pending.',
+					};
+				case 'semantic.no_active_clarification':
+					return {
+						title: 'No clarification is active',
+						body: 'Ask for progress, or send a new work request.',
+					};
+				case 'semantic.needs_clearer_request':
+					return {
+						title: fallback.title,
+						body: fallback.body || 'Restate the request more directly.',
+					};
+				case 'error.session_changed':
+					return {
+						title: 'Session changed',
+						body: 'Refresh and try again with the current session.',
+					};
+				case 'error.stale_context':
+					return {
+						title: 'State changed',
+						body: 'Refresh and use the current action surface.',
+					};
+				case 'error.duplicate_request':
+					return {
+						title: 'Request already handled',
+						body: 'Send a new action if you still want to proceed.',
+					};
+				case 'error.generic':
+					return {
+						title: String(args.title || fallback.title),
+						body: String(args.body || fallback.body),
+					};
+				case 'session.switched':
+					return {
+						title: 'Session switched',
+						body: 'Reconnect attached to a different session.',
+					};
+				case 'reconnect.not_needed':
+					return {
+						title: 'Already connected',
+						body: 'The current session is connected and fresh.',
+					};
+				default:
+					return fallback;
+			}
+		}
+
 		function renderActivity(item) {
 			const activity = item.activity ?? { state: item.type === 'error' ? 'failed' : 'completed' };
 			const state = activity.state || 'completed';
@@ -2049,12 +2191,13 @@ export function getExecutionWindowHtml(
 		}
 
 		function renderMessage(item) {
+			const copy = displayCopy(item);
 			if (item.type === 'error') {
 				return (
 					'<article class="message error">' +
 						'<div class="message-label">Error</div>' +
-						'<div class="message-body">' + escapeHtml(item.title) + '</div>' +
-						(item.body ? '<div class="activity-summary">' + escapeHtml(item.body) + '</div>' : '') +
+						'<div class="message-body">' + escapeHtml(copy.title) + '</div>' +
+						(copy.body ? '<div class="activity-summary">' + escapeHtml(copy.body) + '</div>' : '') +
 						renderArtifactQuickAction(milestoneArtifact(item)) +
 						renderDetails(item) +
 					'</article>'
@@ -2073,7 +2216,7 @@ export function getExecutionWindowHtml(
 				'<article class="message assistant ' +
 					(item.authoritative ? '' : 'is-informational') +
 				'">' +
-					'<div class="message-body">' + escapeHtml(item.body || item.title) + '</div>' +
+					'<div class="message-body">' + escapeHtml(copy.body || copy.title) + '</div>' +
 					(isMeaningfulMilestone(item)
 						? renderArtifactQuickAction(milestoneArtifact(item))
 						: '') +
@@ -2112,6 +2255,11 @@ export function getExecutionWindowHtml(
 				return '';
 			}
 
+			const requestKey = ui.foregroundRequest.requestKey;
+			if (latestGovernorReplyForRequest(requestKey)) {
+				return '';
+			}
+
 			const hasAuthoritativeUserEcho =
 				Boolean(model) &&
 				model.feed.some(
@@ -2123,9 +2271,10 @@ export function getExecutionWindowHtml(
 			const bullets = Array.isArray(ui.foregroundRequest.bullets)
 				? ui.foregroundRequest.bullets
 				: [];
+			const visibleBullets = bullets.slice(-3);
 			const latestBulletLabel =
-				bullets.length > 0
-					? normalizeUiText(bullets[bullets.length - 1].label)
+				visibleBullets.length > 0
+					? normalizeUiText(visibleBullets[visibleBullets.length - 1].label)
 					: '';
 			const latestAssistantItem = latestRenderedAssistantItem();
 			const latestAssistantText = normalizeUiText(
@@ -2140,9 +2289,9 @@ export function getExecutionWindowHtml(
 					hintText === latestAssistantText
 				);
 			const bulletMarkup =
-				bullets.length > 0
+				visibleBullets.length > 0
 					? '<ul class="detail-list progress-list">' +
-						bullets
+						visibleBullets
 							.map(
 								(bullet) =>
 									'<li class="progress-bullet is-' +

@@ -187,6 +187,8 @@ interface FeedItemShared {
 	semantic_paraphrase?: string;
 	semantic_normalized_text?: string;
 	in_response_to_request_id?: string;
+	presentation_key?: string;
+	presentation_args?: Record<string, unknown>;
 }
 
 interface FeedItemBase extends FeedItemShared {
@@ -310,6 +312,8 @@ function createFeedItem(
 			| 'semantic_paraphrase'
 			| 'semantic_normalized_text'
 			| 'in_response_to_request_id'
+			| 'presentation_key'
+			| 'presentation_args'
 		>
 	>
 ): FeedItemBase {
@@ -336,6 +340,8 @@ function createFeedItem(
 		semantic_paraphrase: provenance?.semantic_paraphrase,
 		semantic_normalized_text: provenance?.semantic_normalized_text,
 		in_response_to_request_id: provenance?.in_response_to_request_id,
+		presentation_key: provenance?.presentation_key,
+		presentation_args: provenance?.presentation_args,
 	};
 }
 
@@ -434,7 +440,9 @@ export function appendError(
 	body: string,
 	details?: string[],
 	now = new Date().toISOString(),
-	requestId?: string
+	requestId?: string,
+	presentationKey = 'error.generic',
+	presentationArgs?: Record<string, unknown>
 ): ExecutionWindowModel {
 	return {
 		...model,
@@ -443,6 +451,8 @@ export function appendError(
 			...model.feed,
 			createFeedItem('error', title, body, true, now, details, undefined, {
 				in_response_to_request_id: requestId,
+				presentation_key: presentationKey,
+				presentation_args: presentationArgs ?? { title, body },
 			}),
 		],
 	};
@@ -455,7 +465,9 @@ export function appendControllerSemanticClarification(
 	body: string,
 	semantic: SemanticMetadata,
 	now = new Date().toISOString(),
-	requestId?: string
+	requestId?: string,
+	presentationKey = 'semantic.needs_clearer_request',
+	presentationArgs?: Record<string, unknown>
 ): ExecutionWindowModel {
 	return {
 		...model,
@@ -506,6 +518,8 @@ export function appendControllerSemanticClarification(
 					semantic_paraphrase: semantic.semantic_paraphrase,
 					semantic_normalized_text: semantic.semantic_normalized_text,
 					in_response_to_request_id: requestId,
+					presentation_key: presentationKey,
+					presentation_args: presentationArgs,
 				}
 			),
 		],
@@ -532,6 +546,7 @@ function supersedePendingApproval(
 			undefined,
 			{
 				in_response_to_request_id: requestId,
+				presentation_key: 'permission.superseded',
 			}
 		),
 	];
@@ -1076,6 +1091,10 @@ export function applyModelAction(
 								{
 									turn_type: turnType,
 									...responseProvenanceForAction(action),
+									presentation_key: 'permission.needed',
+									presentation_args: {
+										scope: permissionRequest.recommendedScope,
+									},
 								}
 							),
 						],
@@ -1148,6 +1167,7 @@ export function applyModelAction(
 						{
 							turn_type: turnType,
 							...responseProvenanceForAction(action),
+							presentation_key: 'clarification.requested',
 						}
 					),
 					createFeedItem(
@@ -1208,7 +1228,9 @@ export function applyModelAction(
 					staleContextError('answer_clarification'),
 					undefined,
 					now,
-					action.request_id
+					action.request_id,
+					'error.stale_context',
+					{ kind: 'clarification' }
 				);
 			}
 
@@ -1278,6 +1300,10 @@ export function applyModelAction(
 						{
 							turn_type: 'clarification_reply',
 							...responseProvenanceForAction(action),
+							presentation_key: 'permission.needed',
+							presentation_args: {
+								scope: permissionRequest.recommendedScope,
+							},
 						}
 					),
 					createFeedItem(
@@ -1338,7 +1364,9 @@ export function applyModelAction(
 					staleContextError('set_permission_scope'),
 					undefined,
 					now,
-					action.request_id
+					action.request_id,
+					'error.stale_context',
+					{ kind: 'permission' }
 				);
 			}
 
@@ -1457,7 +1485,9 @@ export function applyModelAction(
 					staleContextError('decline_permission'),
 					undefined,
 					now,
-					action.request_id
+					action.request_id,
+					'error.stale_context',
+					{ kind: 'permission' }
 				);
 			}
 
@@ -1500,6 +1530,7 @@ export function applyModelAction(
 						{
 							turn_type: 'permission_action',
 							...responseProvenanceForAction(action),
+							presentation_key: 'permission.declined',
 						}
 					),
 				],
@@ -1525,7 +1556,9 @@ export function applyModelAction(
 					staleContextError('interrupt_run'),
 					undefined,
 					now,
-					action.request_id
+					action.request_id,
+					'error.stale_context',
+					{ kind: 'interrupt' }
 				);
 			}
 

@@ -60,6 +60,8 @@ def _feed_item(
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
 	in_response_to_request_id: str | None = None,
+	presentation_key: str | None = None,
+	presentation_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
 	default_provenance = _default_feed_provenance(item_type)
 	payload: dict[str, Any] = {
@@ -98,6 +100,10 @@ def _feed_item(
 		payload["semantic_normalized_text"] = semantic_normalized_text
 	if in_response_to_request_id:
 		payload["in_response_to_request_id"] = in_response_to_request_id
+	if presentation_key:
+		payload["presentation_key"] = presentation_key
+	if presentation_args is not None:
+		payload["presentation_args"] = presentation_args
 	return payload
 
 
@@ -900,6 +906,8 @@ def _append_error(
 	now: str,
 	*,
 	in_response_to_request_id: str | None = None,
+	presentation_key: str = "error.generic",
+	presentation_args: dict[str, Any] | None = None,
 ) -> None:
 	model["feed"].append(
 		_feed_item(
@@ -909,6 +917,8 @@ def _append_error(
 			authoritative=True,
 			now=now,
 			in_response_to_request_id=in_response_to_request_id,
+			presentation_key=presentation_key,
+			presentation_args=presentation_args or {"title": title, "body": body},
 		)
 	)
 	_refresh_snapshot(model, now)
@@ -1046,6 +1056,7 @@ def _supersede_pending_permission_request(
 			authoritative=True,
 			now=now,
 			in_response_to_request_id=request_id,
+			presentation_key="permission.superseded",
 		)
 	)
 
@@ -1255,6 +1266,7 @@ def handle_submit_prompt(
 			"The active session changed before this request was applied. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.session_changed",
 		)
 		return
 	prompt = trim_text(text)
@@ -1318,6 +1330,8 @@ def handle_submit_prompt(
 						semantic_normalized_text=semantic_prompt,
 						in_response_to_request_id=request_id,
 					),
+					presentation_key="permission.needed",
+					presentation_args={"scope": "observe"},
 				)
 			)
 			_refresh_snapshot(
@@ -1443,6 +1457,7 @@ def handle_submit_prompt(
 					semantic_normalized_text=semantic_prompt,
 					in_response_to_request_id=request_id,
 				),
+				presentation_key="clarification.requested",
 			)
 		)
 		_refresh_snapshot(
@@ -1511,6 +1526,8 @@ def handle_submit_prompt(
 				semantic_normalized_text=semantic_prompt,
 				in_response_to_request_id=request_id,
 			),
+			presentation_key="permission.needed",
+			presentation_args={"scope": required_scope},
 		)
 	)
 	_refresh_snapshot(
@@ -1551,6 +1568,7 @@ def handle_answer_clarification(
 			"The active session changed before this clarification was applied. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.session_changed",
 		)
 		return
 	intake_ref = session["meta"].get("activeIntakeRef")
@@ -1572,6 +1590,8 @@ def handle_answer_clarification(
 			"The clarification changed before this answer was applied. Refresh and answer the current clarification instead.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.stale_context",
+			presentation_args={"kind": "clarification"},
 		)
 		return
 
@@ -1686,6 +1706,8 @@ def handle_answer_clarification(
 				semantic_normalized_text=semantic_answer,
 				in_response_to_request_id=request_id,
 			),
+			presentation_key="permission.needed",
+			presentation_args={"scope": required_scope},
 		)
 	)
 	_refresh_snapshot(
@@ -1725,6 +1747,7 @@ def handle_set_permission_scope(
 			"The active session changed before this permission choice was applied. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.session_changed",
 		)
 		return
 	raw_text = trim_text(text or "")
@@ -1757,6 +1780,8 @@ def handle_set_permission_scope(
 			"The permission request changed before this action was applied. Refresh and confirm the current permission surface.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.stale_context",
+			presentation_args={"kind": "permission"},
 		)
 		return
 	if permission_scope not in {"observe", "plan", "execute"}:
@@ -1826,6 +1851,7 @@ def handle_decline_permission(
 			"The active session changed before this permission request was declined. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.session_changed",
 		)
 		return
 	if not model["snapshot"].get("pendingPermissionRequest"):
@@ -1850,6 +1876,8 @@ def handle_decline_permission(
 			"The permission request changed before this action was applied. Refresh and confirm the current permission surface.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.stale_context",
+			presentation_args={"kind": "permission"},
 		)
 		return
 
@@ -1863,6 +1891,7 @@ def handle_decline_permission(
 			authoritative=True,
 			now=now,
 			in_response_to_request_id=request_id,
+			presentation_key="permission.declined",
 		)
 	)
 	_refresh_snapshot(
@@ -1901,6 +1930,7 @@ def handle_interrupt(
 			"The active session changed before this stop request was applied. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.session_changed",
 		)
 		return
 	raw_text = trim_text(text or "")
@@ -1930,6 +1960,8 @@ def handle_interrupt(
 			"The interruptible run state changed before this stop request was applied. Refresh and try again if stop is still available.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.stale_context",
+			presentation_args={"kind": "interrupt"},
 		)
 		return
 	model["snapshot"]["pendingInterrupt"] = _request_card(
@@ -2011,6 +2043,7 @@ def handle_reconnect(
 				authoritative=True,
 				now=now,
 				in_response_to_request_id=request_id,
+				presentation_key="session.switched",
 			)
 		)
 		_refresh_snapshot(model, now, transportState="connected")
@@ -2025,6 +2058,7 @@ def handle_reconnect(
 			"The current session is already connected and fresh.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="reconnect.not_needed",
 		)
 		return
 	model["feed"].append(
@@ -2068,6 +2102,7 @@ def dispatch_session_action(
 			"The same controller request was already handled. Refresh and send a new action if you still want to proceed.",
 			now,
 			in_response_to_request_id=request_id,
+			presentation_key="error.duplicate_request",
 		)
 		save_session(session, repo_root=repo_root)
 		return public_model(session)

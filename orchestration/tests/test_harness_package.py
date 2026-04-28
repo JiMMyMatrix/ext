@@ -476,6 +476,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "corgi-request:clarification-answer",
             )
             self.assertIn("Clarification changed", last_item["title"])
+            self.assertEqual(last_item.get("presentation_key"), "error.stale_context")
 
     def test_session_rejects_duplicate_request_id_replay(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -507,7 +508,129 @@ class HarnessPackageTests(unittest.TestCase):
                 last_item["in_response_to_request_id"],
                 "corgi-request:duplicate",
             )
+            self.assertEqual(last_item.get("presentation_key"), "error.duplicate_request")
             self.assertEqual(len(replay_clarifications), len(initial_clarifications))
+
+    def test_submit_prompt_without_session_ref_bootstraps_normally(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="analyze the repo",
+                request_id="corgi-request:no-session-ref",
+                repo_root=repo_root,
+            )
+
+            self.assertNotEqual(model["feed"][-1]["type"], "error")
+            self.assertEqual(model["snapshot"]["currentStage"], "clarification_needed")
+
+    def test_submit_prompt_with_wrong_session_ref_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="hello",
+                session_ref="session-wrong",
+                request_id="corgi-request:wrong-session-ref",
+                repo_root=repo_root,
+            )
+
+            last_item = model["feed"][-1]
+            self.assertEqual(last_item["type"], "error")
+            self.assertEqual(last_item["title"], "Session changed")
+            self.assertEqual(last_item.get("presentation_key"), "error.session_changed")
+
+    def test_session_rejects_stale_permission_scope_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Build a compact execution window.",
+                request_id="corgi-request:permission-submit",
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Keep the scope minimal.",
+                request_id="corgi-request:permission-answer",
+                context_ref=model["activeClarification"]["contextRef"],
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action(
+                "set_permission_scope",
+                permission_scope="plan",
+                request_id="corgi-request:permission-stale",
+                context_ref="permission-context-stale",
+                repo_root=repo_root,
+            )
+
+            last_item = model["feed"][-1]
+            self.assertEqual(last_item["type"], "error")
+            self.assertEqual(last_item["title"], "Permission changed")
+            self.assertEqual(last_item.get("presentation_key"), "error.stale_context")
+
+    def test_session_rejects_stale_decline_permission_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Build a compact execution window.",
+                request_id="corgi-request:decline-submit",
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Keep the scope minimal.",
+                request_id="corgi-request:decline-answer",
+                context_ref=model["activeClarification"]["contextRef"],
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action(
+                "decline_permission",
+                request_id="corgi-request:decline-stale",
+                context_ref="permission-context-stale",
+                repo_root=repo_root,
+            )
+
+            last_item = model["feed"][-1]
+            self.assertEqual(last_item["type"], "error")
+            self.assertEqual(last_item["title"], "Permission changed")
+            self.assertEqual(last_item.get("presentation_key"), "error.stale_context")
+
+    def test_session_rejects_stale_interrupt_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Build a compact execution window.",
+                request_id="corgi-request:interrupt-submit",
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Keep the scope minimal.",
+                request_id="corgi-request:interrupt-answer",
+                context_ref=model["activeClarification"]["contextRef"],
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action(
+                "set_permission_scope",
+                permission_scope="execute",
+                request_id="corgi-request:interrupt-execute",
+                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                repo_root=repo_root,
+            )
+            model = session.dispatch_session_action(
+                "interrupt_run",
+                request_id="corgi-request:interrupt-stale",
+                context_ref="interrupt-context-stale",
+                repo_root=repo_root,
+            )
+
+            last_item = model["feed"][-1]
+            self.assertEqual(last_item["type"], "error")
+            self.assertEqual(last_item["title"], "Interrupt state changed")
+            self.assertEqual(last_item.get("presentation_key"), "error.stale_context")
 
     def test_initial_state_persists_session_ref_for_first_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

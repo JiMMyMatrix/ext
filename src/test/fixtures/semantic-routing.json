@@ -1,0 +1,128 @@
+[
+  {
+    "name": "obvious analysis work",
+    "input": "analyze the repo",
+    "session_state": "idle",
+    "expected_route_type": "governed_work_intent",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Broad analysis should enter governed intake."
+  },
+  {
+    "name": "obvious development work",
+    "input": "develop the internet feature",
+    "session_state": "idle",
+    "expected_route_type": "governed_work_intent",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Imperative development phrasing is governed work."
+  },
+  {
+    "name": "question shaped development work",
+    "input": "can we develop the internet feature?",
+    "session_state": "idle",
+    "expected_route_type": "governed_work_intent",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Question-shaped phrasing can still imply a work request."
+  },
+  {
+    "name": "question shaped review work",
+    "input": "could you review this folder?",
+    "session_state": "idle",
+    "expected_route_type": "governed_work_intent",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "A direct request to review project material is governed work."
+  },
+  {
+    "name": "governor dialogue status",
+    "input": "what happened?",
+    "session_state": "idle",
+    "expected_route_type": "governor_dialogue",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Read-only progress/status question."
+  },
+  {
+    "name": "governor dialogue progress",
+    "input": "what is the current progress?",
+    "session_state": "idle",
+    "expected_route_type": "governor_dialogue",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Read-only progress question."
+  },
+  {
+    "name": "active clarification architecture",
+    "input": "architecture",
+    "session_state": "active_clarification",
+    "expected_route_type": "clarification_reply",
+    "expected_action_name": "none",
+    "expected_outcome": "answer_clarification",
+    "notes": "Short option-like answer should bind only to an active clarification."
+  },
+  {
+    "name": "active clarification bugs",
+    "input": "bugs and risks",
+    "session_state": "active_clarification",
+    "expected_route_type": "clarification_reply",
+    "expected_action_name": "none",
+    "expected_outcome": "answer_clarification",
+    "notes": "Clarification option synonym."
+  },
+  {
+    "name": "pending permission go ahead",
+    "input": "go ahead",
+    "session_state": "pending_permission",
+    "expected_route_type": "block",
+    "expected_action_name": "none",
+    "expected_outcome": "block",
+    "notes": "Permission scope must be chosen through the permission surface."
+  },
+  {
+    "name": "pending permission new work request",
+    "input": "new work request",
+    "session_state": "pending_permission",
+    "expected_route_type": "block",
+    "expected_action_name": "none",
+    "expected_outcome": "block",
+    "notes": "This is not a concrete task and should not blindly start governed work."
+  },
+  {
+    "name": "running stop",
+    "input": "stop",
+    "session_state": "running",
+    "expected_route_type": "explicit_action",
+    "expected_action_name": "interrupt_run",
+    "expected_outcome": "interrupt_run",
+    "notes": "Direct stop is valid only while running."
+  },
+  {
+    "name": "running progress question",
+    "input": "what is happening?",
+    "session_state": "running",
+    "expected_route_type": "governor_dialogue",
+    "expected_action_name": "none",
+    "expected_outcome": "submit_prompt",
+    "notes": "Progress questions remain dialogue while work is running."
+  },
+  {
+    "name": "mixed approval and explanation",
+    "input": "approve and explain what happened",
+    "session_state": "pending_permission",
+    "expected_route_type": "block",
+    "expected_action_name": "none",
+    "expected_outcome": "block",
+    "notes": "Mixed control and dialogue must fail closed."
+  },
+  {
+    "name": "mixed stop and work",
+    "input": "stop and analyze the repo",
+    "session_state": "running",
+    "expected_route_type": "block",
+    "expected_action_name": "none",
+    "expected_outcome": "block",
+    "notes": "Mixed stop and new work must fail closed."
+  }
+]

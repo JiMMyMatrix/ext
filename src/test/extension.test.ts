@@ -6,8 +6,11 @@ import * as vscode from 'vscode';
 import {
 	applyModelAction,
 	createInitialModel,
+	type ExecutionWindowModel,
 	getArtifactById,
 	isSnapshotStale,
+	type SemanticActionName,
+	type SemanticRouteType,
 } from '../phase1Model';
 import {
 	createExecutionTransport,
@@ -32,6 +35,10 @@ const EXTENSION_TS_PATH = path.resolve(__dirname, '../../src/extension.ts');
 const EXECUTION_WINDOW_PANEL_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionWindowPanel.ts'
+);
+const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
+	__dirname,
+	'../../src/test/fixtures/semantic-routing.json'
 );
 
 function loadPackageJson(): Record<string, unknown> {
@@ -61,6 +68,75 @@ function semanticDecision(
 		reason: 'clear_work_intent',
 		...overrides,
 	};
+}
+
+type SemanticRoutingFixture = {
+	name: string;
+	input: string;
+	session_state: 'idle' | 'active_clarification' | 'pending_permission' | 'running';
+	expected_route_type: SemanticRouteType;
+	expected_action_name: SemanticActionName;
+	expected_outcome:
+		| 'submit_prompt'
+		| 'answer_clarification'
+		| 'interrupt_run'
+		| 'block';
+	notes: string;
+};
+
+function semanticFixtureModel(state: SemanticRoutingFixture['session_state']): ExecutionWindowModel {
+	const model = createInitialModel('2026-04-10T10:00:00.000Z');
+	if (state === 'active_clarification') {
+		return {
+			...model,
+			activeClarification: {
+				id: 'clarification-test',
+				contextRef: 'clarification-test',
+				title: 'Clarification required',
+				body: 'What kind of analysis do you want?',
+				requestedAt: '2026-04-10T10:00:00.000Z',
+				options: [
+					{
+						id: 'architecture',
+						label: 'Architecture',
+						answer: 'Focus on architecture.',
+					},
+				],
+				allowFreeText: true,
+			},
+		};
+	}
+	if (state === 'pending_permission') {
+		return {
+			...model,
+			snapshot: {
+				...model.snapshot,
+				currentActor: 'orchestration',
+				currentStage: 'permission_needed',
+				pendingPermissionRequest: {
+					id: 'permission-test',
+					contextRef: 'permission-test',
+					title: 'Permission needed',
+					body: 'Choose Plan to continue this request.',
+					requestedAt: '2026-04-10T10:00:00.000Z',
+					recommendedScope: 'plan',
+					allowedScopes: ['observe', 'plan', 'execute'],
+				},
+			},
+		};
+	}
+	if (state === 'running') {
+		return {
+			...model,
+			snapshot: {
+				...model.snapshot,
+				currentActor: 'governor',
+				currentStage: 'running',
+				runState: 'running',
+			},
+		};
+	}
+	return model;
 }
 
 suite('Corgi Webview UX', () => {
@@ -116,7 +192,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!webviewSource.includes('CORGI_RESET_WEBVIEW_STATE'));
 	});
 
-	test('first-turn requests only send sessionRef after transport state is authoritative', () => {
+	test('prompt submits omit sessionRef while state-bound actions still gate it on authoritative transport state', () => {
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 
 		assert.ok(webviewSource.includes('private hasAuthoritativeTransportState = false;'));
@@ -132,7 +208,7 @@ suite('Corgi Webview UX', () => {
 		);
 		assert.match(
 			webviewSource,
-			/session_ref:\s*action\.session_ref\s*\?\?\s*\(\s*includeSessionRef\s*\?\s*this\.model\.snapshot\.sessionRef\s*:\s*undefined\s*\)/
+			/session_ref:\s*action\.session_ref\s*\?\?\s*\(\s*action\.type !== 'submit_prompt' && includeSessionRef\s*\?\s*this\.model\.snapshot\.sessionRef\s*:\s*undefined\s*\)/
 		);
 	});
 
@@ -156,6 +232,63 @@ suite('Corgi Webview UX', () => {
 			)
 		);
 		assert.ok(webviewSource.includes("return '';"));
+	});
+
+	test('transient progress stack hides after a governor reply and only keeps three visible rows', () => {
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+
+		assert.ok(webviewSource.includes('function latestGovernorReplyForRequest(requestKey) {'));
+		assert.ok(webviewSource.includes('if (latestGovernorReplyForRequest(requestKey)) {'));
+		assert.ok(webviewSource.includes("return '';"));
+		assert.ok(webviewSource.includes('const visibleBullets = bullets.slice(-3);'));
+		assert.ok(webviewSource.includes('background: transparent;'));
+	});
+
+	test('presentation mapping keeps non-governor copy controller-owned', () => {
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+
+		assert.ok(webviewSource.includes('function displayCopy(item) {'));
+		assert.ok(webviewSource.includes("case 'permission.needed':"));
+		assert.ok(webviewSource.includes("case 'error.stale_context':"));
+		assert.ok(
+			webviewSource.includes(
+				"if (item.type === 'actor_event' && item.source_actor === 'governor') {"
+			)
+		);
+		assert.ok(webviewSource.includes('const copy = displayCopy(item);'));
+		assert.ok(webviewSource.includes("escapeHtml(copy.body || copy.title)"));
+
+		const permissionModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+			type: 'submit_prompt',
+			text: 'what happened?',
+			semantic_route_type: 'governor_dialogue',
+			request_id: 'req-dialogue',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+		const permissionItem = permissionModel.feed.find(
+			(item) => item.type === 'permission_request'
+		);
+		assert.strictEqual(permissionItem?.presentation_key, 'permission.needed');
+		assert.strictEqual(permissionItem?.presentation_args?.scope, 'observe');
+
+		const clarificationModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+			type: 'submit_prompt',
+			text: 'analyze the repo',
+			semantic_route_type: 'governed_work_intent',
+			request_id: 'req-analyze',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+		const failedClarificationModel = applyModelAction(clarificationModel, {
+			type: 'answer_clarification',
+			text: 'architecture',
+			context_ref: 'stale-context',
+			request_id: 'req-stale',
+			now: '2026-04-10T10:00:10.000Z',
+		});
+		const errorItem = failedClarificationModel.feed[failedClarificationModel.feed.length - 1];
+		assert.strictEqual(errorItem.type, 'error');
+		assert.strictEqual(errorItem.presentation_key, 'error.stale_context');
+		assert.strictEqual(errorItem.presentation_args?.kind, 'clarification');
 	});
 
 	test('transport selection resolves the real orchestration workspace when available', () => {
@@ -314,6 +447,62 @@ suite('Corgi Webview UX', () => {
 		if (resolution.kind === 'block') {
 			assert.strictEqual(resolution.nextLoopState.exhausted, true);
 			assert.strictEqual(resolution.blockKind, 'needs_disambiguation');
+		}
+	});
+
+	test('semantic routing fixtures resolve deterministically without live model calls', () => {
+		const fixtures = JSON.parse(
+			fs.readFileSync(SEMANTIC_ROUTING_FIXTURE_PATH, 'utf8')
+		) as SemanticRoutingFixture[];
+
+		assert.ok(fixtures.length >= 14);
+		for (const fixture of fixtures) {
+			const decision = semanticDecision({
+				route_type: fixture.expected_route_type,
+				action_name: fixture.expected_action_name,
+				normalized_text: fixture.input,
+				paraphrase: fixture.notes,
+				confidence: fixture.expected_route_type === 'block' ? 'low' : 'high',
+				reason:
+					fixture.expected_route_type === 'block'
+						? 'mixed_or_ambiguous'
+						: 'fixture_expected_route',
+			});
+			const resolution = resolveSemanticRouting(
+				semanticFixtureModel(fixture.session_state),
+				fixture.input,
+				decision,
+				undefined,
+				`semantic-summary:${fixture.name}`,
+				semanticContextFlags()
+			);
+
+			if (fixture.expected_outcome === 'block') {
+				assert.strictEqual(
+					resolution.kind,
+					'block',
+					`${fixture.name} should block`
+				);
+				continue;
+			}
+
+			assert.strictEqual(
+				resolution.kind,
+				'dispatch',
+				`${fixture.name} should dispatch`
+			);
+			if (resolution.kind === 'dispatch') {
+				assert.strictEqual(
+					resolution.action.type,
+					fixture.expected_outcome,
+					fixture.name
+				);
+				assert.strictEqual(
+					resolution.action.semantic_route_type,
+					fixture.expected_route_type,
+					fixture.name
+				);
+			}
 		}
 	});
 

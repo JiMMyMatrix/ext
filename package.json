@@ -46,7 +46,8 @@
     "check-types": "tsc --noEmit",
     "check:orchestration": "bash orchestration/scripts/verify_architecture.sh",
     "lint": "eslint src",
-    "test": "vscode-test",
+    "test": "mocha --ui tdd --require ./scripts/vscode-node-shim.cjs \"out/test/**/*.test.js\"",
+    "test:vscode": "vscode-test",
     "test:orchestration": "python3 -m unittest discover -s orchestration/tests -p 'test_*.py'"
   },
   "devDependencies": {
