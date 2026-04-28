@@ -5,11 +5,15 @@ import json
 import os
 import subprocess
 import tempfile
-import tomllib
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+try:
+	import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+	tomllib = None  # type: ignore[assignment]
 
 from orchestration.harness.intake import (
 	accept_intake,
@@ -471,15 +475,35 @@ def _governor_dialogue_meta(session: dict[str, Any]) -> dict[str, Any]:
 	return meta["governorDialogue"]
 
 
+def _load_runtime_toml(config_path: Path) -> dict[str, Any]:
+	if tomllib is not None:
+		with config_path.open("rb") as handle:
+			return tomllib.load(handle)
+
+	config: dict[str, Any] = {}
+	for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+		line = raw_line.split("#", 1)[0].strip()
+		if not line:
+			continue
+		if line.startswith("["):
+			break
+		if "=" not in line:
+			continue
+		key, value = line.split("=", 1)
+		value = value.strip()
+		if value.startswith('"') and value.endswith('"'):
+			config[key.strip()] = value[1:-1]
+	return config
+
+
 def _governor_runtime_settings(repo_root: str | Path | None = None) -> tuple[str, str]:
 	model = "gpt-5.4"
 	reasoning = "xhigh"
 	config_path = resolve_paths(repo_root).runtime_root / "config.toml"
 	if config_path.exists():
 		try:
-			with config_path.open("rb") as handle:
-				config = tomllib.load(handle)
-		except (OSError, tomllib.TOMLDecodeError):
+			config = _load_runtime_toml(config_path)
+		except (OSError, ValueError):
 			config = {}
 		model = str(config.get("model") or model)
 		reasoning = str(config.get("model_reasoning_effort") or reasoning)
