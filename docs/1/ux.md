@@ -18,10 +18,6 @@ The orchestration layer may provide:
 - `recentArtifacts`
 - `snapshotFreshness`
 
-The public model may also expose `planReadyRequest` when Governor planning has
-completed for the current accepted intake. The Plan ready card must render from
-that authoritative request, not from UI-local guesses based only on stage text.
-
 ## Renderable Feed Items
 - `user_message`
 - `shell_event`
@@ -56,8 +52,6 @@ Governor dialogue turns remain read-only by default.
 - `answer_clarification`
 - `set_permission_scope`
 - `decline_permission`
-- `execute_plan`
-- `revise_plan`
 - `interrupt_run`
 - `open_artifact`
 - `reveal_artifact_path`
@@ -74,8 +68,6 @@ Free-text commands:
 Stateful control commands:
 - `set-permission-scope`
 - `decline-permission`
-- `execute-plan`
-- `revise-plan`
 - `interrupt`
 - `reconnect`
 
@@ -94,12 +86,6 @@ preconditions must fail closed and must not trigger route guessing.
 - `submit-prompt`
   - requires non-empty prompt text
   - requires semantic classification to have completed for free-text routing
-  - requires explicit route metadata such as `turn_type` or a compatible
-    `semantic_route_type`
-  - must not infer routing from raw prompt keywords when route metadata is absent
-  - may omit `session_ref`, including first-turn/bootstrap submission
-  - must still carry a unique `request_id`
-  - must fail closed if it does provide a mismatched `session_ref`
 - `answer-clarification`
   - requires an active clarification
   - should carry the current `session_ref` once a session exists
@@ -113,17 +99,6 @@ preconditions must fail closed and must not trigger route guessing.
   - requires a currently pending permission request
   - should carry the current `session_ref` once a session exists
   - requires a fresh matching `context_ref`
-- `execute-plan`
-  - requires a current `planReadyRequest`
-  - should carry the current `session_ref` once a session exists
-  - requires the plan-ready `context_ref`
-  - requests Execute permission when the current session scope is below Execute
-  - must not silently start execution without Execute permission
-- `revise-plan`
-  - requires a current `planReadyRequest`
-  - should carry the current `session_ref` once a session exists
-  - requires the plan-ready `context_ref`
-  - stays in Governor planning/dialogue mode and must not enable Executor
 - `interrupt`
   - requires an interruptible running session state
   - should carry the current `session_ref` once a session exists
@@ -157,11 +132,6 @@ Commands tied to active session state should carry a current `context_ref`.
 
 - stale or mismatched `context_ref` values must fail closed
 - once a session exists, state-bound commands should normally carry `session_ref`
-- `submit-prompt` is not state-bound for freshness purposes; it may omit
-  `session_ref` so first-turn startup races do not fail solely because the
-  local webview has not yet received authoritative session state
-- if any command provides a mismatched `session_ref`, the session bridge must
-  fail closed
 - the controller must not assume a rendered UI card is still valid without
   state confirmation
 - this especially applies to:
@@ -196,23 +166,6 @@ debugging:
 
 This provenance is internal only and must not create visible multi-speaker
 personas in the transcript.
-
-## Presentation Boundary
-Feed items may carry optional presentation metadata:
-- `presentation_key`
-- `presentation_args`
-
-The extension may use these fields to map non-Governor control-plane events to
-controller-owned user-facing copy. Existing `title` and `body` fields remain
-fallbacks for compatibility.
-
-- Governor `actor_event` output is already user-facing Governor output and
-  should not be remapped unless explicitly required
-- semantic provenance, request ids, session refs, context refs, model reasons,
-  and artifact/control-plane metadata must not be rendered as normal transcript
-  copy
-- permission, clarification, system, and error items should prefer mapped
-  presentation copy when `presentation_key` is present
 
 ## Command Boundary
 The extension should talk to the project orchestration layer through:

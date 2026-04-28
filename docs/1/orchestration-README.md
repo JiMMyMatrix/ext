@@ -28,11 +28,6 @@ The code-first implementation behind that command lives in:
 
 - `orchestration/harness/`
 
-The extension-facing session commands include free-text intake/dialogue
-submission, clarification answers, permission choices, plan-ready actions, stop,
-and reconnect. Plan-ready actions are state-bound actions on the accepted plan,
-not new free-text prompts.
-
 The Markdown files in this directory are supporting spec and explanation.
 They are not the primary runtime substrate.
 

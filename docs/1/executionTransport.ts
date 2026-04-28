@@ -35,23 +35,6 @@ export type ExecutionTransportTarget =
 			details: string[];
 	  };
 
-function resolvePythonExecutable(): string {
-	const configuredPython = process.env.CORGI_PYTHON?.trim();
-	if (configuredPython) {
-		return configuredPython;
-	}
-
-	if (process.platform === 'darwin') {
-		for (const candidate of ['/opt/homebrew/bin/python3', '/usr/local/bin/python3']) {
-			if (fs.existsSync(candidate)) {
-				return candidate;
-			}
-		}
-	}
-
-	return 'python3';
-}
-
 function orchestrationTarget(
 	rootPath: string,
 	source: 'workspace' | 'extension_dev'
@@ -140,12 +123,10 @@ class UnavailableExecutionTransport implements ExecutionTransport {
 class OrchestrationExecutionTransport implements ExecutionTransport {
 	private readonly scriptPath: string;
 	private readonly cwd: string;
-	private readonly pythonExecutable: string;
 
 	constructor(target: Extract<ExecutionTransportTarget, { kind: 'orchestration' }>) {
 		this.cwd = target.cwd;
 		this.scriptPath = target.scriptPath;
-		this.pythonExecutable = resolvePythonExecutable();
 	}
 
 	public async load(): Promise<ExecutionWindowModel> {
@@ -162,10 +143,6 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 				return this.run('session', 'set-permission-scope', action);
 			case 'decline_permission':
 				return this.run('session', 'decline-permission', action);
-			case 'execute_plan':
-				return this.run('session', 'execute-plan', action);
-			case 'revise_plan':
-				return this.run('session', 'revise-plan', action);
 			case 'interrupt_run':
 				return this.run('session', 'interrupt', action);
 			case 'reconnect':
@@ -190,7 +167,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		if (action?.type === 'set_permission_scope') {
 			args.push('--permission-scope', action.permission_scope);
 		}
-		if (action && action.type !== 'reconnect' && 'semantic_route_type' in action) {
+		if (action && action.type !== 'reconnect') {
 			if (action.semantic_route_type) {
 				switch (action.semantic_route_type) {
 					case 'governed_work_intent':
@@ -235,7 +212,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 
 		return new Promise((resolve, reject) => {
 			execFile(
-				this.pythonExecutable,
+				'python3',
 				args,
 				{
 					cwd: this.cwd,

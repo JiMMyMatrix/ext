@@ -1,0 +1,147 @@
+Corgi AI Delegation Brief
+Date: 2026-04-20
+
+Purpose
+This file is a handoff brief for another AI to help plan and review the current
+Corgi extension/orchestration work. It summarizes the active problems, the
+current architecture, the near-term goals, and the files most relevant to the
+work.
+
+Current architecture
+Human
+-> VS Code Extension UX (local)
+-> Dialog Controller / Semantic Sidecar
+-> Orchestration Layer
+-> Actor Layer
+   - Governor
+   - Executor
+   - Reviewer
+-> Codex runtime substrate
+-> Repo + authoritative workflow artifacts
+
+Key intended authority model
+- The extension is human-facing only.
+- The semantic sidecar is advisory-only.
+- Orchestration is a supplemental control plane, not a second governor.
+- Governor is the work-plane decision owner.
+- Executor is the only substantive writer.
+- Reviewer is read-only and advisory.
+- Workflow truth remains artifact-based.
+
+Current repo status
+- Branch state: working on local changes after recent runtime/UI stabilization.
+- Current uncommitted files:
+  - src/executionWindowPanel.ts
+  - src/test/extension.test.ts
+- Current uncommitted intent:
+  - omit session_ref for submit_prompt
+  - keep state-bound actions gated by authoritative session state
+  - render non-Governor progress as a small transparent transient stack
+  - hide that stack once a Governor reply is visible
+
+Major fixes already landed recently
+- Interactive Governor dialogue path is now actor-backed in the Python
+  orchestration session path.
+- Permission resume now preserves the original blocked request identity.
+- Foreground request tracking is stronger than before.
+- Finished-turn Governor replies were cleaned up to avoid debug-heavy detail
+  blocks in the normal transcript.
+
+Current confirmed problems
+1. Semantic routing is still too rigid for natural user phrasing.
+   - Example: "can we develop the internet feature?" may be treated as
+     ambiguous instead of as a likely work request.
+   - Follow-up text like "new work request" is treated as a literal prompt
+     instead of as a useful clarification answer.
+
+2. The blocked/clarification UX still feels too mechanical.
+   - The system can repeat a "need a clearer request" style answer instead of
+     smoothly converting the user into the right next step.
+   - Product tone is better than before, but the behavior still feels rigid.
+
+3. First-turn session startup races have happened repeatedly.
+   - Users have seen "Session changed" on the first prompt after opening Corgi.
+   - A current working fix is to stop sending session_ref on submit_prompt.
+   - This is not yet committed and should be reviewed carefully.
+
+4. Foreground telemetry vs. transcript presentation is still being stabilized.
+   - Non-Governor progress should appear in a subtle temporary stack, not as a
+     large persistent debug block.
+   - Once the Governor reply exists, the temporary stack should disappear.
+   - The current uncommitted UI change is intended to enforce this.
+
+5. The system still needs a cleaner distinction between internal state and
+   user-visible state.
+   - Internal routing/orchestration state should not leak into the normal
+     conversation surface.
+   - Governor replies should read like conversation, not like control-plane
+     traces.
+
+6. The team still needs confidence that "Governor as the runtime base" is the
+   right architectural choice.
+   - Current direction: yes, but only if orchestration continues to mediate the
+     turn and the UI remains controller-owned presentation.
+   - Another AI should review this explicitly.
+
+Current goals
+Short-term goals
+- Make first-turn prompt sending reliable.
+- Remove prompt-time session mismatch behavior.
+- Make natural work phrasing classify more helpfully.
+- Stop repeated blocked-copy loops.
+- Keep the single-window UX calm while retaining visible operational telemetry.
+- Keep the non-Governor transient stack small, transparent, and temporary.
+
+Medium-term goals
+- Make one governed-work flow reliable end-to-end:
+  prompt -> clarification -> permission -> continuation -> artifact-backed
+  result.
+- Keep request correlation correct across prompt, clarification, permission, and
+  Governor response.
+- Ensure the UI is always a projection of authoritative runtime state rather
+  than a second independent state machine.
+
+Long-term goal
+- Reach the true intended product shape:
+  the user talks through Corgi, orchestration mediates safely, Governor is the
+  real work-plane authority, Executor is the real writer, Reviewer is advisory,
+  and the runtime obeys the harness rules reliably.
+
+Specific questions to delegate for planning/review
+1. Is "Governor as the real base authority, but behind controller/orchestration
+   mediation" the correct long-term architecture?
+
+2. What is the best semantic disambiguation policy for prompts like:
+   - "can we develop X?"
+   - "new work request"
+   - short mixed natural prompts that imply work but are not imperative?
+
+3. Is omitting session_ref on submit_prompt the right fail-safe design, or is
+   there a better way to avoid first-turn races without weakening session
+   freshness protection?
+
+4. What is the cleanest ownership split for:
+   - transcript history
+   - foreground request state
+   - temporary telemetry stack
+   - blocking clarification / permission surfaces
+
+5. What should the exact UX rules be for hiding internal detail while still
+   showing the user that the system is alive and progressing?
+
+Relevant files
+- src/executionWindowPanel.ts
+- src/test/extension.test.ts
+- src/semanticSidecar.ts
+- src/phase1Model.ts
+- src/executionTransport.ts
+- orchestration/harness/session.py
+- orchestration/tests/test_harness_package.py
+- orchestration/contracts/ux.md
+- orchestration/README.md
+
+Recommended review focus
+- Review the current uncommitted UI changes first.
+- Then review the semantic ambiguity path.
+- Then review whether the runtime/presentation boundary is clean enough for the
+  next milestone.

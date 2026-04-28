@@ -112,18 +112,10 @@ export interface RequestCard {
 	requestedAt: string;
 }
 
-export type PlanReadyAction = 'execute_plan' | 'revise_plan';
-
-export interface PlanReadyRequest extends RequestCard {
-	foregroundRequestId?: string;
-	acceptedIntakeSummary: AcceptedIntakeSummary;
-	allowedActions: PlanReadyAction[];
-}
-
 export interface PermissionRequest extends RequestCard {
 	recommendedScope: PermissionScope;
 	allowedScopes: PermissionScope[];
-	continuationKind?: 'intake_acceptance' | 'governor_dialogue' | 'plan_execution';
+	continuationKind?: 'intake_acceptance' | 'governor_dialogue';
 	pendingPrompt?: string;
 	pendingNormalizedText?: string;
 	foregroundRequestId?: string;
@@ -195,8 +187,6 @@ interface FeedItemShared {
 	semantic_paraphrase?: string;
 	semantic_normalized_text?: string;
 	in_response_to_request_id?: string;
-	presentation_key?: string;
-	presentation_args?: Record<string, unknown>;
 }
 
 interface FeedItemBase extends FeedItemShared {
@@ -216,7 +206,6 @@ export interface ExecutionWindowModel {
 	activeClarification?: ClarificationRequest;
 	activeForegroundRequestId?: string;
 	acceptedIntakeSummary?: AcceptedIntakeSummary;
-	planReadyRequest?: PlanReadyRequest;
 }
 
 export type ModelAction =
@@ -225,8 +214,6 @@ export type ModelAction =
 	| ({ type: 'set_permission_scope'; permission_scope: PermissionScope; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
 	| ({ type: 'decline_permission'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
 	| ({ type: 'interrupt_run'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
-	| ({ type: 'execute_plan'; text?: string; now?: string } & ControllerRequestMetadata)
-	| ({ type: 'revise_plan'; text: string; now?: string } & ControllerRequestMetadata)
 	| ({ type: 'reconnect'; now?: string } & ControllerRequestMetadata);
 
 let idCounter = 0;
@@ -323,8 +310,6 @@ function createFeedItem(
 			| 'semantic_paraphrase'
 			| 'semantic_normalized_text'
 			| 'in_response_to_request_id'
-			| 'presentation_key'
-			| 'presentation_args'
 		>
 	>
 ): FeedItemBase {
@@ -351,8 +336,6 @@ function createFeedItem(
 		semantic_paraphrase: provenance?.semantic_paraphrase,
 		semantic_normalized_text: provenance?.semantic_normalized_text,
 		in_response_to_request_id: provenance?.in_response_to_request_id,
-		presentation_key: provenance?.presentation_key,
-		presentation_args: provenance?.presentation_args,
 	};
 }
 
@@ -451,9 +434,7 @@ export function appendError(
 	body: string,
 	details?: string[],
 	now = new Date().toISOString(),
-	requestId?: string,
-	presentationKey = 'error.generic',
-	presentationArgs?: Record<string, unknown>
+	requestId?: string
 ): ExecutionWindowModel {
 	return {
 		...model,
@@ -462,8 +443,6 @@ export function appendError(
 			...model.feed,
 			createFeedItem('error', title, body, true, now, details, undefined, {
 				in_response_to_request_id: requestId,
-				presentation_key: presentationKey,
-				presentation_args: presentationArgs ?? { title, body },
 			}),
 		],
 	};
@@ -476,9 +455,7 @@ export function appendControllerSemanticClarification(
 	body: string,
 	semantic: SemanticMetadata,
 	now = new Date().toISOString(),
-	requestId?: string,
-	presentationKey = 'semantic.needs_clearer_request',
-	presentationArgs?: Record<string, unknown>
+	requestId?: string
 ): ExecutionWindowModel {
 	return {
 		...model,
@@ -529,8 +506,6 @@ export function appendControllerSemanticClarification(
 					semantic_paraphrase: semantic.semantic_paraphrase,
 					semantic_normalized_text: semantic.semantic_normalized_text,
 					in_response_to_request_id: requestId,
-					presentation_key: presentationKey,
-					presentation_args: presentationArgs,
 				}
 			),
 		],
@@ -557,30 +532,62 @@ function supersedePendingApproval(
 			undefined,
 			{
 				in_response_to_request_id: requestId,
-				presentation_key: 'permission.superseded',
 			}
 		),
 	];
 }
 
+function classifyTurn(text: string): TurnType {
+	const lower = text.toLowerCase();
+	const dialogueTokens = [
+		'progress',
+		'status',
+		'where are we',
+		'what are you doing',
+		'what is the current',
+		"what's the current",
+		'what happened',
+		'what happen',
+		"what's happening",
+		'what is happening',
+		"what's going on",
+		'what is going on',
+		'how is it going',
+		"how's it going",
+		'any update',
+		'update me',
+		'why',
+		'explain',
+		'help me understand',
+		'what do you think',
+		'should we',
+		'which option',
+		'compare',
+	];
+
+	return dialogueTokens.some((token) => lower.includes(token))
+		? 'governor_dialogue'
+		: 'governed_work_intent';
+}
+
 function resolveTurnTypeFromSemanticRoute(
-	routeType: SemanticRouteType | undefined
-): TurnType | undefined {
+	routeType: SemanticRouteType | undefined,
+	fallbackText: string
+): TurnType {
 	if (routeType === 'governor_dialogue') {
 		return 'governor_dialogue';
 	}
-	if (routeType === 'governed_work_intent') {
-		return 'governed_work_intent';
+	if (routeType === 'clarification_reply') {
+		return 'clarification_reply';
 	}
-	return undefined;
+	if (routeType === 'explicit_action' || routeType === 'block') {
+		return 'system';
+	}
+	return classifyTurn(fallbackText);
 }
 
 function semanticProvenanceForAction(action: ModelAction): SemanticMetadata {
-	if (
-		action.type === 'reconnect' ||
-		action.type === 'execute_plan' ||
-		action.type === 'revise_plan'
-	) {
+	if (action.type === 'reconnect') {
 		return {};
 	}
 	return {
@@ -626,9 +633,6 @@ function staleContextError(command: string): string {
 			return 'The permission request changed before this action was applied. Refresh and confirm the current permission choice.';
 		case 'interrupt_run':
 			return 'The interruptible run state changed before this stop request was applied. Refresh and try again if stop is still available.';
-		case 'execute_plan':
-		case 'revise_plan':
-			return 'The plan checkpoint changed before this action was applied. Refresh and use the current plan action.';
 		default:
 			return 'The referenced session state is no longer current. Refresh and try again.';
 	}
@@ -786,17 +790,6 @@ function buildGovernorDialogueReply(
 		};
 	}
 
-	if (model.acceptedIntakeSummary && snapshot.currentStage === 'plan_ready') {
-		return {
-			body: `I’ll revise the current plan with that guidance: ${summarizePrompt(prompt)}. Executor remains disabled until Execute permission is granted.`,
-			details: [
-				`Prompt: ${summarizePrompt(prompt)}`,
-				`Current actor: ${actor}`,
-				`Current stage: ${stage}`,
-			],
-		};
-	}
-
 	if (model.acceptedIntakeSummary) {
 		return {
 			body: `The latest accepted intake is ${task ?? 'ready'}, and the session is currently idle. Send a new governed request when you want the workflow to move again.`,
@@ -847,42 +840,6 @@ function buildAcceptedSummary(
 	};
 }
 
-function buildPlanReadyRequest(
-	summary: AcceptedIntakeSummary,
-	now: string,
-	foregroundRequestId?: string
-): PlanReadyRequest {
-	const id = nextId('plan-ready');
-	return {
-		id,
-		contextRef: buildContextRef('plan-ready'),
-		title: 'Plan ready',
-		body: 'Review the Governor plan, then execute it or add details for a revision.',
-		requestedAt: now,
-		foregroundRequestId,
-		acceptedIntakeSummary: summary,
-		allowedActions: ['execute_plan', 'revise_plan'],
-	};
-}
-
-function buildGovernorPlanReply(summary: AcceptedIntakeSummary): {
-	body: string;
-	details: string[];
-} {
-	return {
-		body: [
-			`Objective: ${summary.body}`,
-			'Proposed steps: inspect the relevant structure, identify the likely files or subsystems, call out risks or unknowns, and prepare the smallest safe execution path.',
-			'Likely areas: start from the accepted intake artifacts and current repo surfaces before touching implementation.',
-			'Execution readiness: Plan scope is active. Executor remains disabled until Execute permission is granted.',
-		].join('\n\n'),
-		details: [
-			'Permission scope: Plan',
-			'Executor remains disabled until Execute permission is granted.',
-		],
-	};
-}
-
 function recommendedPermissionScope(prompt: string): PermissionScope {
 	const normalized = trimAndNormalize(prompt).toLowerCase();
 	if (
@@ -908,7 +865,7 @@ function buildPermissionRequest(
 	recommendedScope: PermissionScope,
 	now: string,
 	options: {
-		continuationKind?: 'intake_acceptance' | 'governor_dialogue' | 'plan_execution';
+		continuationKind?: 'intake_acceptance' | 'governor_dialogue';
 		pendingPrompt?: string;
 		pendingNormalizedText?: string;
 		foregroundRequestId?: string;
@@ -920,7 +877,7 @@ function buildPermissionRequest(
 		title: 'Permission needed',
 		body: `Choose ${recommendedScope} if you want Corgi to continue this request.`,
 		recommendedScope,
-		allowedScopes: permissionScopesThatSatisfy(recommendedScope),
+		allowedScopes: ['observe', 'plan', 'execute'],
 		requestedAt: now,
 		continuationKind: options.continuationKind ?? 'intake_acceptance',
 		pendingPrompt: options.pendingPrompt,
@@ -970,44 +927,8 @@ function permissionRank(scope: PermissionScope): number {
 	}
 }
 
-function shouldRequestExecuteForAcceptedContinuation(
-	model: ExecutionWindowModel,
-	action: SemanticMetadata
-): boolean {
-	return Boolean(
-		model.acceptedIntakeSummary &&
-			model.snapshot.permissionScope === 'plan' &&
-			model.snapshot.currentStage === 'plan_ready' &&
-			action.semantic_context_flags?.used_accepted_intake_summary
-	);
-}
-
 function scopeSatisfies(current: PermissionScope, required: PermissionScope): boolean {
 	return permissionRank(current) >= permissionRank(required);
-}
-
-function hasPlanReadyRequest(model: ExecutionWindowModel): model is ExecutionWindowModel & {
-	planReadyRequest: PlanReadyRequest;
-} {
-	return Boolean(
-		model.planReadyRequest &&
-			model.acceptedIntakeSummary &&
-			model.snapshot.currentStage === 'plan_ready' &&
-			model.snapshot.permissionScope === 'plan' &&
-			!model.snapshot.pendingPermissionRequest &&
-			!model.activeClarification &&
-			model.snapshot.runState !== 'running'
-	);
-}
-
-function permissionScopesThatSatisfy(required: PermissionScope): PermissionScope[] {
-	return (['observe', 'plan', 'execute'] as PermissionScope[]).filter((scope) =>
-		scopeSatisfies(scope, required)
-	);
-}
-
-function formatPermissionScope(scope: PermissionScope): string {
-	return scope.charAt(0).toUpperCase() + scope.slice(1);
 }
 
 function acceptIntake(
@@ -1032,28 +953,11 @@ function acceptIntake(
 ): ExecutionWindowModel {
 	const artifacts = defaultArtifacts();
 	const acceptedIntakeSummary = buildAcceptedSummary(model, permissionScope);
-	const governorPlanReply =
-		permissionScope === 'plan'
-			? buildGovernorPlanReply(acceptedIntakeSummary)
-			: undefined;
-	const foregroundRequestId = provenance?.in_response_to_request_id;
-	const planReadyRequest =
-		permissionScope === 'plan'
-			? buildPlanReadyRequest(acceptedIntakeSummary, now, foregroundRequestId)
-			: undefined;
 
 	return {
 		snapshot: refreshSnapshot(model.snapshot, now, {
-			currentActor:
-				permissionScope === 'execute' || permissionScope === 'plan'
-					? 'governor'
-					: 'orchestration',
-			currentStage:
-				permissionScope === 'execute'
-					? 'running'
-					: permissionScope === 'plan'
-						? 'plan_ready'
-						: 'intake_accepted',
+			currentActor: permissionScope === 'execute' ? 'governor' : 'orchestration',
+			currentStage: permissionScope === 'execute' ? 'running' : 'intake_accepted',
 			permissionScope,
 			runState: permissionScope === 'execute' ? 'running' : 'idle',
 			pendingPermissionRequest: undefined,
@@ -1076,29 +980,11 @@ function acceptIntake(
 					...provenance,
 				}
 			),
-			...(governorPlanReply
-				? [
-						createFeedItem(
-							'actor_event',
-							'Governor response',
-							governorPlanReply.body,
-							true,
-							now,
-							governorPlanReply.details,
-							undefined,
-							{
-								turn_type: turnType,
-								...provenance,
-							}
-						),
-				  ]
-				: []),
 		],
 		activeClarification: undefined,
 		activeForegroundRequestId:
 			permissionScope === 'execute' ? model.activeForegroundRequestId : undefined,
 		acceptedIntakeSummary,
-		planReadyRequest,
 	};
 }
 
@@ -1153,19 +1039,10 @@ export function applyModelAction(
 				);
 			}
 
-			const turnType = resolveTurnTypeFromSemanticRoute(action.semantic_route_type);
-			if (!turnType) {
-				return appendError(
-					model,
-					'Semantic route required',
-					'Corgi needs a semantic sidecar route before dispatching this prompt.',
-					undefined,
-					now,
-					action.request_id,
-					'error.semantic_route_required'
-				);
-			}
-
+			const turnType = resolveTurnTypeFromSemanticRoute(
+				action.semantic_route_type,
+				prompt
+			);
 			if (turnType === 'governor_dialogue') {
 				if (!permissionAllowsTurn(model.snapshot.permissionScope, turnType)) {
 					const permissionRequest = buildPermissionRequest('observe', now, {
@@ -1199,10 +1076,6 @@ export function applyModelAction(
 								{
 									turn_type: turnType,
 									...responseProvenanceForAction(action),
-									presentation_key: 'permission.needed',
-									presentation_args: {
-										scope: permissionRequest.recommendedScope,
-									},
 								}
 							),
 						],
@@ -1242,61 +1115,6 @@ export function applyModelAction(
 				};
 			}
 
-			if (shouldRequestExecuteForAcceptedContinuation(model, action)) {
-				const permissionRequest = buildPermissionRequest('execute', now, {
-					foregroundRequestId: action.request_id,
-					pendingPrompt: prompt,
-					pendingNormalizedText: action.semantic_normalized_text ?? prompt,
-				});
-
-				return {
-					...model,
-					snapshot: refreshSnapshot(model.snapshot, now, {
-						currentActor: 'orchestration',
-						currentStage: 'permission_needed',
-						runState: 'idle',
-						pendingPermissionRequest: permissionRequest,
-						pendingInterrupt: undefined,
-						transportState: 'connected',
-					}),
-					feed: [
-						...model.feed,
-						createFeedItem(
-							'user_message',
-							'Prompt submitted',
-							prompt,
-							false,
-							now,
-							undefined,
-							undefined,
-							{
-								turn_type: turnType,
-								...responseProvenanceForAction(action),
-							}
-						),
-						createFeedItem(
-							'permission_request',
-							permissionRequest.title,
-							permissionRequest.body,
-							true,
-							now,
-							undefined,
-							undefined,
-							{
-								turn_type: turnType,
-								...responseProvenanceForAction(action),
-								presentation_key: 'permission.needed',
-								presentation_args: {
-									scope: permissionRequest.recommendedScope,
-								},
-							}
-						),
-					],
-					activeClarification: undefined,
-					activeForegroundRequestId: action.request_id ?? model.activeForegroundRequestId,
-				};
-			}
-
 			const clarification = buildClarificationRequest(prompt, now);
 
 			const pendingSupersededFeed = supersedePendingApproval(
@@ -1330,7 +1148,6 @@ export function applyModelAction(
 						{
 							turn_type: turnType,
 							...responseProvenanceForAction(action),
-							presentation_key: 'clarification.requested',
 						}
 					),
 					createFeedItem(
@@ -1391,9 +1208,7 @@ export function applyModelAction(
 					staleContextError('answer_clarification'),
 					undefined,
 					now,
-					action.request_id,
-					'error.stale_context',
-					{ kind: 'clarification' }
+					action.request_id
 				);
 			}
 
@@ -1463,10 +1278,6 @@ export function applyModelAction(
 						{
 							turn_type: 'clarification_reply',
 							...responseProvenanceForAction(action),
-							presentation_key: 'permission.needed',
-							presentation_args: {
-								scope: permissionRequest.recommendedScope,
-							},
 						}
 					),
 					createFeedItem(
@@ -1527,9 +1338,7 @@ export function applyModelAction(
 					staleContextError('set_permission_scope'),
 					undefined,
 					now,
-					action.request_id,
-					'error.stale_context',
-					{ kind: 'permission' }
+					action.request_id
 				);
 			}
 
@@ -1537,26 +1346,6 @@ export function applyModelAction(
 				model.snapshot.pendingPermissionRequest,
 				model.activeForegroundRequestId ?? action.request_id
 			);
-			if (
-				!scopeSatisfies(
-					action.permission_scope,
-					model.snapshot.pendingPermissionRequest.recommendedScope
-				)
-			) {
-				return appendError(
-					model,
-					'Permission scope too low',
-					`Choose ${formatPermissionScope(model.snapshot.pendingPermissionRequest.recommendedScope)} or higher to continue this request.`,
-					undefined,
-					now,
-					action.request_id,
-					'error.permission_scope_too_low',
-					{
-						requiredScope: model.snapshot.pendingPermissionRequest.recommendedScope,
-						selectedScope: action.permission_scope,
-					}
-				);
-			}
 
 			const withUserTurn = action.text
 				? {
@@ -1635,41 +1424,6 @@ export function applyModelAction(
 				};
 			}
 
-			if (pendingRequest?.continuationKind === 'plan_execution') {
-				return {
-					...withUserTurn,
-					snapshot: refreshSnapshot(withUserTurn.snapshot, now, {
-						permissionScope: action.permission_scope,
-						pendingPermissionRequest: undefined,
-						pendingInterrupt: undefined,
-						currentActor: 'governor',
-						currentStage: 'running',
-						runState: 'running',
-						transportState: 'connected',
-					}),
-					feed: [
-						...withUserTurn.feed,
-						createFeedItem(
-							'system_status',
-							'Permission confirmed: Execute',
-							'Execute permission is active for this accepted plan.',
-							true,
-							now,
-							undefined,
-							undefined,
-							{
-								turn_type: 'permission_action',
-								...responseProvenanceForAction(action),
-								in_response_to_request_id: continuedRequestId,
-							}
-						),
-					],
-					activeClarification: undefined,
-					activeForegroundRequestId: continuedRequestId,
-					planReadyRequest: undefined,
-				};
-			}
-
 			return acceptIntake(
 				withUserTurn,
 				now,
@@ -1680,200 +1434,6 @@ export function applyModelAction(
 					in_response_to_request_id: continuedRequestId,
 				}
 			);
-		}
-
-		case 'execute_plan': {
-			if (!hasPlanReadyRequest(model)) {
-				return appendError(
-					model,
-					'No plan is ready',
-					'There is no current plan checkpoint to execute.',
-					undefined,
-					now,
-					action.request_id
-				);
-			}
-
-			if (!hasFreshContextRef(action, model.planReadyRequest.contextRef)) {
-				return appendError(
-					model,
-					'Plan changed',
-					staleContextError('execute_plan'),
-					undefined,
-					now,
-					action.request_id,
-					'error.stale_context',
-					{ kind: 'plan' }
-				);
-			}
-
-			if (!scopeSatisfies(model.snapshot.permissionScope, 'execute')) {
-				const permissionRequest = buildPermissionRequest('execute', now, {
-					continuationKind: 'plan_execution',
-					pendingPrompt: model.planReadyRequest.acceptedIntakeSummary.body,
-					pendingNormalizedText: model.planReadyRequest.acceptedIntakeSummary.body,
-					foregroundRequestId: action.request_id ?? model.planReadyRequest.foregroundRequestId,
-				});
-				return {
-					...model,
-					snapshot: refreshSnapshot(model.snapshot, now, {
-						currentActor: 'orchestration',
-						currentStage: 'permission_needed',
-						runState: 'idle',
-						pendingPermissionRequest: permissionRequest,
-						pendingInterrupt: undefined,
-						transportState: 'connected',
-					}),
-					feed: [
-						...model.feed,
-						createFeedItem(
-							'permission_request',
-							permissionRequest.title,
-							permissionRequest.body,
-							true,
-							now,
-							undefined,
-							undefined,
-							{
-								turn_type: 'permission_action',
-								in_response_to_request_id: action.request_id,
-								presentation_key: 'permission.needed',
-								presentation_args: {
-									scope: permissionRequest.recommendedScope,
-								},
-							}
-						),
-					],
-					activeForegroundRequestId: action.request_id ?? model.planReadyRequest.foregroundRequestId,
-				};
-			}
-
-			return {
-				...model,
-				snapshot: refreshSnapshot(model.snapshot, now, {
-					currentActor: 'governor',
-					currentStage: 'running',
-					runState: 'running',
-					pendingPermissionRequest: undefined,
-					pendingInterrupt: undefined,
-					transportState: 'connected',
-				}),
-				feed: [
-					...model.feed,
-					createFeedItem(
-						'system_status',
-						'Execution started',
-						'Corgi is starting execution for the accepted plan.',
-						true,
-						now,
-						undefined,
-						undefined,
-						{
-							turn_type: 'permission_action',
-							in_response_to_request_id: action.request_id,
-						}
-					),
-				],
-				activeForegroundRequestId: action.request_id ?? model.planReadyRequest.foregroundRequestId,
-				planReadyRequest: undefined,
-			};
-		}
-
-		case 'revise_plan': {
-			if (!hasPlanReadyRequest(model)) {
-				return appendError(
-					model,
-					'No plan is ready',
-					'There is no current plan checkpoint to revise.',
-					undefined,
-					now,
-					action.request_id
-				);
-			}
-
-			if (!hasFreshContextRef(action, model.planReadyRequest.contextRef)) {
-				return appendError(
-					model,
-					'Plan changed',
-					staleContextError('revise_plan'),
-					undefined,
-					now,
-					action.request_id,
-					'error.stale_context',
-					{ kind: 'plan' }
-				);
-			}
-
-			const prompt = trimAndNormalize(action.text);
-			if (!prompt) {
-				return appendError(
-					model,
-					'Revision details required',
-					'Add the details you want the Governor to include in the plan.',
-					undefined,
-					now,
-					action.request_id
-				);
-			}
-
-			const withUserTurn = {
-				...model,
-				feed: [
-					...model.feed,
-					createFeedItem(
-						'user_message',
-						'Plan revision',
-						prompt,
-						false,
-						now,
-						undefined,
-						undefined,
-						{
-							turn_type: 'governor_dialogue',
-							in_response_to_request_id: action.request_id,
-						}
-					),
-				],
-			};
-			const reply = buildGovernorDialogueReply(withUserTurn, prompt);
-			const planReadyRequest = buildPlanReadyRequest(
-				model.planReadyRequest.acceptedIntakeSummary,
-				now,
-				action.request_id ?? model.planReadyRequest.foregroundRequestId
-			);
-			return {
-				...withUserTurn,
-				snapshot: refreshSnapshot(withUserTurn.snapshot, now, {
-					permissionScope: 'plan',
-					currentActor: 'governor',
-					currentStage: 'plan_ready',
-					runState: 'idle',
-					pendingPermissionRequest: undefined,
-					pendingInterrupt: undefined,
-					transportState: 'connected',
-				}),
-				feed: [
-					...withUserTurn.feed,
-					createFeedItem(
-						'actor_event',
-						'Governor response',
-						reply.body,
-						true,
-						now,
-						reply.details,
-						undefined,
-						{
-							source_layer: 'governor',
-							source_actor: 'governor',
-							turn_type: 'governor_dialogue',
-							in_response_to_request_id: action.request_id,
-						}
-					),
-				],
-				activeClarification: undefined,
-				activeForegroundRequestId: undefined,
-				planReadyRequest,
-			};
 		}
 
 		case 'decline_permission': {
@@ -1897,20 +1457,15 @@ export function applyModelAction(
 					staleContextError('decline_permission'),
 					undefined,
 					now,
-					action.request_id,
-					'error.stale_context',
-					{ kind: 'permission' }
+					action.request_id
 				);
 			}
 
-			const declinedPlanExecution =
-				model.snapshot.pendingPermissionRequest.continuationKind ===
-					'plan_execution' && Boolean(model.planReadyRequest);
 			return {
 				...model,
 				snapshot: refreshSnapshot(model.snapshot, now, {
-					currentActor: declinedPlanExecution ? 'governor' : 'orchestration',
-					currentStage: declinedPlanExecution ? 'plan_ready' : 'permission_declined',
+					currentActor: 'orchestration',
+					currentStage: 'permission_declined',
 					runState: 'idle',
 					pendingPermissionRequest: undefined,
 					transportState: 'connected',
@@ -1945,7 +1500,6 @@ export function applyModelAction(
 						{
 							turn_type: 'permission_action',
 							...responseProvenanceForAction(action),
-							presentation_key: 'permission.declined',
 						}
 					),
 				],
@@ -1971,9 +1525,7 @@ export function applyModelAction(
 					staleContextError('interrupt_run'),
 					undefined,
 					now,
-					action.request_id,
-					'error.stale_context',
-					{ kind: 'interrupt' }
+					action.request_id
 				);
 			}
 

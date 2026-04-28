@@ -18,6 +18,8 @@ def _session_command(command: str, argv: list[str]) -> int:
 		"answer-clarification": ["answer_clarification"],
 		"set-permission-scope": ["set_permission_scope"],
 		"decline-permission": ["decline_permission"],
+		"execute-plan": ["execute_plan"],
+		"revise-plan": ["revise_plan"],
 		"interrupt": ["interrupt_run"],
 		"reconnect": ["reconnect"],
 	}
@@ -65,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
 			"answer-clarification",
 			"set-permission-scope",
 			"decline-permission",
+			"execute-plan",
+			"revise-plan",
 			"interrupt",
 			"reconnect",
 		],

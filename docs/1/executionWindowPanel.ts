@@ -1,6 +1,4 @@
 import { randomUUID } from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	appendError,
@@ -10,7 +8,6 @@ import {
 	type ExecutionWindowModel,
 	type ModelAction,
 } from './phase1Model';
-import { resetDevelopmentSessionState } from './developmentSession';
 import {
 	createExecutionTransport,
 	TransportUnavailableError,
@@ -24,7 +21,6 @@ import {
 
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
 export const EXECUTION_WINDOW_VIEW_ID = 'ext.executionWindowView';
-export const OPEN_EXECUTION_WINDOW_COMMAND_ID = 'ext.openExecutionWindow';
 
 function shouldResetDevelopmentWebviewState(context: vscode.ExtensionContext): boolean {
 	return context.extensionMode === vscode.ExtensionMode.Development;
@@ -32,11 +28,7 @@ function shouldResetDevelopmentWebviewState(context: vscode.ExtensionContext): b
 
 type WebviewMessage =
 	| { type: 'ready' }
-	| { type: 'refresh_state' }
-	| { type: 'webview_snapshot'; payload?: unknown }
 	| { type: 'submit_prompt'; text?: string; requestId?: string }
-	| { type: 'execute_plan'; requestId?: string }
-	| { type: 'revise_plan'; text?: string; requestId?: string }
 	| { type: 'answer_clarification'; text?: string; requestId?: string }
 	| {
 			type: 'set_permission_scope';
@@ -48,14 +40,6 @@ type WebviewMessage =
 	| { type: 'open_artifact'; artifactId?: string }
 	| { type: 'reveal_artifact_path'; artifactId?: string }
 	| { type: 'copy_artifact_path'; artifactId?: string };
-
-type WebviewSnapshotFile = {
-	recordedAt: string;
-	monitorSessionId?: string;
-	monitorSessionStartedAt?: string;
-	viewId: string;
-	payload: unknown;
-};
 
 export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	public static register(context: vscode.ExtensionContext): ExecutionWindowPanel {
@@ -71,9 +55,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 					},
 				}
 			),
-			vscode.commands.registerCommand(OPEN_EXECUTION_WINDOW_COMMAND_ID, () =>
-				provider.openView()
-			),
 			provider
 		);
 
@@ -88,8 +69,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private readonly workspaceRoot: vscode.Uri | undefined;
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly webviewDisposables: vscode.Disposable[] = [];
-	private readonly monitorSessionId = randomUUID();
-	private readonly monitorSessionStartedAt = new Date().toISOString();
 	private semanticLoopState: SemanticLoopState | undefined;
 	private hasAuthoritativeTransportState = false;
 
@@ -107,7 +86,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 	public resolveWebviewView(webviewView: vscode.WebviewView) {
 		this.disposeWebviewListeners();
-		resetDevelopmentSessionState(this.context);
 		this.view = webviewView;
 		this.view.title = 'Corgi';
 		this.view.webview.options = {
@@ -124,13 +102,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			})
 		);
 		void this.refreshState();
-	}
-
-	public async openView() {
-		await vscode.commands.executeCommand(
-			`workbench.view.extension.${EXECUTION_WINDOW_CONTAINER_ID}`
-		);
-		await vscode.commands.executeCommand(`${EXECUTION_WINDOW_VIEW_ID}.focus`);
 	}
 
 	public dispose() {
@@ -152,127 +123,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			type: 'state',
 			payload: this.model,
 		});
-	}
-
-	private shouldWriteWebviewSnapshots(): boolean {
-		return this.context.extensionMode === vscode.ExtensionMode.Development;
-	}
-
-	private monitorRootUri(): vscode.Uri | undefined {
-		return this.workspaceRoot ?? this.context.extensionUri;
-	}
-
-	private writeWebviewSnapshot(payload: unknown) {
-		if (!this.shouldWriteWebviewSnapshots()) {
-			return;
-		}
-
-		const monitorRoot = this.monitorRootUri();
-		if (!monitorRoot) {
-			return;
-		}
-
-		const monitorDir = path.join(
-			monitorRoot.fsPath,
-			'.agent',
-			'orchestration'
-		);
-		const snapshot: WebviewSnapshotFile = {
-			recordedAt: new Date().toISOString(),
-			monitorSessionId: this.monitorSessionId,
-			monitorSessionStartedAt: this.monitorSessionStartedAt,
-			viewId: EXECUTION_WINDOW_VIEW_ID,
-			payload,
-		};
-		const snapshotPath = path.join(monitorDir, 'corgi_webview_snapshot.json');
-		if (!this.shouldReplaceWebviewSnapshot(snapshotPath, snapshot)) {
-			return;
-		}
-
-		const json = JSON.stringify(snapshot, null, 2);
-
-		fs.mkdirSync(monitorDir, { recursive: true });
-		this.removeOldWebviewSnapshotFiles(monitorDir, snapshotPath);
-		fs.writeFileSync(snapshotPath, json, 'utf8');
-	}
-
-	private removeOldWebviewSnapshotFiles(
-		monitorDir: string,
-		latestSnapshotPath: string
-	) {
-		for (const filename of fs.readdirSync(monitorDir)) {
-			if (!filename.startsWith('corgi_webview_snapshot')) {
-				continue;
-			}
-
-			const candidatePath = path.join(monitorDir, filename);
-			if (candidatePath === latestSnapshotPath) {
-				continue;
-			}
-
-			fs.rmSync(candidatePath, { force: true, recursive: true });
-		}
-	}
-
-	private shouldReplaceWebviewSnapshot(
-		snapshotPath: string,
-		candidate: WebviewSnapshotFile
-	): boolean {
-		if (!fs.existsSync(snapshotPath)) {
-			return true;
-		}
-
-		try {
-			const existing = JSON.parse(
-				fs.readFileSync(snapshotPath, 'utf8')
-			) as Partial<WebviewSnapshotFile>;
-			return this.isLatestWebviewSnapshot(candidate, existing);
-		} catch {
-			return true;
-		}
-	}
-
-	private isLatestWebviewSnapshot(
-		candidate: WebviewSnapshotFile,
-		existing: Partial<WebviewSnapshotFile>
-	): boolean {
-		const candidateSession = Date.parse(candidate.monitorSessionStartedAt ?? '');
-		const existingSession = Date.parse(existing.monitorSessionStartedAt ?? '');
-		if (existing.monitorSessionStartedAt === undefined) {
-			return true;
-		}
-		if (!Number.isNaN(existingSession) && !Number.isNaN(candidateSession)) {
-			if (candidateSession < existingSession) {
-				return false;
-			}
-			if (candidateSession > existingSession) {
-				return true;
-			}
-		}
-
-		const candidateRenderedAt = this.webviewSnapshotRenderedAt(candidate);
-		const existingRenderedAt = this.webviewSnapshotRenderedAt(existing);
-		if (!Number.isNaN(existingRenderedAt) && !Number.isNaN(candidateRenderedAt)) {
-			return candidateRenderedAt >= existingRenderedAt;
-		}
-
-		const candidateRecordedAt = Date.parse(candidate.recordedAt);
-		const existingRecordedAt = Date.parse(existing.recordedAt ?? '');
-		if (!Number.isNaN(existingRecordedAt) && !Number.isNaN(candidateRecordedAt)) {
-			return candidateRecordedAt >= existingRecordedAt;
-		}
-
-		return true;
-	}
-
-	private webviewSnapshotRenderedAt(
-		snapshot: Pick<Partial<WebviewSnapshotFile>, 'payload'>
-	): number {
-		const payload =
-			typeof snapshot.payload === 'object' && snapshot.payload !== null
-				? (snapshot.payload as Record<string, unknown>)
-				: {};
-		return Date.parse(String(payload.renderedAt ?? ''));
 	}
 
 	private async refreshState() {
@@ -324,9 +174,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			case 'set_permission_scope':
 			case 'decline_permission':
 				return this.model.snapshot.pendingPermissionRequest?.contextRef;
-			case 'execute_plan':
-			case 'revise_plan':
-				return this.model.planReadyRequest?.contextRef;
 			case 'interrupt_run':
 				return this.model.snapshot.snapshotFreshness.receivedAt
 					? `interrupt:${this.model.snapshot.snapshotFreshness.receivedAt}`
@@ -349,25 +196,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				(action.type !== 'submit_prompt' && includeSessionRef
 					? this.model.snapshot.sessionRef
 					: undefined),
-		};
-	}
-
-	private buildExecutePlanAction(requestId?: string): ModelAction {
-		return {
-			type: 'execute_plan',
-			request_id: requestId,
-			session_ref: this.model.snapshot.sessionRef,
-			context_ref: this.model.planReadyRequest?.contextRef,
-		};
-	}
-
-	private buildRevisePlanAction(text: string, requestId?: string): ModelAction {
-		return {
-			type: 'revise_plan',
-			text,
-			request_id: requestId,
-			session_ref: this.model.snapshot.sessionRef,
-			context_ref: this.model.planReadyRequest?.contextRef,
 		};
 	}
 
@@ -445,23 +273,6 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		}
 	}
 
-	private semanticPresentationKey(blockKind: SemanticBlockKind): string {
-		switch (blockKind) {
-			case 'semantic_unavailable':
-				return 'semantic.unavailable';
-			case 'control_unmappable':
-				return 'semantic.control_unmappable';
-			case 'nothing_running':
-				return 'semantic.nothing_running';
-			case 'interrupt_pending':
-				return 'semantic.interrupt_pending';
-			case 'no_active_clarification':
-				return 'semantic.no_active_clarification';
-			case 'needs_disambiguation':
-				return 'semantic.needs_clearer_request';
-		}
-	}
-
 	private async routeFreeText(
 		text: string,
 		requestId?: string,
@@ -500,8 +311,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				presentation.body,
 				resolution.semantic,
 				undefined,
-				requestId,
-				this.semanticPresentationKey(resolution.blockKind)
+				requestId
 			);
 			this.postState();
 			return;
@@ -520,33 +330,11 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			case 'ready':
 				await this.refreshState();
 				return;
-			case 'refresh_state':
-				await this.refreshState();
-				return;
-			case 'webview_snapshot':
-				this.writeWebviewSnapshot(message.payload);
-				return;
 			case 'submit_prompt':
 				await this.routeFreeText(
 					message.text ?? '',
 					message.requestId,
 					this.hasAuthoritativeTransportState
-				);
-				return;
-			case 'execute_plan':
-				await this.applyAction(
-					this.buildControllerAction(
-						this.buildExecutePlanAction(message.requestId),
-						true
-					)
-				);
-				return;
-			case 'revise_plan':
-				await this.applyAction(
-					this.buildControllerAction(
-						this.buildRevisePlanAction(message.text ?? '', message.requestId),
-						true
-					)
 				);
 				return;
 			case 'answer_clarification':
@@ -833,10 +621,6 @@ export function getExecutionWindowHtml(
 
 		.status-dot.is-stale {
 			background: var(--warning);
-		}
-
-		.status-dot.is-ready {
-			background: var(--success);
 		}
 
 		.header-subline {
@@ -1190,19 +974,16 @@ export function getExecutionWindowHtml(
 		.progress-bullet.is-waiting .progress-bullet-text {
 			background-image: linear-gradient(
 				90deg,
-				color-mix(in srgb, var(--accent) 62%, var(--muted)) 0%,
-				color-mix(in srgb, var(--accent) 62%, var(--muted)) 38%,
-				var(--text) 50%,
-				color-mix(in srgb, var(--accent) 62%, var(--muted)) 62%,
-				color-mix(in srgb, var(--accent) 62%, var(--muted)) 100%
+				color-mix(in srgb, var(--accent) 72%, var(--muted)) 0%,
+				var(--text) 45%,
+				color-mix(in srgb, var(--accent) 72%, var(--muted)) 100%
 			);
-			background-repeat: no-repeat;
-			background-size: 360% 100%;
-			background-position: 0% 50%;
+			background-size: 200% 100%;
+			background-position: 100% 50%;
 			-webkit-background-clip: text;
 			background-clip: text;
 			color: transparent;
-			animation: progressShimmer 3.4s cubic-bezier(0.42, 0, 0.2, 1) infinite;
+			animation: progressShimmer 1.8s linear infinite;
 		}
 
 		.progress-bullet.is-failed {
@@ -1242,13 +1023,6 @@ export function getExecutionWindowHtml(
 			background: var(--panel-raised);
 			display: grid;
 			gap: 6px;
-		}
-
-		.action-card-waiting {
-			background: transparent;
-			border-color: transparent;
-			padding-left: 0;
-			padding-right: 0;
 		}
 
 		.action-card h2 {
@@ -1337,16 +1111,10 @@ export function getExecutionWindowHtml(
 
 		@keyframes progressShimmer {
 			0% {
-				background-position: 0% 50%;
-			}
-			16% {
-				background-position: 0% 50%;
-			}
-			84% {
-				background-position: 100% 50%;
+				background-position: 120% 50%;
 			}
 			100% {
-				background-position: 100% 50%;
+				background-position: -40% 50%;
 			}
 		}
 
@@ -1398,7 +1166,6 @@ export function getExecutionWindowHtml(
 
 		let model = undefined;
 		let hasRendered = false;
-		let monitorSnapshotTimer = undefined;
 		const ui = {
 			draft: typeof persisted.draft === 'string' ? persisted.draft : '',
 			expandedIds: new Set(Array.isArray(persisted.expandedIds) ? persisted.expandedIds : []),
@@ -1413,11 +1180,6 @@ export function getExecutionWindowHtml(
 			historyIndex: undefined,
 			historyDraft: '',
 			foregroundRequest: undefined,
-			pendingPermissionContextRef: undefined,
-			pendingPermissionHiddenAt: undefined,
-			pendingPlanContextRef: undefined,
-			pendingPlanHiddenAt: undefined,
-			planRevisionMode: false,
 		};
 
 		const app = document.getElementById('app');
@@ -1439,99 +1201,6 @@ export function getExecutionWindowHtml(
 				initialFeedCount: ui.initialFeedCount,
 				promptHistory: ui.promptHistory.slice(-50),
 			});
-		}
-
-		function compactText(value, limit) {
-			const text = String(value || '').replace(/\\s+/g, ' ').trim();
-			if (text.length <= limit) {
-				return text;
-			}
-			return text.slice(0, limit - 3) + '...';
-		}
-
-		function collectTextRows(root, selector, limit) {
-			const rows = Array.from(root.querySelectorAll(selector))
-				.map((element) => ({
-					className: compactText(element.className || '', 160),
-					text: compactText(element.innerText || element.textContent || '', 2000),
-				}))
-				.filter((entry) => entry.text.length > 0);
-			return typeof limit === 'number' ? rows.slice(-limit) : rows;
-		}
-
-		function cloneForSnapshot(value) {
-			if (value === undefined) {
-				return null;
-			}
-			try {
-				return JSON.parse(JSON.stringify(value));
-			} catch {
-				return String(value);
-			}
-		}
-
-		function collectWebviewSnapshot(reason) {
-			const snapshot = model?.snapshot ?? {};
-			const feedItems = Array.isArray(model?.feed) ? model.feed : [];
-			return {
-				reason,
-				renderedAt: new Date().toISOString(),
-				header: compactText(headerContent.innerText || headerContent.textContent || '', 600),
-				state: {
-					currentActor: snapshot.currentActor || '',
-					currentStage: snapshot.currentStage || '',
-					permissionScope: snapshot.permissionScope || '',
-					runState: snapshot.runState || '',
-					transportState: snapshot.transportState || '',
-					task: snapshot.task || '',
-					activeForegroundRequestId: model?.activeForegroundRequestId || '',
-					planReadyRequestId: model?.planReadyRequest?.id || '',
-					feedCount: Array.isArray(model?.feed) ? model.feed.length : 0,
-				},
-				blocking: {
-					activeClarification: cloneForSnapshot(model?.activeClarification),
-					pendingPermissionRequest: cloneForSnapshot(snapshot.pendingPermissionRequest),
-					pendingInterrupt: cloneForSnapshot(snapshot.pendingInterrupt),
-					planReadyRequest: cloneForSnapshot(model?.planReadyRequest),
-					pendingPermissionContextRef: ui.pendingPermissionContextRef || null,
-					pendingPlanContextRef: ui.pendingPlanContextRef || null,
-				},
-				actions: collectTextRows(actionBand, '.action-card'),
-				messages: collectTextRows(feed, '.message, .activity-row, .turn-divider, .feed-empty'),
-				progress: collectTextRows(feed, '.progress-bullet, .activity-summary'),
-				composer: {
-					placeholder: compactText(composerInput.placeholder, 240),
-					hint: compactText(composerHint.innerText || composerHint.textContent || '', 300),
-					button: compactText(composerSubmitButton.innerText || composerSubmitButton.textContent || '', 120),
-					disabled: Boolean(composerInput.disabled),
-					context: compactText(composerContext.innerText || composerContext.textContent || '', 300),
-					draftLength: ui.draft.length,
-				},
-				model: {
-					snapshot: cloneForSnapshot(snapshot),
-					activeForegroundRequestId: model?.activeForegroundRequestId || null,
-					planReadyRequest: cloneForSnapshot(model?.planReadyRequest),
-					activeClarification: cloneForSnapshot(model?.activeClarification),
-					feed: cloneForSnapshot(feedItems),
-					feedCount: feedItems.length,
-					uiForegroundRequest: cloneForSnapshot(ui.foregroundRequest),
-				},
-				scroll: {
-					top: feed.scrollTop,
-					height: feed.scrollHeight,
-					clientHeight: feed.clientHeight,
-				},
-			};
-		}
-
-		function scheduleWebviewSnapshot(reason) {
-			clearTimeout(monitorSnapshotTimer);
-			monitorSnapshotTimer = setTimeout(() => {
-				vscode.postMessage({
-					type: 'webview_snapshot',
-					payload: collectWebviewSnapshot(reason),
-				});
-			}, 80);
 		}
 
 		function renderRevealPill(label, value, className) {
@@ -1628,24 +1297,6 @@ export function getExecutionWindowHtml(
 			return snapshot.runState === 'running';
 		}
 
-		function retainOptimisticHidesUntilAuthoritativeChange() {
-			// Same-context action surfaces should not reappear on a timer after
-			// the user clicks them. They clear only when authoritative state
-			// removes or replaces that context.
-		}
-
-		function isPlanReady(snapshot) {
-			return Boolean(
-				model?.planReadyRequest &&
-					snapshot.currentStage === 'plan_ready' &&
-					snapshot.permissionScope === 'plan' &&
-					!snapshot.pendingPermissionRequest &&
-					!model?.activeClarification &&
-					!snapshot.pendingInterrupt &&
-					snapshot.runState !== 'running'
-			);
-		}
-
 		function statusLabel(snapshot, stale) {
 			if (snapshot.pendingInterrupt) {
 				return 'Stop pending';
@@ -1659,26 +1310,10 @@ export function getExecutionWindowHtml(
 			if (snapshot.runState === 'running') {
 				return 'Running';
 			}
-			if (
-				snapshot.transportState === 'connected' &&
-				isPlanReady(snapshot)
-			) {
-				return 'Plan ready';
-			}
 			if (snapshot.transportState === 'connected' && !stale) {
 				return 'Ready';
 			}
 			return 'Attention';
-		}
-
-		function statusDotClass(snapshot, stale) {
-			if (
-				snapshot.transportState === 'connected' &&
-				isPlanReady(snapshot)
-			) {
-				return 'is-ready';
-			}
-			return stale ? 'is-stale' : '';
 		}
 
 		function railTitle(snapshot) {
@@ -1985,19 +1620,6 @@ export function getExecutionWindowHtml(
 			}
 		}
 
-		function setForegroundSingleBullet(label, state, hint) {
-			ensureForegroundRequest('', hint);
-			ui.foregroundRequest.bullets = [
-				{
-					id: bulletId(),
-					label,
-					state: state || 'active',
-				},
-			];
-			ui.foregroundRequest.status = 'live';
-			ui.foregroundRequest.hint = hint || label;
-		}
-
 		function freezeForegroundRequest(label, state, hint) {
 			if (!ui.foregroundRequest) {
 				return;
@@ -2176,33 +1798,17 @@ export function getExecutionWindowHtml(
 
 			const latestActorEvent = latestRequestActorEvent(requestKey);
 			if (latestActorEvent) {
-				freezeForegroundRequest('Governor responded', 'done', 'Corgi is ready for the next step.');
-				return;
-			}
-
-			if (snapshot.currentActor === 'governor') {
-				setForegroundSingleBullet(
-					'Waiting for a reply from the Governor...',
-					'active',
-					'Waiting for a reply from the Governor...'
-				);
+				freezeForegroundRequest('Governor responded', 'done', 'Corgi finished this request.');
 				return;
 			}
 
 			if (model.acceptedIntakeSummary && isAuthoritativeForegroundRequestKey(requestKey)) {
-				freezeForegroundRequest('Intake accepted', 'done', 'Corgi is ready for permitted work.');
+				freezeForegroundRequest('Completed', 'done', 'Corgi finished this request.');
 				return;
 			}
 		}
 
 		function composerMode() {
-			if (model?.snapshot && isPlanReady(model.snapshot) && ui.planRevisionMode) {
-				return {
-					placeholder: 'Tell the Governor what to add, explain, or revise...',
-					hint: 'This updates the plan only. Execute still requires Execute permission.',
-					buttonLabel: 'Send to Governor',
-				};
-			}
 			if (model?.activeClarification) {
 				const hasOptions =
 					Array.isArray(model.activeClarification.options) &&
@@ -2244,7 +1850,7 @@ export function getExecutionWindowHtml(
 			}
 			subline.push(
 				'<span class="pill">' +
-					'<span class="status-dot ' + statusDotClass(snapshot, stale) + '"></span>' +
+					'<span class="status-dot ' + (stale ? 'is-stale' : '') + '"></span>' +
 					escapeHtml(statusLabel(snapshot, stale)) +
 				'</span>'
 			);
@@ -2260,7 +1866,6 @@ export function getExecutionWindowHtml(
 			if (!model) {
 				return;
 			}
-			retainOptimisticHidesUntilAuthoritativeChange();
 
 			const snapshot = model.snapshot;
 			const cards = [];
@@ -2296,10 +1901,7 @@ export function getExecutionWindowHtml(
 				);
 			}
 
-			if (
-				snapshot.pendingPermissionRequest &&
-				snapshot.pendingPermissionRequest.contextRef !== ui.pendingPermissionContextRef
-			) {
+			if (snapshot.pendingPermissionRequest) {
 				const scopes = Array.isArray(snapshot.pendingPermissionRequest.allowedScopes)
 					? snapshot.pendingPermissionRequest.allowedScopes
 					: ['observe', 'plan', 'execute'];
@@ -2318,64 +1920,6 @@ export function getExecutionWindowHtml(
 							'<button type="button" class="secondary" data-action="decline_permission">Decline</button>' +
 						'</div>' +
 						renderArtifactQuickAction(currentQuickArtifact()) +
-					'</section>'
-				);
-			}
-			if (
-				snapshot.pendingPermissionRequest &&
-				snapshot.pendingPermissionRequest.contextRef === ui.pendingPermissionContextRef
-			) {
-				const requestedScope = snapshot.pendingPermissionRequest.recommendedScope || 'permission';
-				const waitingCopy =
-					requestedScope === 'execute'
-						? 'Execute permission choice sent. Waiting for Corgi to continue...'
-						: 'Permission choice sent. Waiting for a reply from the Governor...';
-				cards.push(
-					'<section class="action-card action-card-waiting">' +
-						'<h2>Waiting for Corgi</h2>' +
-						'<p>' + escapeHtml(waitingCopy) + '</p>' +
-						'<div class="card-actions">' +
-							'<button type="button" class="secondary" data-action="refresh_state">Refresh state</button>' +
-						'</div>' +
-					'</section>'
-				);
-			}
-
-			if (
-				isPlanReady(snapshot) &&
-				model.planReadyRequest.contextRef !== ui.pendingPlanContextRef
-			) {
-				const planReady = model.planReadyRequest;
-				const actions = Array.isArray(planReady.allowedActions)
-					? planReady.allowedActions
-					: ['execute_plan', 'revise_plan'];
-				cards.push(
-					'<section class="action-card">' +
-						'<h2>' + escapeHtml(planReady.title || 'Plan ready') + '</h2>' +
-						'<p>' + escapeHtml(planReady.body || 'Review the Governor plan, then execute it or add details for a revision.') + '</p>' +
-						'<div class="card-actions">' +
-							(actions.includes('execute_plan')
-								? '<button type="button" data-action="execute_plan" data-context-ref="' + escapeHtml(planReady.contextRef) + '">Execute this plan</button>'
-								: '') +
-							(actions.includes('revise_plan')
-								? '<button type="button" class="secondary" data-action="revise_plan" data-context-ref="' + escapeHtml(planReady.contextRef) + '">Add details or revise plan</button>'
-								: '') +
-						'</div>' +
-						renderArtifactQuickAction(currentQuickArtifact()) +
-					'</section>'
-				);
-			}
-			if (
-				isPlanReady(snapshot) &&
-				model.planReadyRequest.contextRef === ui.pendingPlanContextRef
-			) {
-				cards.push(
-					'<section class="action-card action-card-waiting">' +
-						'<h2>Waiting for Governor</h2>' +
-						'<p>Plan action sent. Waiting for a reply from the Governor...</p>' +
-						'<div class="card-actions">' +
-							'<button type="button" class="secondary" data-action="refresh_state">Refresh state</button>' +
-						'</div>' +
 					'</section>'
 				);
 			}
@@ -2498,117 +2042,6 @@ export function getExecutionWindowHtml(
 			return '';
 		}
 
-		function displayScope(value) {
-			const scope = String(value || '').trim().toLowerCase();
-			if (scope === 'observe' || scope === 'plan' || scope === 'execute') {
-				return scope.charAt(0).toUpperCase() + scope.slice(1);
-			}
-			return 'Plan';
-		}
-
-		function presentationArgs(item) {
-			return item && typeof item.presentation_args === 'object' && item.presentation_args
-				? item.presentation_args
-				: {};
-		}
-
-		function displayCopy(item) {
-			const fallback = {
-				title: item.title || '',
-				body: item.body || '',
-			};
-
-			if (item.type === 'actor_event' && item.source_actor === 'governor') {
-				return fallback;
-			}
-
-			const args = presentationArgs(item);
-			switch (item.presentation_key) {
-				case 'permission.needed':
-					return {
-						title: 'Permission needed',
-						body: 'Choose ' + displayScope(args.scope) + ' to continue this request.',
-					};
-				case 'permission.declined':
-					return {
-						title: 'Permission declined',
-						body: 'This request will not continue, and the session permission scope stayed unchanged.',
-					};
-				case 'permission.superseded':
-					return {
-						title: 'Previous permission skipped',
-						body: 'A new request replaced the previous permission choice.',
-					};
-				case 'semantic.unavailable':
-					return {
-						title: 'Could not classify request',
-						body: 'Corgi could not classify that request right now. Try again or restate it directly.',
-					};
-				case 'semantic.control_unmappable':
-					return {
-						title: 'Need a clearer control request',
-						body: 'Restate this as stop, a progress question, or a new work request.',
-					};
-				case 'semantic.nothing_running':
-					return {
-						title: 'Nothing is running',
-						body: 'Ask for progress, or send a new work request.',
-					};
-				case 'semantic.interrupt_pending':
-					return {
-						title: 'Stop already requested',
-						body: 'A stop request is already pending.',
-					};
-				case 'semantic.no_active_clarification':
-					return {
-						title: 'No clarification is active',
-						body: 'Ask for progress, or send a new work request.',
-					};
-				case 'semantic.needs_clearer_request':
-					return {
-						title: fallback.title,
-						body: fallback.body || 'Restate the request more directly.',
-					};
-				case 'error.semantic_route_required':
-					return {
-						title: 'Could not route request',
-						body: 'Try again after Corgi finishes classifying the prompt.',
-					};
-				case 'error.session_changed':
-					return {
-						title: 'Session changed',
-						body: 'Refresh and try again with the current session.',
-					};
-				case 'error.stale_context':
-					return {
-						title: 'State changed',
-						body: 'Refresh and use the current action surface.',
-					};
-				case 'error.duplicate_request':
-					return {
-						title: 'Request already handled',
-						body: 'Send a new action if you still want to proceed.',
-					};
-				case 'error.generic':
-					return {
-						title: String(args.title || fallback.title),
-						body: String(args.body || fallback.body),
-					};
-				case 'session.switched':
-					return {
-						title: 'Session switched',
-						body: 'Reconnect attached to a different session.',
-					};
-				case 'reconnect.not_needed':
-					return {
-						title: 'Already connected',
-						body: 'The current session is connected and fresh.',
-					};
-				default:
-					return fallback;
-			}
-		}
-
 		function renderActivity(item) {
 			const activity = item.activity ?? { state: item.type === 'error' ? 'failed' : 'completed' };
 			const state = activity.state || 'completed';
@@ -2634,13 +2067,12 @@ export function getExecutionWindowHtml(
 		}
 
 		function renderMessage(item) {
-			const copy = displayCopy(item);
 			if (item.type === 'error') {
 				return (
 					'<article class="message error">' +
 						'<div class="message-label">Error</div>' +
-						'<div class="message-body">' + escapeHtml(copy.title) + '</div>' +
-						(copy.body ? '<div class="activity-summary">' + escapeHtml(copy.body) + '</div>' : '') +
+						'<div class="message-body">' + escapeHtml(item.title) + '</div>' +
+						(item.body ? '<div class="activity-summary">' + escapeHtml(item.body) + '</div>' : '') +
 						renderArtifactQuickAction(milestoneArtifact(item)) +
 						renderDetails(item) +
 					'</article>'
@@ -2659,7 +2091,7 @@ export function getExecutionWindowHtml(
 				'<article class="message assistant ' +
 					(item.authoritative ? '' : 'is-informational') +
 				'">' +
-					'<div class="message-body">' + escapeHtml(copy.body || copy.title) + '</div>' +
+					'<div class="message-body">' + escapeHtml(item.body || item.title) + '</div>' +
 					(isMeaningfulMilestone(item)
 						? renderArtifactQuickAction(milestoneArtifact(item))
 						: '') +
@@ -2829,17 +2261,7 @@ export function getExecutionWindowHtml(
 		function renderComposer() {
 			const mode = composerMode();
 			const blocked = model?.snapshot?.transportState === 'disconnected';
-			const hasActionSurface = Boolean(
-				model?.activeClarification ||
-					model?.snapshot?.pendingPermissionRequest ||
-					model?.snapshot?.pendingInterrupt ||
-					(model?.snapshot && isPlanReady(model.snapshot))
-			);
-			const busy = Boolean(
-				ui.foregroundRequest &&
-					ui.foregroundRequest.status === 'live' &&
-					!hasActionSurface
-			);
+			const busy = Boolean(ui.foregroundRequest && ui.foregroundRequest.status === 'live');
 			const chips = model ? renderContextChips(model.snapshot) : '';
 			composerInput.placeholder = mode.placeholder;
 			composerHint.textContent = blocked
@@ -2866,7 +2288,6 @@ export function getExecutionWindowHtml(
 			renderActionBand();
 			renderFeed();
 			renderComposer();
-			scheduleWebviewSnapshot('render');
 		}
 
 		function handleSubmit(event) {
@@ -2879,29 +2300,14 @@ export function getExecutionWindowHtml(
 			rememberPrompt(text);
 			resetPromptHistoryNavigation();
 			const requestId = nextForegroundRequestKey();
-			if (model?.snapshot && isPlanReady(model.snapshot) && ui.planRevisionMode) {
-				startForegroundRequest(text, 'Waiting for a reply from the Governor...', requestId);
-				ui.pendingPlanContextRef = model.planReadyRequest?.contextRef;
-				ui.pendingPlanHiddenAt = Date.now();
-				setForegroundSingleBullet(
-					'Waiting for a reply from the Governor...',
-					'active',
-					'Waiting for a reply from the Governor...'
-				);
-				vscode.postMessage({ type: 'revise_plan', text, requestId });
-				ui.planRevisionMode = false;
-			} else {
-				startForegroundRequest(text, 'Model clarifying...', requestId);
-				appendForegroundBullet('Model clarifying', 'active', 'Model clarifying...');
-				vscode.postMessage({ type: 'submit_prompt', text, requestId });
-			}
+			startForegroundRequest(text, 'Model clarifying...', requestId);
+			appendForegroundBullet('Model clarifying', 'active', 'Model clarifying...');
+			vscode.postMessage({ type: 'submit_prompt', text, requestId });
 
 			ui.draft = '';
 			persistUiState();
-			renderActionBand();
 			renderFeed();
 			renderComposer();
-			scheduleWebviewSnapshot('submit');
 		}
 
 		composerForm.addEventListener('submit', handleSubmit);
@@ -2948,7 +2354,6 @@ export function getExecutionWindowHtml(
 		feed.addEventListener('scroll', () => {
 			ui.scrollTop = feed.scrollTop;
 			persistUiState();
-			scheduleWebviewSnapshot('scroll');
 		});
 
 		document.addEventListener('click', (event) => {
@@ -2963,7 +2368,6 @@ export function getExecutionWindowHtml(
 					appendForegroundBullet('Continuing request', 'active', 'Applying your clarification...');
 					renderFeed();
 					renderComposer();
-					scheduleWebviewSnapshot('clarification_click');
 					vscode.postMessage({
 						type: 'answer_clarification',
 						text: clarificationAnswer,
@@ -2977,40 +2381,6 @@ export function getExecutionWindowHtml(
 			}
 
 			const action = target.dataset.action;
-			if (action === 'refresh_state') {
-				vscode.postMessage({ type: 'refresh_state' });
-				scheduleWebviewSnapshot('refresh_state_click');
-				return;
-			}
-			if (action === 'execute_plan') {
-				const requestId = nextForegroundRequestKey();
-				startForegroundRequest('Execute this plan', 'Requesting Execute permission...', requestId);
-				setForegroundSingleBullet(
-					'Requesting Execute permission...',
-					'active',
-					'Requesting Execute permission...'
-				);
-				ui.planRevisionMode = false;
-				ui.pendingPlanContextRef = model?.planReadyRequest?.contextRef;
-				ui.pendingPlanHiddenAt = Date.now();
-				renderActionBand();
-				renderFeed();
-				renderComposer();
-				scheduleWebviewSnapshot('execute_plan_click');
-				vscode.postMessage({ type: 'execute_plan', requestId });
-				return;
-			}
-			if (action === 'revise_plan') {
-				ui.planRevisionMode = true;
-				ui.draft = '';
-				resetPromptHistoryNavigation();
-				persistUiState();
-				renderActionBand();
-				renderComposer();
-				scheduleWebviewSnapshot('revise_plan_click');
-				composerInput.focus();
-				return;
-			}
 			if (action === 'toggle_details') {
 				const feedId = target.dataset.feedId;
 				if (!feedId) {
@@ -3023,7 +2393,6 @@ export function getExecutionWindowHtml(
 				}
 				persistUiState();
 				renderFeed();
-				scheduleWebviewSnapshot('toggle_details');
 				return;
 			}
 
@@ -3050,22 +2419,16 @@ export function getExecutionWindowHtml(
 					const requestId = nextForegroundRequestKey();
 					const requestKey = foregroundRequestKeyForAction(action);
 					ensureForegroundRequest('', '', requestKey);
-					ui.pendingPermissionContextRef =
-						model?.snapshot?.pendingPermissionRequest?.contextRef;
-					ui.pendingPermissionHiddenAt = Date.now();
-					setForegroundSingleBullet(
-						scope === 'execute'
-							? 'Starting execution...'
-							: 'Waiting for a reply from the Governor...',
-						'active',
-						scope === 'execute'
-							? 'Starting execution...'
-							: 'Waiting for a reply from the Governor...'
+					appendForegroundBullet(
+						scope
+							? 'Permission confirmed: ' + scope.charAt(0).toUpperCase() + scope.slice(1)
+							: 'Permission confirmed',
+						'done',
+						'Applying your permission choice...'
 					);
-					renderActionBand();
+					appendForegroundBullet('Continuing request', 'active', 'Applying your permission choice...');
 					renderFeed();
 					renderComposer();
-					scheduleWebviewSnapshot('permission_click');
 					vscode.postMessage({
 						type: 'set_permission_scope',
 						permissionScope: scope,
@@ -3089,7 +2452,6 @@ export function getExecutionWindowHtml(
 				}
 				renderFeed();
 				renderComposer();
-				scheduleWebviewSnapshot('action_click');
 			}
 		});
 
@@ -3100,30 +2462,6 @@ export function getExecutionWindowHtml(
 			}
 
 			model = message.payload;
-			if (ui.pendingPermissionContextRef) {
-				const authoritativePermissionContext =
-					model?.snapshot?.pendingPermissionRequest?.contextRef;
-				if (
-					!authoritativePermissionContext ||
-					authoritativePermissionContext !== ui.pendingPermissionContextRef
-				) {
-					ui.pendingPermissionContextRef = undefined;
-					ui.pendingPermissionHiddenAt = undefined;
-				}
-			}
-			if (ui.pendingPlanContextRef) {
-				const authoritativePlanContext = model?.planReadyRequest?.contextRef;
-				if (
-					!authoritativePlanContext ||
-					authoritativePlanContext !== ui.pendingPlanContextRef
-				) {
-					ui.pendingPlanContextRef = undefined;
-					ui.pendingPlanHiddenAt = undefined;
-				}
-			}
-			if (!model?.snapshot || !isPlanReady(model.snapshot)) {
-				ui.planRevisionMode = false;
-			}
 			syncForegroundRequestFromModel();
 			if (
 				typeof ui.initialFeedCount !== 'number' ||
@@ -3140,7 +2478,6 @@ export function getExecutionWindowHtml(
 				renderHeader();
 				renderActionBand();
 				renderComposer();
-				scheduleWebviewSnapshot('heartbeat');
 			}
 		}, 5000);
 

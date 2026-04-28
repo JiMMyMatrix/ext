@@ -5,15 +5,11 @@ import json
 import os
 import subprocess
 import tempfile
+import tomllib
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-try:
-	import tomllib
-except ModuleNotFoundError:  # Python < 3.11
-	tomllib = None  # type: ignore[assignment]
 
 from orchestration.harness.intake import (
 	accept_intake,
@@ -64,8 +60,6 @@ def _feed_item(
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
 	in_response_to_request_id: str | None = None,
-	presentation_key: str | None = None,
-	presentation_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
 	default_provenance = _default_feed_provenance(item_type)
 	payload: dict[str, Any] = {
@@ -104,10 +98,6 @@ def _feed_item(
 		payload["semantic_normalized_text"] = semantic_normalized_text
 	if in_response_to_request_id:
 		payload["in_response_to_request_id"] = in_response_to_request_id
-	if presentation_key:
-		payload["presentation_key"] = presentation_key
-	if presentation_args is not None:
-		payload["presentation_args"] = presentation_args
 	return payload
 
 
@@ -182,6 +172,38 @@ def _default_feed_provenance(item_type: str) -> dict[str, str]:
 		"source_actor": "orchestration",
 		"turn_type": "system",
 	}
+
+
+def _classify_turn(prompt: str) -> str:
+	lower = prompt.lower()
+	dialogue_tokens = (
+		"progress",
+		"status",
+		"where are we",
+		"what are you doing",
+		"what is the current",
+		"what's the current",
+		"what happened",
+		"what happen",
+		"what's happening",
+		"what is happening",
+		"what's going on",
+		"what is going on",
+		"how is it going",
+		"how's it going",
+		"any update",
+		"update me",
+		"why",
+		"explain",
+		"help me understand",
+		"what do you think",
+		"should we",
+		"which option",
+		"compare",
+	)
+	if any(token in lower for token in dialogue_tokens):
+		return "governor_dialogue"
+	return "governed_work_intent"
 
 
 def _load_request_draft_summary(
@@ -443,35 +465,15 @@ def _governor_dialogue_meta(session: dict[str, Any]) -> dict[str, Any]:
 	return meta["governorDialogue"]
 
 
-def _load_runtime_toml(config_path: Path) -> dict[str, Any]:
-	if tomllib is not None:
-		with config_path.open("rb") as handle:
-			return tomllib.load(handle)
-
-	config: dict[str, Any] = {}
-	for raw_line in config_path.read_text(encoding="utf-8").splitlines():
-		line = raw_line.split("#", 1)[0].strip()
-		if not line:
-			continue
-		if line.startswith("["):
-			break
-		if "=" not in line:
-			continue
-		key, value = line.split("=", 1)
-		value = value.strip()
-		if value.startswith('"') and value.endswith('"'):
-			config[key.strip()] = value[1:-1]
-	return config
-
-
 def _governor_runtime_settings(repo_root: str | Path | None = None) -> tuple[str, str]:
 	model = "gpt-5.4"
 	reasoning = "xhigh"
 	config_path = resolve_paths(repo_root).runtime_root / "config.toml"
 	if config_path.exists():
 		try:
-			config = _load_runtime_toml(config_path)
-		except (OSError, ValueError):
+			with config_path.open("rb") as handle:
+				config = tomllib.load(handle)
+		except (OSError, tomllib.TOMLDecodeError):
 			config = {}
 		model = str(config.get("model") or model)
 		reasoning = str(config.get("model_reasoning_effort") or reasoning)
@@ -632,7 +634,6 @@ def _append_governor_dialogue_response(
 	semantic_block_reason: str | None = None,
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
-	result_stage: str = "dialogue_ready",
 ) -> bool:
 	model = session["model"]
 	try:
@@ -689,14 +690,10 @@ def _append_governor_dialogue_response(
 		model,
 		now,
 		currentActor="governor",
-		currentStage=result_stage,
+		currentStage="dialogue_ready",
 		runState="idle",
 		transportState="connected",
 	)
-	if result_stage == "plan_ready":
-		_set_plan_ready_request(model, now, foreground_request_id=request_id)
-	else:
-		model["planReadyRequest"] = None
 	model["activeForegroundRequestId"] = None
 	return True
 
@@ -731,7 +728,6 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 		"activeClarification": None,
 		"activeForegroundRequestId": None,
 		"acceptedIntakeSummary": None,
-		"planReadyRequest": None,
 	}
 
 
@@ -761,7 +757,7 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 			snapshot["pendingPermissionRequest"] = {
 				**legacy_pending,
 				"recommendedScope": "plan",
-				"allowedScopes": _allowed_permission_scopes("plan"),
+				"allowedScopes": ["observe", "plan", "execute"],
 			}
 		else:
 			snapshot["pendingPermissionRequest"] = None
@@ -772,7 +768,6 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	model.setdefault("activeClarification", None)
 	model.setdefault("activeForegroundRequestId", None)
 	model.setdefault("acceptedIntakeSummary", None)
-	model.setdefault("planReadyRequest", None)
 	if isinstance(model.get("activeClarification"), dict):
 		model["activeClarification"].setdefault(
 			"contextRef", model["activeClarification"].get("id")
@@ -782,8 +777,8 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 			"contextRef", snapshot["pendingPermissionRequest"].get("id")
 		)
 		snapshot["pendingPermissionRequest"].setdefault("recommendedScope", "plan")
-		snapshot["pendingPermissionRequest"]["allowedScopes"] = _allowed_permission_scopes(
-			snapshot["pendingPermissionRequest"].get("recommendedScope")
+		snapshot["pendingPermissionRequest"].setdefault(
+			"allowedScopes", ["observe", "plan", "execute"]
 		)
 		snapshot["pendingPermissionRequest"].setdefault(
 			"continuationKind", "intake_acceptance"
@@ -795,20 +790,6 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 		snapshot["pendingInterrupt"].setdefault(
 			"contextRef",
 			f"interrupt:{snapshot['snapshotFreshness'].get('receivedAt', now)}",
-		)
-	if (
-		model.get("planReadyRequest") is None
-		and model.get("acceptedIntakeSummary")
-		and snapshot.get("currentStage") == "plan_ready"
-		and snapshot.get("permissionScope") == "plan"
-		and not snapshot.get("pendingPermissionRequest")
-		and not model.get("activeClarification")
-		and snapshot.get("runState") != "running"
-	):
-		_set_plan_ready_request(
-			model,
-			now,
-			foreground_request_id=model.get("activeForegroundRequestId"),
 		)
 
 
@@ -919,8 +900,6 @@ def _append_error(
 	now: str,
 	*,
 	in_response_to_request_id: str | None = None,
-	presentation_key: str = "error.generic",
-	presentation_args: dict[str, Any] | None = None,
 ) -> None:
 	model["feed"].append(
 		_feed_item(
@@ -930,8 +909,6 @@ def _append_error(
 			authoritative=True,
 			now=now,
 			in_response_to_request_id=in_response_to_request_id,
-			presentation_key=presentation_key,
-			presentation_args=presentation_args or {"title": title, "body": body},
 		)
 	)
 	_refresh_snapshot(model, now)
@@ -1009,30 +986,6 @@ def _scope_satisfies(current_scope: str | None, required_scope: str | None) -> b
 	return _permission_rank(current_scope) >= _permission_rank(required_scope)
 
 
-def _allowed_permission_scopes(required_scope: str | None) -> list[str]:
-	return [
-		scope
-		for scope in ("observe", "plan", "execute")
-		if _scope_satisfies(scope, required_scope)
-	]
-
-
-def _format_permission_scope(scope: str | None) -> str:
-	return (scope or "unset").capitalize()
-
-
-def _should_request_execute_for_accepted_continuation(
-	model: dict[str, Any], semantic_context_flags: dict[str, Any] | None
-) -> bool:
-	return bool(
-		model.get("acceptedIntakeSummary")
-		and model["snapshot"].get("permissionScope") == "plan"
-		and model["snapshot"].get("currentStage") == "plan_ready"
-		and isinstance(semantic_context_flags, dict)
-		and semantic_context_flags.get("used_accepted_intake_summary")
-	)
-
-
 def _permission_request(
 	recommended_scope: str,
 	now: str,
@@ -1049,40 +1002,13 @@ def _permission_request(
 		"title": "Permission needed",
 		"body": f"Choose {recommended_scope} if you want Corgi to continue this request.",
 		"recommendedScope": recommended_scope,
-		"allowedScopes": _allowed_permission_scopes(recommended_scope),
+		"allowedScopes": ["observe", "plan", "execute"],
 		"continuationKind": continuation_kind,
 		"pendingPrompt": pending_prompt,
 		"pendingNormalizedText": pending_normalized_text,
 		"foregroundRequestId": foreground_request_id,
 		"requestedAt": now,
 	}
-
-
-def _build_plan_ready_request(
-	model: dict[str, Any], now: str, *, foreground_request_id: str | None = None
-) -> dict[str, Any] | None:
-	summary = model.get("acceptedIntakeSummary")
-	if not isinstance(summary, dict):
-		return None
-	request_id = _next_id("plan-ready")
-	return {
-		"id": request_id,
-		"contextRef": request_id,
-		"title": "Plan ready",
-		"body": "Review the Governor plan, then execute it or add details for a revision.",
-		"requestedAt": now,
-		"foregroundRequestId": foreground_request_id,
-		"acceptedIntakeSummary": summary,
-		"allowedActions": ["execute_plan", "revise_plan"],
-	}
-
-
-def _set_plan_ready_request(
-	model: dict[str, Any], now: str, *, foreground_request_id: str | None = None
-) -> None:
-	model["planReadyRequest"] = _build_plan_ready_request(
-		model, now, foreground_request_id=foreground_request_id
-	)
 
 
 def _recommended_permission_scope(prompt: str) -> str:
@@ -1120,7 +1046,6 @@ def _supersede_pending_permission_request(
 			authoritative=True,
 			now=now,
 			in_response_to_request_id=request_id,
-			presentation_key="permission.superseded",
 		)
 	)
 
@@ -1197,8 +1122,6 @@ def _accept_pending_intake(
 	model["snapshot"]["task"] = envelope["task"]
 	model["snapshot"]["recentArtifacts"] = artifacts
 	model["snapshot"]["permissionScope"] = permission_scope
-	if permission_scope != "plan":
-		model["planReadyRequest"] = None
 	model["activeForegroundRequestId"] = (
 		current_foreground_request_id if permission_scope == "execute" else None
 	)
@@ -1233,29 +1156,6 @@ def _accept_pending_intake(
 		runState="running" if permission_scope == "execute" else "idle",
 		transportState="connected",
 	)
-	if permission_scope == "plan":
-		return _append_governor_dialogue_response(
-			session,
-			(
-				"Plan the accepted request for the user. Keep the reply concise but actionable. "
-				"Use readable prose, not JSON. Normally include: objective, proposed steps, "
-				"likely files or areas involved, risks or unknowns, and execution readiness. "
-				f"Accepted request: {summary}"
-			),
-			now,
-			repo_root=repo_root,
-			request_id=request_id,
-			turn_type=turn_type,
-			semantic_input_version=semantic_input_version,
-			semantic_summary_ref=semantic_summary_ref,
-			semantic_context_flags=semantic_context_flags,
-			semantic_route_type=semantic_route_type,
-			semantic_confidence=semantic_confidence,
-			semantic_block_reason=semantic_block_reason,
-			semantic_paraphrase=semantic_paraphrase,
-			semantic_normalized_text=semantic_normalized_text or summary,
-			result_stage="plan_ready",
-		)
 	return True
 
 
@@ -1355,7 +1255,6 @@ def handle_submit_prompt(
 			"The active session changed before this request was applied. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.session_changed",
 		)
 		return
 	prompt = trim_text(text)
@@ -1370,21 +1269,7 @@ def handle_submit_prompt(
 		return
 
 	semantic_prompt = trim_text(normalized_text) or prompt
-	resolved_turn_type = turn_type or (
-		semantic_route_type
-		if semantic_route_type in ("governor_dialogue", "governed_work_intent")
-		else None
-	)
-	if resolved_turn_type not in ("governor_dialogue", "governed_work_intent"):
-		_append_error(
-			model,
-			"Semantic route required",
-			"The controller must classify this prompt before dispatch.",
-			now,
-			in_response_to_request_id=request_id,
-			presentation_key="error.semantic_route_required",
-		)
-		return
+	resolved_turn_type = turn_type or _classify_turn(semantic_prompt)
 	if request_id is not None:
 		model["activeForegroundRequestId"] = request_id
 	if resolved_turn_type == "governor_dialogue":
@@ -1433,8 +1318,6 @@ def handle_submit_prompt(
 						semantic_normalized_text=semantic_prompt,
 						in_response_to_request_id=request_id,
 					),
-					presentation_key="permission.needed",
-					presentation_args={"scope": "observe"},
 				)
 			)
 			_refresh_snapshot(
@@ -1478,73 +1361,6 @@ def handle_submit_prompt(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=semantic_prompt,
-			result_stage=(
-				"plan_ready"
-				if model["snapshot"].get("currentStage") == "plan_ready"
-				and model.get("acceptedIntakeSummary")
-				else "dialogue_ready"
-			),
-		)
-		return
-
-	if _should_request_execute_for_accepted_continuation(model, semantic_context_flags):
-		_append_user_turn(
-			model,
-			now,
-			title="Prompt submitted",
-			body=prompt,
-			turn_type=resolved_turn_type,
-			semantic_input_version=semantic_input_version,
-			semantic_summary_ref=semantic_summary_ref,
-			semantic_context_flags=semantic_context_flags,
-			semantic_route_type=semantic_route_type,
-			semantic_confidence=semantic_confidence,
-			semantic_block_reason=semantic_block_reason,
-			semantic_paraphrase=paraphrase,
-			semantic_normalized_text=semantic_prompt,
-			in_response_to_request_id=request_id,
-		)
-		permission_request = _permission_request(
-			"execute",
-			now,
-			continuation_kind="intake_acceptance",
-			pending_prompt=prompt,
-			pending_normalized_text=semantic_prompt,
-			foreground_request_id=request_id,
-		)
-		model["activeClarification"] = None
-		model["snapshot"]["pendingPermissionRequest"] = permission_request
-		model["snapshot"]["pendingInterrupt"] = None
-		model["feed"].append(
-			_feed_item(
-				"permission_request",
-				permission_request["title"],
-				permission_request["body"],
-				authoritative=True,
-				now=now,
-				**_semantic_provenance(
-					turn_type=resolved_turn_type,
-					semantic_input_version=semantic_input_version,
-					semantic_summary_ref=semantic_summary_ref,
-					semantic_context_flags=semantic_context_flags,
-					semantic_route_type=semantic_route_type,
-					semantic_confidence=semantic_confidence,
-					semantic_block_reason=semantic_block_reason,
-					semantic_paraphrase=paraphrase,
-					semantic_normalized_text=semantic_prompt,
-					in_response_to_request_id=request_id,
-				),
-				presentation_key="permission.needed",
-				presentation_args={"scope": "execute"},
-			)
-		)
-		_refresh_snapshot(
-			model,
-			now,
-			currentActor="orchestration",
-			currentStage="permission_needed",
-			runState="idle",
-			transportState="connected",
 		)
 		return
 
@@ -1595,7 +1411,6 @@ def handle_submit_prompt(
 		)
 	)
 	model["acceptedIntakeSummary"] = None
-	model["planReadyRequest"] = None
 	model["snapshot"]["pendingInterrupt"] = None
 	model["snapshot"]["recentArtifacts"] = []
 	model["snapshot"]["task"] = envelope.get("task_hint") or summarize(semantic_prompt, 60)
@@ -1628,7 +1443,6 @@ def handle_submit_prompt(
 					semantic_normalized_text=semantic_prompt,
 					in_response_to_request_id=request_id,
 				),
-				presentation_key="clarification.requested",
 			)
 		)
 		_refresh_snapshot(
@@ -1697,8 +1511,6 @@ def handle_submit_prompt(
 				semantic_normalized_text=semantic_prompt,
 				in_response_to_request_id=request_id,
 			),
-			presentation_key="permission.needed",
-			presentation_args={"scope": required_scope},
 		)
 	)
 	_refresh_snapshot(
@@ -1739,7 +1551,6 @@ def handle_answer_clarification(
 			"The active session changed before this clarification was applied. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.session_changed",
 		)
 		return
 	intake_ref = session["meta"].get("activeIntakeRef")
@@ -1761,8 +1572,6 @@ def handle_answer_clarification(
 			"The clarification changed before this answer was applied. Refresh and answer the current clarification instead.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.stale_context",
-			presentation_args={"kind": "clarification"},
 		)
 		return
 
@@ -1877,8 +1686,6 @@ def handle_answer_clarification(
 				semantic_normalized_text=semantic_answer,
 				in_response_to_request_id=request_id,
 			),
-			presentation_key="permission.needed",
-			presentation_args={"scope": required_scope},
 		)
 	)
 	_refresh_snapshot(
@@ -1918,7 +1725,6 @@ def handle_set_permission_scope(
 			"The active session changed before this permission choice was applied. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.session_changed",
 		)
 		return
 	raw_text = trim_text(text or "")
@@ -1951,8 +1757,6 @@ def handle_set_permission_scope(
 			"The permission request changed before this action was applied. Refresh and confirm the current permission surface.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.stale_context",
-			presentation_args={"kind": "permission"},
 		)
 		return
 	if permission_scope not in {"observe", "plan", "execute"}:
@@ -1964,36 +1768,11 @@ def handle_set_permission_scope(
 			in_response_to_request_id=request_id,
 		)
 		return
-	pending_permission = (
-		model["snapshot"].get("pendingPermissionRequest")
-		if isinstance(model["snapshot"].get("pendingPermissionRequest"), dict)
-		else {}
-	)
-	recommended_scope = pending_permission.get("recommendedScope") or "plan"
-	if not _scope_satisfies(permission_scope, recommended_scope):
-		_append_error(
-			model,
-			"Permission scope too low",
-			f"Choose {_format_permission_scope(recommended_scope)} or higher to continue this request.",
-			now,
-			in_response_to_request_id=request_id,
-			presentation_key="error.permission_scope_too_low",
-			presentation_args={
-				"requiredScope": recommended_scope,
-				"selectedScope": permission_scope,
-			},
-		)
-		return
 	continuation_kind = (
 		model["snapshot"]["pendingPermissionRequest"].get("continuationKind")
 		if isinstance(model["snapshot"].get("pendingPermissionRequest"), dict)
 		else None
 	)
-	continuation_request_id = (
-		model["snapshot"]["pendingPermissionRequest"].get("foregroundRequestId")
-		if isinstance(model["snapshot"].get("pendingPermissionRequest"), dict)
-		else None
-	) or model.get("activeForegroundRequestId") or request_id
 	if continuation_kind == "governor_dialogue":
 		_apply_governor_dialogue_permission(
 			session,
@@ -2012,46 +1791,12 @@ def handle_set_permission_scope(
 			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
 		)
 		return
-	if continuation_kind == "plan_execution":
-		model["snapshot"]["permissionScope"] = permission_scope
-		model["snapshot"]["pendingPermissionRequest"] = None
-		model["snapshot"]["pendingInterrupt"] = None
-		model["snapshot"]["currentActor"] = "governor"
-		model["snapshot"]["currentStage"] = "running"
-		model["snapshot"]["runState"] = "running"
-		model["snapshot"]["transportState"] = "connected"
-		model["snapshot"]["snapshotFreshness"] = {"receivedAt": now}
-		model["activeClarification"] = None
-		model["activeForegroundRequestId"] = continuation_request_id
-		model["planReadyRequest"] = None
-		model["feed"].append(
-			_feed_item(
-				"system_status",
-				"Permission confirmed: Execute",
-				"Execute permission is active for this accepted plan.",
-				authoritative=True,
-				now=now,
-				**_semantic_provenance(
-					turn_type="permission_action",
-					semantic_input_version=semantic_input_version,
-					semantic_summary_ref=semantic_summary_ref,
-					semantic_context_flags=semantic_context_flags,
-					semantic_route_type=semantic_route_type,
-					semantic_confidence=semantic_confidence,
-					semantic_block_reason=semantic_block_reason,
-					semantic_paraphrase=semantic_paraphrase,
-					semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
-					in_response_to_request_id=continuation_request_id,
-				),
-			)
-		)
-		return
 	_accept_pending_intake(
 		session,
 		now,
 		repo_root=repo_root,
 		permission_scope=permission_scope,
-		request_id=continuation_request_id,
+		request_id=request_id,
 		turn_type="permission_action",
 		semantic_input_version=semantic_input_version,
 		semantic_summary_ref=semantic_summary_ref,
@@ -2061,183 +1806,6 @@ def handle_set_permission_scope(
 		semantic_block_reason=semantic_block_reason,
 		semantic_paraphrase=semantic_paraphrase,
 		semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
-	)
-
-
-def handle_execute_plan(
-	session: dict[str, Any],
-	*,
-	repo_root: str | Path | None = None,
-	session_ref: str | None = None,
-	request_id: str | None = None,
-	context_ref: str | None = None,
-) -> None:
-	now = utc_now()
-	model = session["model"]
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
-		_append_error(
-			model,
-			"Session changed",
-			"The active session changed before this plan action was applied. Refresh and try again.",
-			now,
-			in_response_to_request_id=request_id,
-			presentation_key="error.session_changed",
-		)
-		return
-	plan_ready = model.get("planReadyRequest")
-	if not isinstance(plan_ready, dict):
-		_append_error(
-			model,
-			"No plan is ready",
-			"There is no current plan checkpoint to execute.",
-			now,
-			in_response_to_request_id=request_id,
-		)
-		return
-	if not _context_matches(plan_ready.get("contextRef"), context_ref):
-		_append_error(
-			model,
-			"Plan changed",
-			"The plan checkpoint changed before this action was applied. Refresh and use the current plan action.",
-			now,
-			in_response_to_request_id=request_id,
-			presentation_key="error.stale_context",
-			presentation_args={"kind": "plan"},
-		)
-		return
-	if not _scope_satisfies(_current_permission_scope(model), "execute"):
-		summary = plan_ready.get("acceptedIntakeSummary") or model.get("acceptedIntakeSummary") or {}
-		summary_body = trim_text(summary.get("body") if isinstance(summary, dict) else "") or "Accepted plan"
-		permission_request = _permission_request(
-			"execute",
-			now,
-			continuation_kind="plan_execution",
-			pending_prompt=summary_body,
-			pending_normalized_text=summary_body,
-			foreground_request_id=request_id or plan_ready.get("foregroundRequestId"),
-		)
-		model["snapshot"]["pendingPermissionRequest"] = permission_request
-		model["snapshot"]["pendingInterrupt"] = None
-		model["activeClarification"] = None
-		model["activeForegroundRequestId"] = request_id or plan_ready.get("foregroundRequestId")
-		model["feed"].append(
-			_feed_item(
-				"permission_request",
-				permission_request["title"],
-				permission_request["body"],
-				authoritative=True,
-				now=now,
-				turn_type="permission_action",
-				in_response_to_request_id=request_id,
-				presentation_key="permission.needed",
-				presentation_args={"scope": "execute"},
-			)
-		)
-		_refresh_snapshot(
-			model,
-			now,
-			currentActor="orchestration",
-			currentStage="permission_needed",
-			runState="idle",
-			transportState="connected",
-		)
-		return
-	model["snapshot"]["pendingPermissionRequest"] = None
-	model["snapshot"]["pendingInterrupt"] = None
-	model["snapshot"]["permissionScope"] = "execute"
-	model["activeForegroundRequestId"] = request_id or plan_ready.get("foregroundRequestId")
-	model["planReadyRequest"] = None
-	model["feed"].append(
-		_feed_item(
-			"system_status",
-			"Execution started",
-			"Corgi is starting execution for the accepted plan.",
-			authoritative=True,
-			now=now,
-			turn_type="permission_action",
-			in_response_to_request_id=request_id,
-		)
-	)
-	_refresh_snapshot(
-		model,
-		now,
-		currentActor="governor",
-		currentStage="running",
-		runState="running",
-		transportState="connected",
-	)
-
-
-def handle_revise_plan(
-	session: dict[str, Any],
-	text: str,
-	*,
-	repo_root: str | Path | None = None,
-	session_ref: str | None = None,
-	request_id: str | None = None,
-	context_ref: str | None = None,
-) -> None:
-	now = utc_now()
-	model = session["model"]
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
-		_append_error(
-			model,
-			"Session changed",
-			"The active session changed before this plan revision was applied. Refresh and try again.",
-			now,
-			in_response_to_request_id=request_id,
-			presentation_key="error.session_changed",
-		)
-		return
-	plan_ready = model.get("planReadyRequest")
-	if not isinstance(plan_ready, dict):
-		_append_error(
-			model,
-			"No plan is ready",
-			"There is no current plan checkpoint to revise.",
-			now,
-			in_response_to_request_id=request_id,
-		)
-		return
-	if not _context_matches(plan_ready.get("contextRef"), context_ref):
-		_append_error(
-			model,
-			"Plan changed",
-			"The plan checkpoint changed before this action was applied. Refresh and use the current plan action.",
-			now,
-			in_response_to_request_id=request_id,
-			presentation_key="error.stale_context",
-			presentation_args={"kind": "plan"},
-		)
-		return
-	prompt = trim_text(text)
-	if not prompt:
-		_append_error(
-			model,
-			"Revision details required",
-			"Add the details you want the Governor to include in the plan.",
-			now,
-			in_response_to_request_id=request_id,
-		)
-		return
-	_append_user_turn(
-		model,
-		now,
-		title="Plan revision",
-		body=prompt,
-		turn_type="governor_dialogue",
-		in_response_to_request_id=request_id,
-	)
-	model["activeForegroundRequestId"] = request_id or plan_ready.get("foregroundRequestId")
-	_append_governor_dialogue_response(
-		session,
-		f"Revise the current accepted plan with this user guidance: {prompt}",
-		now,
-		repo_root=repo_root,
-		request_id=request_id,
-		turn_type="governor_dialogue",
-		semantic_normalized_text=prompt,
-		result_stage="plan_ready",
 	)
 
 
@@ -2258,7 +1826,6 @@ def handle_decline_permission(
 			"The active session changed before this permission request was declined. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.session_changed",
 		)
 		return
 	if not model["snapshot"].get("pendingPermissionRequest"):
@@ -2283,17 +1850,9 @@ def handle_decline_permission(
 			"The permission request changed before this action was applied. Refresh and confirm the current permission surface.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.stale_context",
-			presentation_args={"kind": "permission"},
 		)
 		return
 
-	pending_permission = model["snapshot"].get("pendingPermissionRequest")
-	declined_plan_execution = (
-		isinstance(pending_permission, dict)
-		and pending_permission.get("continuationKind") == "plan_execution"
-		and isinstance(model.get("planReadyRequest"), dict)
-	)
 	model["snapshot"]["pendingPermissionRequest"] = None
 	model["activeForegroundRequestId"] = None
 	model["feed"].append(
@@ -2304,14 +1863,13 @@ def handle_decline_permission(
 			authoritative=True,
 			now=now,
 			in_response_to_request_id=request_id,
-			presentation_key="permission.declined",
 		)
 	)
 	_refresh_snapshot(
 		model,
 		now,
-		currentActor="governor" if declined_plan_execution else "orchestration",
-		currentStage="plan_ready" if declined_plan_execution else "permission_declined",
+		currentActor="orchestration",
+		currentStage="permission_declined",
 		runState="idle",
 		transportState="connected",
 	)
@@ -2343,7 +1901,6 @@ def handle_interrupt(
 			"The active session changed before this stop request was applied. Refresh and try again.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.session_changed",
 		)
 		return
 	raw_text = trim_text(text or "")
@@ -2373,8 +1930,6 @@ def handle_interrupt(
 			"The interruptible run state changed before this stop request was applied. Refresh and try again if stop is still available.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.stale_context",
-			presentation_args={"kind": "interrupt"},
 		)
 		return
 	model["snapshot"]["pendingInterrupt"] = _request_card(
@@ -2456,7 +2011,6 @@ def handle_reconnect(
 				authoritative=True,
 				now=now,
 				in_response_to_request_id=request_id,
-				presentation_key="session.switched",
 			)
 		)
 		_refresh_snapshot(model, now, transportState="connected")
@@ -2471,7 +2025,6 @@ def handle_reconnect(
 			"The current session is already connected and fresh.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="reconnect.not_needed",
 		)
 		return
 	model["feed"].append(
@@ -2515,7 +2068,6 @@ def dispatch_session_action(
 			"The same controller request was already handled. Refresh and send a new action if you still want to proceed.",
 			now,
 			in_response_to_request_id=request_id,
-			presentation_key="error.duplicate_request",
 		)
 		save_session(session, repo_root=repo_root)
 		return public_model(session)
@@ -2574,23 +2126,6 @@ def dispatch_session_action(
 	elif command == "decline_permission":
 		handle_decline_permission(
 			session,
-			repo_root=repo_root,
-			session_ref=session_ref,
-			request_id=request_id,
-			context_ref=context_ref,
-		)
-	elif command == "execute_plan":
-		handle_execute_plan(
-			session,
-			repo_root=repo_root,
-			session_ref=session_ref,
-			request_id=request_id,
-			context_ref=context_ref,
-		)
-	elif command == "revise_plan":
-		handle_revise_plan(
-			session,
-			text or "",
 			repo_root=repo_root,
 			session_ref=session_ref,
 			request_id=request_id,
@@ -2684,15 +2219,6 @@ def build_parser() -> argparse.ArgumentParser:
 	decline.add_argument("--request-id")
 	decline.add_argument("--session-ref")
 	decline.add_argument("--context-ref")
-	execute_plan = subparsers.add_parser("execute_plan")
-	execute_plan.add_argument("--request-id")
-	execute_plan.add_argument("--session-ref")
-	execute_plan.add_argument("--context-ref")
-	revise_plan = subparsers.add_parser("revise_plan")
-	revise_plan.add_argument("--text", required=True)
-	revise_plan.add_argument("--request-id")
-	revise_plan.add_argument("--session-ref")
-	revise_plan.add_argument("--context-ref")
 	interrupt = subparsers.add_parser("interrupt_run")
 	interrupt.add_argument("--text")
 	interrupt.add_argument("--request-id")

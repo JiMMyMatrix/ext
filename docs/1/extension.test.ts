@@ -6,11 +6,8 @@ import * as vscode from 'vscode';
 import {
 	applyModelAction,
 	createInitialModel,
-	type ExecutionWindowModel,
 	getArtifactById,
 	isSnapshotStale,
-	type SemanticActionName,
-	type SemanticRouteType,
 } from '../phase1Model';
 import {
 	createExecutionTransport,
@@ -27,27 +24,14 @@ import {
 	EXECUTION_WINDOW_CONTAINER_ID,
 	EXECUTION_WINDOW_VIEW_ID,
 	getExecutionWindowHtml,
-	OPEN_EXECUTION_WINDOW_COMMAND_ID,
 } from '../executionWindowPanel';
 
 const PACKAGE_JSON_PATH = path.resolve(__dirname, '../../package.json');
 const LAUNCH_JSON_PATH = path.resolve(__dirname, '../../.vscode/launch.json');
 const EXTENSION_TS_PATH = path.resolve(__dirname, '../../src/extension.ts');
-const DEVELOPMENT_SESSION_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/developmentSession.ts'
-);
 const EXECUTION_WINDOW_PANEL_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionWindowPanel.ts'
-);
-const EXECUTION_TRANSPORT_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/executionTransport.ts'
-);
-const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
-	__dirname,
-	'../../src/test/fixtures/semantic-routing.json'
 );
 
 function loadPackageJson(): Record<string, unknown> {
@@ -79,97 +63,28 @@ function semanticDecision(
 	};
 }
 
-type SemanticRoutingFixture = {
-	name: string;
-	input: string;
-	session_state: 'idle' | 'active_clarification' | 'pending_permission' | 'running';
-	expected_route_type: SemanticRouteType;
-	expected_action_name: SemanticActionName;
-	expected_outcome:
-		| 'submit_prompt'
-		| 'answer_clarification'
-		| 'interrupt_run'
-		| 'block';
-	notes: string;
-};
-
-function semanticFixtureModel(state: SemanticRoutingFixture['session_state']): ExecutionWindowModel {
-	const model = createInitialModel('2026-04-10T10:00:00.000Z');
-	if (state === 'active_clarification') {
-		return {
-			...model,
-			activeClarification: {
-				id: 'clarification-test',
-				contextRef: 'clarification-test',
-				title: 'Clarification required',
-				body: 'What kind of analysis do you want?',
-				requestedAt: '2026-04-10T10:00:00.000Z',
-				options: [
-					{
-						id: 'architecture',
-						label: 'Architecture',
-						answer: 'Focus on architecture.',
-					},
-				],
-				allowFreeText: true,
-			},
-		};
-	}
-	if (state === 'pending_permission') {
-		return {
-			...model,
-			snapshot: {
-				...model.snapshot,
-				currentActor: 'orchestration',
-				currentStage: 'permission_needed',
-				pendingPermissionRequest: {
-					id: 'permission-test',
-					contextRef: 'permission-test',
-					title: 'Permission needed',
-					body: 'Choose Plan to continue this request.',
-					requestedAt: '2026-04-10T10:00:00.000Z',
-					recommendedScope: 'plan',
-					allowedScopes: ['observe', 'plan', 'execute'],
-				},
-			},
-		};
-	}
-	if (state === 'running') {
-		return {
-			...model,
-			snapshot: {
-				...model.snapshot,
-				currentActor: 'governor',
-				currentStage: 'running',
-				runState: 'running',
-			},
-		};
-	}
-	return model;
-}
-
 suite('Corgi Webview UX', () => {
-	test('ships sidebar webview contributions and a focused open command without chat participants', () => {
+	test('ships sidebar webview contributions without chat participants or open command', () => {
 		const manifest = loadPackageJson();
 		const contributes = manifest.contributes as Record<string, unknown>;
 		const activationEvents = manifest.activationEvents as string[];
 		const viewsContainers = contributes.viewsContainers as Record<string, unknown>;
 		const views = contributes.views as Record<string, unknown>;
-		const commands = contributes.commands as Array<Record<string, unknown>>;
 
 		assert.ok(Array.isArray(activationEvents));
 		assert.ok(viewsContainers.activitybar);
 		assert.ok(views[EXECUTION_WINDOW_CONTAINER_ID]);
 		assert.strictEqual(contributes.chatParticipants, undefined);
-		assert.ok(commands.some((command) => command.command === OPEN_EXECUTION_WINDOW_COMMAND_ID));
-		assert.ok(activationEvents.includes('onStartupFinished'));
-		assert.ok(activationEvents.includes(`onCommand:${OPEN_EXECUTION_WINDOW_COMMAND_ID}`));
+		assert.strictEqual(contributes.commands, undefined);
 		assert.ok(!activationEvents.some((event) => event.startsWith('onChatParticipant:')));
 	});
 
 	test('opens the Corgi sidebar view without throwing', async () => {
 		await assert.doesNotReject(async () => {
-			await vscode.commands.executeCommand(OPEN_EXECUTION_WINDOW_COMMAND_ID);
+			await vscode.commands.executeCommand(
+				`workbench.view.extension.${EXECUTION_WINDOW_CONTAINER_ID}`
+			);
+			await vscode.commands.executeCommand(`${EXECUTION_WINDOW_VIEW_ID}.focus`);
 		});
 	});
 
@@ -192,28 +107,12 @@ suite('Corgi Webview UX', () => {
 
 	test('development resets no longer depend on launch env flags', () => {
 		const extensionSource = fs.readFileSync(EXTENSION_TS_PATH, 'utf8');
-		const developmentSessionSource = fs.readFileSync(
-			DEVELOPMENT_SESSION_TS_PATH,
-			'utf8'
-		);
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 
-		assert.ok(
-			developmentSessionSource.includes(
-				'context.extensionMode === vscode.ExtensionMode.Development'
-			)
-		);
-		assert.ok(developmentSessionSource.includes('ui_session.json'));
-		assert.ok(developmentSessionSource.includes('resolveExecutionTransportTarget'));
-		assert.ok(extensionSource.includes('scheduleDevelopmentExecutionWindowOpen'));
-		assert.ok(extensionSource.includes('void provider.openView().catch'));
-		assert.ok(extensionSource.includes('resetDevelopmentSessionState(context);'));
-		assert.ok(webviewSource.includes('resetDevelopmentSessionState(this.context);'));
+		assert.ok(extensionSource.includes('context.extensionMode !== vscode.ExtensionMode.Development'));
 		assert.ok(webviewSource.includes('return context.extensionMode === vscode.ExtensionMode.Development;'));
 		assert.ok(!extensionSource.includes('CORGI_RESET_DEV_SESSION'));
-		assert.ok(!developmentSessionSource.includes('CORGI_RESET_DEV_SESSION'));
 		assert.ok(!extensionSource.includes('CORGI_RESET_WEBVIEW_STATE'));
-		assert.ok(!developmentSessionSource.includes('CORGI_RESET_WEBVIEW_STATE'));
 		assert.ok(!webviewSource.includes('CORGI_RESET_WEBVIEW_STATE'));
 	});
 
@@ -269,96 +168,6 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('background: transparent;'));
 	});
 
-	test('permission continuation collapses progress into a specific wait state', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
-
-		assert.ok(webviewSource.includes('function setForegroundSingleBullet(label, state, hint) {'));
-		assert.ok(webviewSource.includes('Waiting for a reply from the Governor...'));
-		assert.ok(webviewSource.includes("scope === 'execute'"));
-		assert.ok(webviewSource.includes('Starting execution...'));
-		assert.ok(!webviewSource.includes('Applying your permission choice...'));
-		assert.ok(
-			!webviewSource.includes(
-				"appendForegroundBullet('Continuing request', 'active', 'Applying your permission choice...')"
-			)
-		);
-	});
-
-	test('permission action surface stays hidden until authoritative state changes', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
-
-		assert.ok(webviewSource.includes('ui.pendingPermissionContextRef ='));
-		assert.ok(webviewSource.includes('pendingPermissionHiddenAt'));
-		assert.ok(webviewSource.includes('function retainOptimisticHidesUntilAuthoritativeChange()'));
-		assert.ok(!webviewSource.includes('const maxHideMs'));
-		assert.ok(webviewSource.includes('Permission choice sent. Waiting for a reply from the Governor...'));
-		assert.ok(webviewSource.includes('data-action="refresh_state"'));
-		assert.ok(webviewSource.includes('authoritativePermissionContext !== ui.pendingPermissionContextRef'));
-		assert.ok(!webviewSource.includes('pendingPermissionRequest?.contextRef !=='));
-	});
-
-	test('plan-ready checkpoint exposes execute and revision actions', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
-
-		assert.ok(webviewSource.includes('function isPlanReady(snapshot) {'));
-		assert.ok(webviewSource.includes('Plan ready'));
-		assert.ok(webviewSource.includes('data-action="execute_plan"'));
-		assert.ok(webviewSource.includes('data-action="revise_plan"'));
-		assert.ok(webviewSource.includes('pendingPermissionContextRef'));
-		assert.ok(webviewSource.includes('planRevisionMode'));
-		assert.ok(webviewSource.includes("type: 'execute_plan'"));
-		assert.ok(webviewSource.includes("type: 'revise_plan'"));
-		assert.ok(webviewSource.includes('Send to Governor'));
-	});
-
-	test('presentation mapping keeps non-governor copy controller-owned', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
-
-		assert.ok(webviewSource.includes('function displayCopy(item) {'));
-		assert.ok(webviewSource.includes("case 'permission.needed':"));
-		assert.ok(webviewSource.includes("case 'error.semantic_route_required':"));
-		assert.ok(webviewSource.includes("case 'error.stale_context':"));
-		assert.ok(
-			webviewSource.includes(
-				"if (item.type === 'actor_event' && item.source_actor === 'governor') {"
-			)
-		);
-		assert.ok(webviewSource.includes('const copy = displayCopy(item);'));
-		assert.ok(webviewSource.includes("escapeHtml(copy.body || copy.title)"));
-
-		const permissionModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
-			type: 'submit_prompt',
-			text: 'what happened?',
-			semantic_route_type: 'governor_dialogue',
-			request_id: 'req-dialogue',
-			now: '2026-04-10T10:00:05.000Z',
-		});
-		const permissionItem = permissionModel.feed.find(
-			(item) => item.type === 'permission_request'
-		);
-		assert.strictEqual(permissionItem?.presentation_key, 'permission.needed');
-		assert.strictEqual(permissionItem?.presentation_args?.scope, 'observe');
-
-		const clarificationModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
-			type: 'submit_prompt',
-			text: 'analyze the repo',
-			semantic_route_type: 'governed_work_intent',
-			request_id: 'req-analyze',
-			now: '2026-04-10T10:00:05.000Z',
-		});
-		const failedClarificationModel = applyModelAction(clarificationModel, {
-			type: 'answer_clarification',
-			text: 'architecture',
-			context_ref: 'stale-context',
-			request_id: 'req-stale',
-			now: '2026-04-10T10:00:10.000Z',
-		});
-		const errorItem = failedClarificationModel.feed[failedClarificationModel.feed.length - 1];
-		assert.strictEqual(errorItem.type, 'error');
-		assert.strictEqual(errorItem.presentation_key, 'error.stale_context');
-		assert.strictEqual(errorItem.presentation_args?.kind, 'clarification');
-	});
-
 	test('transport selection resolves the real orchestration workspace when available', () => {
 		const target = resolveExecutionTransportTarget(
 			vscode.ExtensionMode.Development,
@@ -371,21 +180,6 @@ suite('Corgi Webview UX', () => {
 			assert.ok(target.scriptPath.endsWith('orchestration/scripts/orchestrate.py'));
 			assert.strictEqual(target.source, 'workspace');
 		}
-	});
-
-	test('transport prefers configured or Homebrew Python before system python', () => {
-		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
-		const testRunnerSource = fs.readFileSync(
-			path.resolve(__dirname, '../../scripts/run-orchestration-tests.cjs'),
-			'utf8'
-		);
-
-		for (const source of [transportSource, testRunnerSource]) {
-			assert.ok(source.includes('CORGI_PYTHON'));
-			assert.ok(source.includes('/opt/homebrew/bin/python3'));
-			assert.ok(source.includes('/usr/local/bin/python3'));
-		}
-		assert.ok(transportSource.includes('this.pythonExecutable'));
 	});
 
 	test('transport selection falls back to the development extension repo when no workspace is open', async () => {
@@ -451,7 +245,6 @@ suite('Corgi Webview UX', () => {
 		const runningModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'What is happening?',
-			semantic_route_type: 'governor_dialogue',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const activeRunModel = {
@@ -532,72 +325,6 @@ suite('Corgi Webview UX', () => {
 			assert.strictEqual(resolution.nextLoopState.exhausted, true);
 			assert.strictEqual(resolution.blockKind, 'needs_disambiguation');
 		}
-	});
-
-	test('semantic routing fixtures resolve deterministically without live model calls', () => {
-		const fixtures = JSON.parse(
-			fs.readFileSync(SEMANTIC_ROUTING_FIXTURE_PATH, 'utf8')
-		) as SemanticRoutingFixture[];
-
-		assert.ok(fixtures.length >= 14);
-		for (const fixture of fixtures) {
-			const decision = semanticDecision({
-				route_type: fixture.expected_route_type,
-				action_name: fixture.expected_action_name,
-				normalized_text: fixture.input,
-				paraphrase: fixture.notes,
-				confidence: fixture.expected_route_type === 'block' ? 'low' : 'high',
-				reason:
-					fixture.expected_route_type === 'block'
-						? 'mixed_or_ambiguous'
-						: 'fixture_expected_route',
-			});
-			const resolution = resolveSemanticRouting(
-				semanticFixtureModel(fixture.session_state),
-				fixture.input,
-				decision,
-				undefined,
-				`semantic-summary:${fixture.name}`,
-				semanticContextFlags()
-			);
-
-			if (fixture.expected_outcome === 'block') {
-				assert.strictEqual(
-					resolution.kind,
-					'block',
-					`${fixture.name} should block`
-				);
-				continue;
-			}
-
-			assert.strictEqual(
-				resolution.kind,
-				'dispatch',
-				`${fixture.name} should dispatch`
-			);
-			if (resolution.kind === 'dispatch') {
-				assert.strictEqual(
-					resolution.action.type,
-					fixture.expected_outcome,
-					fixture.name
-				);
-				assert.strictEqual(
-					resolution.action.semantic_route_type,
-					fixture.expected_route_type,
-					fixture.name
-				);
-			}
-		}
-	});
-
-	test('semantic routing fixtures are not runtime lookup data', () => {
-		const runtimeSources = [
-			fs.readFileSync(path.resolve(__dirname, '../../src/phase1Model.ts'), 'utf8'),
-			fs.readFileSync(path.resolve(__dirname, '../../src/semanticSidecar.ts'), 'utf8'),
-			fs.readFileSync(path.resolve(__dirname, '../../src/executionWindowPanel.ts'), 'utf8'),
-		].join('\n');
-
-		assert.ok(!runtimeSources.includes('semantic-routing.json'));
 	});
 
 	test('semantic sidecar uses the model runner for obvious governed work requests', async () => {
@@ -686,7 +413,6 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('data-permission-scope'));
 		assert.ok(html.includes('promptHistory: []'));
 		assert.ok(html.includes("event.key === 'ArrowUp'"));
-		assert.ok(html.includes('const hasActionSurface = Boolean('));
 		assert.ok(html.includes("composerSubmitButton.textContent = busy ? 'Sending...' : mode.buttonLabel;"));
 		assert.ok(!html.includes('request-marker'));
 		assert.ok(!html.includes('renderRequestMarker'));
@@ -705,35 +431,6 @@ suite('Corgi Webview UX', () => {
 			)
 		);
 		assert.ok(html.includes('const shouldResetPersistedState = false;'));
-	});
-
-	test('webview reports structured monitor snapshots without screenshots', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
-		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
-
-		assert.ok(webviewSource.includes("type: 'webview_snapshot'"));
-		assert.ok(webviewSource.includes('corgi_webview_snapshot.json'));
-		assert.ok(webviewSource.includes('removeOldWebviewSnapshotFiles'));
-		assert.ok(webviewSource.includes("filename.startsWith('corgi_webview_snapshot')"));
-		assert.ok(!webviewSource.includes('corgi_webview_snapshot.txt'));
-		assert.ok(webviewSource.includes('this.context.extensionMode === vscode.ExtensionMode.Development'));
-		assert.ok(webviewSource.includes('this.workspaceRoot ?? this.context.extensionUri'));
-		assert.ok(webviewSource.includes('monitorSessionStartedAt'));
-		assert.ok(webviewSource.includes('shouldReplaceWebviewSnapshot'));
-		assert.ok(webviewSource.includes('isLatestWebviewSnapshot'));
-		assert.ok(webviewSource.includes('existing.monitorSessionStartedAt === undefined'));
-		assert.ok(webviewSource.includes('candidateSession < existingSession'));
-		assert.ok(webviewSource.includes('candidateRenderedAt >= existingRenderedAt'));
-		assert.ok(html.includes('function collectWebviewSnapshot(reason)'));
-		assert.ok(html.includes('function cloneForSnapshot(value)'));
-		assert.ok(html.includes("type: 'webview_snapshot'"));
-		assert.ok(html.includes('messages: collectTextRows(feed'));
-		assert.ok(html.includes('actions: collectTextRows(actionBand'));
-		assert.ok(html.includes('model: {'));
-		assert.ok(html.includes('feed: cloneForSnapshot(feedItems)'));
-		assert.ok(html.includes('activeClarification: cloneForSnapshot(model?.activeClarification)'));
-		assert.ok(!html.toLowerCase().includes('screenshot'));
-		assert.ok(!html.includes('toDataURL'));
 	});
 
 	test('webview can reset persisted state for development launches', () => {
@@ -759,28 +456,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!html.includes('Branch: '));
 	});
 
-	test('plan-ready header stays calm even after snapshot freshness ages', () => {
-		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
-
-		assert.ok(html.includes('model?.planReadyRequest'));
-		assert.ok(html.includes("return 'Plan ready';"));
-		assert.ok(html.includes("return 'is-ready';"));
-		assert.ok(html.includes('statusDotClass(snapshot, stale)'));
-	});
-
-	test('active clarification keeps the composer answerable while progress is live', () => {
-		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
-
-		assert.ok(html.includes("ui.foregroundRequest.status === 'live'"));
-		assert.ok(html.includes('!model?.activeClarification'));
-		assert.ok(html.includes("buttonLabel: 'Answer'"));
-	});
-
 	test('submit prompt moves the model into clarification state', () => {
 		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
-			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -794,7 +473,6 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Analyze this folder.',
-			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -809,7 +487,6 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(initialModel, {
 			type: 'submit_prompt',
 			text: 'What is the current progress?',
-			semantic_route_type: 'governor_dialogue',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -825,7 +502,6 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(initialModel, {
 			type: 'submit_prompt',
 			text: 'what happen?',
-			semantic_route_type: 'governor_dialogue',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -833,22 +509,6 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(model.activeClarification, undefined);
 		assert.ok(model.snapshot.pendingPermissionRequest);
 		assert.strictEqual(model.snapshot.pendingPermissionRequest?.recommendedScope, 'observe');
-	});
-
-	test('submit prompt without semantic route metadata fails closed', () => {
-		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
-			type: 'submit_prompt',
-			text: 'what happened?',
-			request_id: 'req-missing-route',
-			now: '2026-04-10T10:00:05.000Z',
-		});
-
-		const lastItem = model.feed[model.feed.length - 1];
-		assert.strictEqual(lastItem.type, 'error');
-		assert.strictEqual(lastItem.presentation_key, 'error.semantic_route_required');
-		assert.strictEqual(lastItem.in_response_to_request_id, 'req-missing-route');
-		assert.strictEqual(model.snapshot.pendingPermissionRequest, undefined);
-		assert.strictEqual(model.activeClarification, undefined);
 	});
 
 	test('observe permission resumes the same governor dialogue request', () => {
@@ -927,7 +587,6 @@ suite('Corgi Webview UX', () => {
 		const draftModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
-			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const acceptedModel = applyModelAction(draftModel, {
@@ -941,52 +600,14 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(acceptedModel.snapshot.currentStage, 'permission_needed');
 		assert.strictEqual(acceptedModel.acceptedIntakeSummary, undefined);
 		assert.ok(acceptedModel.snapshot.pendingPermissionRequest);
-		assert.deepStrictEqual(acceptedModel.snapshot.pendingPermissionRequest.allowedScopes, [
-			'plan',
-			'execute',
-		]);
 		assert.strictEqual(acceptedModel.snapshot.permissionScope, 'unset');
 		assert.strictEqual(acceptedModel.activeClarification, undefined);
 	});
 
-	test('weaker permission scope cannot accept a stronger permission request', () => {
-		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
-			type: 'submit_prompt',
-			text: 'Analyze the repo.',
-			semantic_route_type: 'governed_work_intent',
-			request_id: 'req-weaker-submit',
-			now: '2026-04-10T10:00:05.000Z',
-		});
-		const permissionModel = applyModelAction(promptModel, {
-			type: 'answer_clarification',
-			text: 'Focus on architecture, structure, and subsystem boundaries.',
-			context_ref: promptModel.activeClarification?.contextRef,
-			request_id: 'req-weaker-answer',
-			now: '2026-04-10T10:00:10.000Z',
-		});
-		const rejectedModel = applyModelAction(permissionModel, {
-			type: 'set_permission_scope',
-			permission_scope: 'observe',
-			context_ref: permissionModel.snapshot.pendingPermissionRequest?.contextRef,
-			request_id: 'req-weaker-observe',
-			now: '2026-04-10T10:00:15.000Z',
-		});
-
-		assert.strictEqual(rejectedModel.snapshot.permissionScope, 'unset');
-		assert.ok(rejectedModel.snapshot.pendingPermissionRequest);
-		assert.strictEqual(rejectedModel.acceptedIntakeSummary, undefined);
-		const lastItem = rejectedModel.feed[rejectedModel.feed.length - 1];
-		assert.strictEqual(lastItem.type, 'error');
-		assert.strictEqual(lastItem.title, 'Permission scope too low');
-		assert.strictEqual(lastItem.presentation_key, 'error.permission_scope_too_low');
-	});
-
-	test('plan permission accepts intake and returns a Governor planning response', () => {
+	test('plan permission turns the draft into accepted intake artifacts', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
-			semantic_route_type: 'governed_work_intent',
-			request_id: 'req-plan',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const approvalModel = applyModelAction(promptModel, {
@@ -999,159 +620,22 @@ suite('Corgi Webview UX', () => {
 			type: 'set_permission_scope',
 			permission_scope: 'plan',
 			context_ref: approvalModel.snapshot.pendingPermissionRequest?.contextRef,
-			request_id: 'req-permission-click',
 			now: '2026-04-10T10:00:15.000Z',
 		});
 
-		assert.strictEqual(runningModel.snapshot.currentActor, 'governor');
-		assert.strictEqual(runningModel.snapshot.currentStage, 'plan_ready');
-		assert.strictEqual(runningModel.snapshot.runState, 'idle');
+		assert.strictEqual(runningModel.snapshot.currentActor, 'orchestration');
+		assert.strictEqual(runningModel.snapshot.currentStage, 'intake_accepted');
 		assert.strictEqual(runningModel.snapshot.permissionScope, 'plan');
 		assert.ok(runningModel.acceptedIntakeSummary);
-		assert.ok(runningModel.planReadyRequest);
-		assert.strictEqual(runningModel.planReadyRequest.foregroundRequestId, 'req-plan');
-		assert.deepStrictEqual(runningModel.planReadyRequest.allowedActions, [
-			'execute_plan',
-			'revise_plan',
-		]);
 		assert.ok(runningModel.snapshot.recentArtifacts.length >= 2);
 		assert.ok(getArtifactById(runningModel, 'artifact-orchestration-readme'));
 		assert.ok(!runningModel.feed.some((item) => item.type === 'artifact_reference'));
-		const lastItem = runningModel.feed[runningModel.feed.length - 1];
-		assert.strictEqual(lastItem.type, 'actor_event');
-		assert.strictEqual(lastItem.source_actor, 'governor');
-		assert.strictEqual(lastItem.in_response_to_request_id, 'req-plan');
-		assert.match(lastItem.body ?? '', /Plan scope/);
-	});
-
-	test('execute plan action requests execute permission instead of restarting intake', () => {
-		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
-			type: 'submit_prompt',
-			text: 'Analyze the repo.',
-			semantic_route_type: 'governed_work_intent',
-			request_id: 'req-analyze',
-			now: '2026-04-10T10:00:05.000Z',
-		});
-		const clarificationModel = applyModelAction(promptModel, {
-			type: 'answer_clarification',
-			text: 'Focus on bugs, regressions, and architectural risks.',
-			context_ref: promptModel.activeClarification?.contextRef,
-			now: '2026-04-10T10:00:10.000Z',
-		});
-		const planReadyModel = applyModelAction(clarificationModel, {
-			type: 'set_permission_scope',
-			permission_scope: 'plan',
-			context_ref: clarificationModel.snapshot.pendingPermissionRequest?.contextRef,
-			request_id: 'req-plan-click',
-			now: '2026-04-10T10:00:15.000Z',
-		});
-		const continuationModel = applyModelAction(planReadyModel, {
-			type: 'execute_plan',
-			context_ref: planReadyModel.planReadyRequest?.contextRef,
-			request_id: 'req-do-it',
-			now: '2026-04-10T10:00:20.000Z',
-		});
-
-		assert.strictEqual(continuationModel.activeClarification, undefined);
-		assert.strictEqual(continuationModel.snapshot.currentActor, 'orchestration');
-		assert.strictEqual(continuationModel.snapshot.currentStage, 'permission_needed');
-		assert.strictEqual(continuationModel.snapshot.pendingPermissionRequest?.recommendedScope, 'execute');
-		assert.strictEqual(continuationModel.snapshot.pendingPermissionRequest?.foregroundRequestId, 'req-do-it');
-		assert.ok(continuationModel.acceptedIntakeSummary);
-		assert.ok(continuationModel.planReadyRequest);
-		assert.ok(!continuationModel.feed.some((item) => item.type === 'clarification_request' && item.in_response_to_request_id === 'req-do-it'));
-		const lastItem = continuationModel.feed[continuationModel.feed.length - 1];
-		assert.strictEqual(lastItem.type, 'permission_request');
-		assert.strictEqual(lastItem.in_response_to_request_id, 'req-do-it');
-	});
-
-	test('execute plan action with stale context fails closed', () => {
-		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
-			type: 'submit_prompt',
-			text: 'Analyze the repo.',
-			semantic_route_type: 'governed_work_intent',
-			request_id: 'req-analyze',
-			now: '2026-04-10T10:00:05.000Z',
-		});
-		const clarificationModel = applyModelAction(promptModel, {
-			type: 'answer_clarification',
-			text: 'Focus on architecture, structure, and subsystem boundaries.',
-			context_ref: promptModel.activeClarification?.contextRef,
-			now: '2026-04-10T10:00:10.000Z',
-		});
-		const planReadyModel = applyModelAction(clarificationModel, {
-			type: 'set_permission_scope',
-			permission_scope: 'plan',
-			context_ref: clarificationModel.snapshot.pendingPermissionRequest?.contextRef,
-			request_id: 'req-plan-click',
-			now: '2026-04-10T10:00:15.000Z',
-		});
-		const failedModel = applyModelAction(planReadyModel, {
-			type: 'execute_plan',
-			context_ref: 'stale-plan-context',
-			request_id: 'req-stale-execute',
-			now: '2026-04-10T10:00:20.000Z',
-		});
-
-		assert.strictEqual(failedModel.snapshot.currentStage, 'plan_ready');
-		assert.strictEqual(failedModel.snapshot.pendingPermissionRequest, undefined);
-		assert.ok(failedModel.planReadyRequest);
-		const lastItem = failedModel.feed[failedModel.feed.length - 1];
-		assert.strictEqual(lastItem.type, 'error');
-		assert.strictEqual(lastItem.presentation_key, 'error.stale_context');
-	});
-
-	test('plan revision action stays in governor planning mode without starting execution', () => {
-		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
-			type: 'submit_prompt',
-			text: 'Analyze the repo.',
-			semantic_route_type: 'governed_work_intent',
-			request_id: 'req-analyze',
-			now: '2026-04-10T10:00:05.000Z',
-		});
-		const clarificationModel = applyModelAction(promptModel, {
-			type: 'answer_clarification',
-			text: 'Focus on architecture, structure, and subsystem boundaries.',
-			context_ref: promptModel.activeClarification?.contextRef,
-			now: '2026-04-10T10:00:10.000Z',
-		});
-		const planReadyModel = applyModelAction(clarificationModel, {
-			type: 'set_permission_scope',
-			permission_scope: 'plan',
-			context_ref: clarificationModel.snapshot.pendingPermissionRequest?.contextRef,
-			request_id: 'req-plan-click',
-			now: '2026-04-10T10:00:15.000Z',
-		});
-		const revisedModel = applyModelAction(planReadyModel, {
-			type: 'revise_plan',
-			text: 'Also explain the testing risks before execution.',
-			context_ref: planReadyModel.planReadyRequest?.contextRef,
-			request_id: 'req-revise-plan',
-			now: '2026-04-10T10:00:20.000Z',
-		});
-
-		assert.strictEqual(revisedModel.snapshot.permissionScope, 'plan');
-		assert.strictEqual(revisedModel.snapshot.currentActor, 'governor');
-		assert.strictEqual(revisedModel.snapshot.currentStage, 'plan_ready');
-		assert.strictEqual(revisedModel.snapshot.runState, 'idle');
-		assert.strictEqual(revisedModel.snapshot.pendingPermissionRequest, undefined);
-		assert.ok(revisedModel.planReadyRequest);
-		assert.notStrictEqual(
-			revisedModel.planReadyRequest.contextRef,
-			planReadyModel.planReadyRequest?.contextRef
-		);
-		const lastItem = revisedModel.feed[revisedModel.feed.length - 1];
-		assert.strictEqual(lastItem.type, 'actor_event');
-		assert.strictEqual(lastItem.source_actor, 'governor');
-		assert.strictEqual(lastItem.in_response_to_request_id, 'req-revise-plan');
-		assert.match(lastItem.body ?? '', /revise the current plan/i);
 	});
 
 	test('execute permission accepts the draft and marks the session as running', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
-			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const approvalModel = applyModelAction(promptModel, {
@@ -1178,7 +662,6 @@ suite('Corgi Webview UX', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
-			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const permissionModel = applyModelAction(promptModel, {
@@ -1202,7 +685,6 @@ suite('Corgi Webview UX', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
-			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 
@@ -1224,7 +706,6 @@ suite('Corgi Webview UX', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
-			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:05.000Z',
 		});
 		const approvalModel = applyModelAction(promptModel, {
@@ -1236,7 +717,6 @@ suite('Corgi Webview UX', () => {
 		const supersededModel = applyModelAction(approvalModel, {
 			type: 'submit_prompt',
 			text: 'Start over with a quieter transcript.',
-			semantic_route_type: 'governed_work_intent',
 			now: '2026-04-10T10:00:15.000Z',
 		});
 
@@ -1272,7 +752,6 @@ suite('Corgi Webview UX', () => {
 		const model = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Analyze this folder.',
-			semantic_route_type: 'governed_work_intent',
 			request_id: 'corgi-request:test-provenance',
 			now: '2026-04-10T10:00:05.000Z',
 		});
