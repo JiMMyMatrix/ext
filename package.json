@@ -48,7 +48,7 @@
     "lint": "eslint src",
     "test": "mocha --ui tdd --require ./scripts/vscode-node-shim.cjs \"out/test/**/*.test.js\"",
     "test:vscode": "vscode-test",
-    "test:orchestration": "python3 -m unittest discover -s orchestration/tests -p 'test_*.py'"
+    "test:orchestration": "node scripts/run-orchestration-tests.cjs"
   },
   "devDependencies": {
     "@types/vscode": "^1.115.0",

@@ -35,6 +35,23 @@ export type ExecutionTransportTarget =
 			details: string[];
 	  };
 
+function resolvePythonExecutable(): string {
+	const configuredPython = process.env.CORGI_PYTHON?.trim();
+	if (configuredPython) {
+		return configuredPython;
+	}
+
+	if (process.platform === 'darwin') {
+		for (const candidate of ['/opt/homebrew/bin/python3', '/usr/local/bin/python3']) {
+			if (fs.existsSync(candidate)) {
+				return candidate;
+			}
+		}
+	}
+
+	return 'python3';
+}
+
 function orchestrationTarget(
 	rootPath: string,
 	source: 'workspace' | 'extension_dev'
@@ -123,10 +140,12 @@ class UnavailableExecutionTransport implements ExecutionTransport {
 class OrchestrationExecutionTransport implements ExecutionTransport {
 	private readonly scriptPath: string;
 	private readonly cwd: string;
+	private readonly pythonExecutable: string;
 
 	constructor(target: Extract<ExecutionTransportTarget, { kind: 'orchestration' }>) {
 		this.cwd = target.cwd;
 		this.scriptPath = target.scriptPath;
+		this.pythonExecutable = resolvePythonExecutable();
 	}
 
 	public async load(): Promise<ExecutionWindowModel> {
@@ -212,7 +231,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 
 		return new Promise((resolve, reject) => {
 			execFile(
-				'python3',
+				this.pythonExecutable,
 				args,
 				{
 					cwd: this.cwd,

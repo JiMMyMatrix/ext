@@ -36,6 +36,10 @@ const EXECUTION_WINDOW_PANEL_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionWindowPanel.ts'
 );
+const EXECUTION_TRANSPORT_TS_PATH = path.resolve(
+	__dirname,
+	'../../src/executionTransport.ts'
+);
 const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
 	__dirname,
 	'../../src/test/fixtures/semantic-routing.json'
@@ -303,6 +307,21 @@ suite('Corgi Webview UX', () => {
 			assert.ok(target.scriptPath.endsWith('orchestration/scripts/orchestrate.py'));
 			assert.strictEqual(target.source, 'workspace');
 		}
+	});
+
+	test('transport prefers configured or Homebrew Python before system python', () => {
+		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
+		const testRunnerSource = fs.readFileSync(
+			path.resolve(__dirname, '../../scripts/run-orchestration-tests.cjs'),
+			'utf8'
+		);
+
+		for (const source of [transportSource, testRunnerSource]) {
+			assert.ok(source.includes('CORGI_PYTHON'));
+			assert.ok(source.includes('/opt/homebrew/bin/python3'));
+			assert.ok(source.includes('/usr/local/bin/python3'));
+		}
+		assert.ok(transportSource.includes('this.pythonExecutable'));
 	});
 
 	test('transport selection falls back to the development extension repo when no workspace is open', async () => {
