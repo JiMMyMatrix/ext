@@ -10,10 +10,18 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
+    "onCommand:ext.openExecutionWindow",
     "onView:ext.executionWindowView"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "ext.openExecutionWindow",
+        "title": "Corgi: Open Execution Window"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {

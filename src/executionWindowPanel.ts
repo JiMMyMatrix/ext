@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	appendError,
@@ -21,6 +23,7 @@ import {
 
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
 export const EXECUTION_WINDOW_VIEW_ID = 'ext.executionWindowView';
+export const OPEN_EXECUTION_WINDOW_COMMAND_ID = 'ext.openExecutionWindow';
 
 function shouldResetDevelopmentWebviewState(context: vscode.ExtensionContext): boolean {
 	return context.extensionMode === vscode.ExtensionMode.Development;
@@ -28,6 +31,7 @@ function shouldResetDevelopmentWebviewState(context: vscode.ExtensionContext): b
 
 type WebviewMessage =
 	| { type: 'ready' }
+	| { type: 'webview_snapshot'; payload?: unknown }
 	| { type: 'submit_prompt'; text?: string; requestId?: string }
 	| { type: 'answer_clarification'; text?: string; requestId?: string }
 	| {
@@ -54,6 +58,9 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 						retainContextWhenHidden: true,
 					},
 				}
+			),
+			vscode.commands.registerCommand(OPEN_EXECUTION_WINDOW_COMMAND_ID, () =>
+				provider.openView()
 			),
 			provider
 		);
@@ -104,6 +111,13 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		void this.refreshState();
 	}
 
+	public async openView() {
+		await vscode.commands.executeCommand(
+			`workbench.view.extension.${EXECUTION_WINDOW_CONTAINER_ID}`
+		);
+		await vscode.commands.executeCommand(`${EXECUTION_WINDOW_VIEW_ID}.focus`);
+	}
+
 	public dispose() {
 		this.disposeWebviewListeners();
 
@@ -123,6 +137,79 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			type: 'state',
 			payload: this.model,
 		});
+	}
+
+	private shouldWriteWebviewSnapshots(): boolean {
+		return this.context.extensionMode === vscode.ExtensionMode.Development;
+	}
+
+	private monitorRootUri(): vscode.Uri | undefined {
+		return this.workspaceRoot ?? this.context.extensionUri;
+	}
+
+	private writeWebviewSnapshot(payload: unknown) {
+		if (!this.shouldWriteWebviewSnapshots()) {
+			return;
+		}
+
+		const monitorRoot = this.monitorRootUri();
+		if (!monitorRoot) {
+			return;
+		}
+
+		const monitorDir = path.join(
+			monitorRoot.fsPath,
+			'.agent',
+			'orchestration'
+		);
+		const snapshot = {
+			recordedAt: new Date().toISOString(),
+			viewId: EXECUTION_WINDOW_VIEW_ID,
+			payload,
+		};
+		const json = JSON.stringify(snapshot, null, 2);
+		const text = this.webviewSnapshotText(snapshot);
+
+		fs.mkdirSync(monitorDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(monitorDir, 'corgi_webview_snapshot.json'),
+			json,
+			'utf8'
+		);
+		fs.writeFileSync(
+			path.join(monitorDir, 'corgi_webview_snapshot.txt'),
+			text,
+			'utf8'
+		);
+	}
+
+	private webviewSnapshotText(snapshot: {
+		recordedAt: string;
+		payload: unknown;
+	}): string {
+		const payload =
+			typeof snapshot.payload === 'object' && snapshot.payload !== null
+				? (snapshot.payload as Record<string, unknown>)
+				: {};
+		const lines = [
+			`recordedAt: ${snapshot.recordedAt}`,
+			`renderedAt: ${String(payload.renderedAt ?? '')}`,
+			`reason: ${String(payload.reason ?? '')}`,
+			`header: ${String(payload.header ?? '')}`,
+		];
+		for (const key of [
+			'state',
+			'blocking',
+			'actions',
+			'messages',
+			'progress',
+			'composer',
+			'model',
+		]) {
+			const value = payload[key];
+			lines.push(`${key}: ${JSON.stringify(value ?? null)}`);
+		}
+		return `${lines.join('\n')}\n`;
 	}
 
 	private async refreshState() {
@@ -347,6 +434,9 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		switch (message.type) {
 			case 'ready':
 				await this.refreshState();
+				return;
+			case 'webview_snapshot':
+				this.writeWebviewSnapshot(message.payload);
 				return;
 			case 'submit_prompt':
 				await this.routeFreeText(
@@ -1184,6 +1274,7 @@ export function getExecutionWindowHtml(
 
 		let model = undefined;
 		let hasRendered = false;
+		let monitorSnapshotTimer = undefined;
 		const ui = {
 			draft: typeof persisted.draft === 'string' ? persisted.draft : '',
 			expandedIds: new Set(Array.isArray(persisted.expandedIds) ? persisted.expandedIds : []),
@@ -1219,6 +1310,94 @@ export function getExecutionWindowHtml(
 				initialFeedCount: ui.initialFeedCount,
 				promptHistory: ui.promptHistory.slice(-50),
 			});
+		}
+
+		function compactText(value, limit) {
+			const text = String(value || '').replace(/\\s+/g, ' ').trim();
+			if (text.length <= limit) {
+				return text;
+			}
+			return text.slice(0, limit - 3) + '...';
+		}
+
+		function collectTextRows(root, selector, limit) {
+			const rows = Array.from(root.querySelectorAll(selector))
+				.map((element) => ({
+					className: compactText(element.className || '', 160),
+					text: compactText(element.innerText || element.textContent || '', 2000),
+				}))
+				.filter((entry) => entry.text.length > 0);
+			return typeof limit === 'number' ? rows.slice(-limit) : rows;
+		}
+
+		function cloneForSnapshot(value) {
+			if (value === undefined) {
+				return null;
+			}
+			try {
+				return JSON.parse(JSON.stringify(value));
+			} catch {
+				return String(value);
+			}
+		}
+
+		function collectWebviewSnapshot(reason) {
+			const snapshot = model?.snapshot ?? {};
+			const feedItems = Array.isArray(model?.feed) ? model.feed : [];
+			return {
+				reason,
+				renderedAt: new Date().toISOString(),
+				header: compactText(headerContent.innerText || headerContent.textContent || '', 600),
+				state: {
+					currentActor: snapshot.currentActor || '',
+					currentStage: snapshot.currentStage || '',
+					permissionScope: snapshot.permissionScope || '',
+					runState: snapshot.runState || '',
+					transportState: snapshot.transportState || '',
+					task: snapshot.task || '',
+					activeForegroundRequestId: model?.activeForegroundRequestId || '',
+					feedCount: Array.isArray(model?.feed) ? model.feed.length : 0,
+				},
+				blocking: {
+					activeClarification: cloneForSnapshot(model?.activeClarification),
+					pendingPermissionRequest: cloneForSnapshot(snapshot.pendingPermissionRequest),
+					pendingInterrupt: cloneForSnapshot(snapshot.pendingInterrupt),
+				},
+				actions: collectTextRows(actionBand, '.action-card'),
+				messages: collectTextRows(feed, '.message, .activity-row, .turn-divider, .feed-empty'),
+				progress: collectTextRows(feed, '.progress-bullet, .activity-summary'),
+				composer: {
+					placeholder: compactText(composerInput.placeholder, 240),
+					hint: compactText(composerHint.innerText || composerHint.textContent || '', 300),
+					button: compactText(composerSubmitButton.innerText || composerSubmitButton.textContent || '', 120),
+					disabled: Boolean(composerInput.disabled),
+					context: compactText(composerContext.innerText || composerContext.textContent || '', 300),
+					draftLength: ui.draft.length,
+				},
+				model: {
+					snapshot: cloneForSnapshot(snapshot),
+					activeForegroundRequestId: model?.activeForegroundRequestId || null,
+					activeClarification: cloneForSnapshot(model?.activeClarification),
+					feed: cloneForSnapshot(feedItems),
+					feedCount: feedItems.length,
+					uiForegroundRequest: cloneForSnapshot(ui.foregroundRequest),
+				},
+				scroll: {
+					top: feed.scrollTop,
+					height: feed.scrollHeight,
+					clientHeight: feed.clientHeight,
+				},
+			};
+		}
+
+		function scheduleWebviewSnapshot(reason) {
+			clearTimeout(monitorSnapshotTimer);
+			monitorSnapshotTimer = setTimeout(() => {
+				vscode.postMessage({
+					type: 'webview_snapshot',
+					payload: collectWebviewSnapshot(reason),
+				});
+			}, 80);
 		}
 
 		function renderRevealPill(label, value, className) {
@@ -2418,6 +2597,7 @@ export function getExecutionWindowHtml(
 			renderActionBand();
 			renderFeed();
 			renderComposer();
+			scheduleWebviewSnapshot('render');
 		}
 
 		function handleSubmit(event) {
@@ -2438,6 +2618,7 @@ export function getExecutionWindowHtml(
 			persistUiState();
 			renderFeed();
 			renderComposer();
+			scheduleWebviewSnapshot('submit');
 		}
 
 		composerForm.addEventListener('submit', handleSubmit);
@@ -2484,6 +2665,7 @@ export function getExecutionWindowHtml(
 		feed.addEventListener('scroll', () => {
 			ui.scrollTop = feed.scrollTop;
 			persistUiState();
+			scheduleWebviewSnapshot('scroll');
 		});
 
 		document.addEventListener('click', (event) => {
@@ -2498,6 +2680,7 @@ export function getExecutionWindowHtml(
 					appendForegroundBullet('Continuing request', 'active', 'Applying your clarification...');
 					renderFeed();
 					renderComposer();
+					scheduleWebviewSnapshot('clarification_click');
 					vscode.postMessage({
 						type: 'answer_clarification',
 						text: clarificationAnswer,
@@ -2523,6 +2706,7 @@ export function getExecutionWindowHtml(
 				}
 				persistUiState();
 				renderFeed();
+				scheduleWebviewSnapshot('toggle_details');
 				return;
 			}
 
@@ -2559,6 +2743,7 @@ export function getExecutionWindowHtml(
 					appendForegroundBullet('Continuing request', 'active', 'Applying your permission choice...');
 					renderFeed();
 					renderComposer();
+					scheduleWebviewSnapshot('permission_click');
 					vscode.postMessage({
 						type: 'set_permission_scope',
 						permissionScope: scope,
@@ -2582,6 +2767,7 @@ export function getExecutionWindowHtml(
 				}
 				renderFeed();
 				renderComposer();
+				scheduleWebviewSnapshot('action_click');
 			}
 		});
 
@@ -2608,6 +2794,7 @@ export function getExecutionWindowHtml(
 				renderHeader();
 				renderActionBand();
 				renderComposer();
+				scheduleWebviewSnapshot('heartbeat');
 			}
 		}, 5000);
 

@@ -27,6 +27,7 @@ import {
 	EXECUTION_WINDOW_CONTAINER_ID,
 	EXECUTION_WINDOW_VIEW_ID,
 	getExecutionWindowHtml,
+	OPEN_EXECUTION_WINDOW_COMMAND_ID,
 } from '../executionWindowPanel';
 
 const PACKAGE_JSON_PATH = path.resolve(__dirname, '../../package.json');
@@ -144,27 +145,27 @@ function semanticFixtureModel(state: SemanticRoutingFixture['session_state']): E
 }
 
 suite('Corgi Webview UX', () => {
-	test('ships sidebar webview contributions without chat participants or open command', () => {
+	test('ships sidebar webview contributions and a focused open command without chat participants', () => {
 		const manifest = loadPackageJson();
 		const contributes = manifest.contributes as Record<string, unknown>;
 		const activationEvents = manifest.activationEvents as string[];
 		const viewsContainers = contributes.viewsContainers as Record<string, unknown>;
 		const views = contributes.views as Record<string, unknown>;
+		const commands = contributes.commands as Array<Record<string, unknown>>;
 
 		assert.ok(Array.isArray(activationEvents));
 		assert.ok(viewsContainers.activitybar);
 		assert.ok(views[EXECUTION_WINDOW_CONTAINER_ID]);
 		assert.strictEqual(contributes.chatParticipants, undefined);
-		assert.strictEqual(contributes.commands, undefined);
+		assert.ok(commands.some((command) => command.command === OPEN_EXECUTION_WINDOW_COMMAND_ID));
+		assert.ok(activationEvents.includes('onStartupFinished'));
+		assert.ok(activationEvents.includes(`onCommand:${OPEN_EXECUTION_WINDOW_COMMAND_ID}`));
 		assert.ok(!activationEvents.some((event) => event.startsWith('onChatParticipant:')));
 	});
 
 	test('opens the Corgi sidebar view without throwing', async () => {
 		await assert.doesNotReject(async () => {
-			await vscode.commands.executeCommand(
-				`workbench.view.extension.${EXECUTION_WINDOW_CONTAINER_ID}`
-			);
-			await vscode.commands.executeCommand(`${EXECUTION_WINDOW_VIEW_ID}.focus`);
+			await vscode.commands.executeCommand(OPEN_EXECUTION_WINDOW_COMMAND_ID);
 		});
 	});
 
@@ -190,6 +191,8 @@ suite('Corgi Webview UX', () => {
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 
 		assert.ok(extensionSource.includes('context.extensionMode !== vscode.ExtensionMode.Development'));
+		assert.ok(extensionSource.includes('scheduleDevelopmentExecutionWindowOpen'));
+		assert.ok(extensionSource.includes('void provider.openView().catch'));
 		assert.ok(webviewSource.includes('return context.extensionMode === vscode.ExtensionMode.Development;'));
 		assert.ok(!extensionSource.includes('CORGI_RESET_DEV_SESSION'));
 		assert.ok(!extensionSource.includes('CORGI_RESET_WEBVIEW_STATE'));
@@ -641,6 +644,27 @@ suite('Corgi Webview UX', () => {
 			)
 		);
 		assert.ok(html.includes('const shouldResetPersistedState = false;'));
+	});
+
+	test('webview reports structured monitor snapshots without screenshots', () => {
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
+
+		assert.ok(webviewSource.includes("type: 'webview_snapshot'"));
+		assert.ok(webviewSource.includes('corgi_webview_snapshot.json'));
+		assert.ok(webviewSource.includes('corgi_webview_snapshot.txt'));
+		assert.ok(webviewSource.includes('this.context.extensionMode === vscode.ExtensionMode.Development'));
+		assert.ok(webviewSource.includes('this.workspaceRoot ?? this.context.extensionUri'));
+		assert.ok(html.includes('function collectWebviewSnapshot(reason)'));
+		assert.ok(html.includes('function cloneForSnapshot(value)'));
+		assert.ok(html.includes("type: 'webview_snapshot'"));
+		assert.ok(html.includes('messages: collectTextRows(feed'));
+		assert.ok(html.includes('actions: collectTextRows(actionBand'));
+		assert.ok(html.includes('model: {'));
+		assert.ok(html.includes('feed: cloneForSnapshot(feedItems)'));
+		assert.ok(html.includes('activeClarification: cloneForSnapshot(model?.activeClarification)'));
+		assert.ok(!html.toLowerCase().includes('screenshot'));
+		assert.ok(!html.includes('toDataURL'));
 	});
 
 	test('webview can reset persisted state for development launches', () => {
