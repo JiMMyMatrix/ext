@@ -311,6 +311,9 @@ suite('Corgi Webview UX', () => {
 		const clientSource = fs.readFileSync(CODEX_APP_SERVER_CLIENT_TS_PATH, 'utf8');
 
 		assert.ok(clientSource.includes("runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake'"));
+		assert.ok(clientSource.includes('firstDeltaMessage'));
+		assert.ok(clientSource.includes('Governor is drafting the plan'));
+		assert.ok(clientSource.includes('Governor plan draft preview'));
 		assert.ok(transportSource.includes('runtimeKind: event.runtimeKind'));
 		assert.ok(webviewSource.includes("event.runtimeKind === 'semantic_intake'"));
 		assert.ok(webviewSource.includes("event.runtimeKind === 'plan'"));

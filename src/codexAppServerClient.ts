@@ -386,7 +386,7 @@ export class CodexAppServerClient extends EventEmitter {
 							requestId: this.activeTurn.requestId,
 							runtimeKind: this.activeTurn.runtimeKind,
 							elapsedMs: Date.now() - this.activeTurn.startedAt,
-							message: 'Governor is drafting a reply',
+							message: firstDeltaMessage(this.activeTurn.runtimeKind),
 						});
 					}
 					this.maybeEmitDraftPreview();
@@ -520,10 +520,27 @@ export class CodexAppServerClient extends EventEmitter {
 			requestId: activeTurn.requestId,
 			runtimeKind: activeTurn.runtimeKind,
 			elapsedMs: now - activeTurn.startedAt,
-			message: 'Governor draft preview',
+			message: draftPreviewMessage(activeTurn.runtimeKind),
 			previewText: compactPreviewText(fullText),
 		});
 	}
+}
+
+function firstDeltaMessage(runtimeKind: ActiveTurn['runtimeKind']): string {
+	if (runtimeKind === 'semantic_intake') {
+		return 'Governor is interpreting the request';
+	}
+	if (runtimeKind === 'plan') {
+		return 'Governor is drafting the plan';
+	}
+	return 'Governor is drafting a reply';
+}
+
+function draftPreviewMessage(runtimeKind: ActiveTurn['runtimeKind']): string {
+	if (runtimeKind === 'plan') {
+		return 'Governor plan draft preview';
+	}
+	return 'Governor draft preview';
 }
 
 function readOnlySandbox(): JsonObject {
