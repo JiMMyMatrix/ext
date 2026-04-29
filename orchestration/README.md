@@ -44,6 +44,11 @@ In Extension Development Host runs, app-server Governor threads are started as
 ephemeral test threads and the local UI session snapshot is reset on launch;
 production reloads keep authoritative session memory.
 
+Free-text semantic routing remains sidecar-first by default. Set
+`CORGI_SEMANTIC_MODE=governor-first` to try the experimental Governor semantic
+intake path, where Governor proposes route/control intent and orchestration
+validates the proposal before any state change.
+
 The Markdown files in this directory are supporting spec and explanation.
 They are not the primary runtime substrate.
 

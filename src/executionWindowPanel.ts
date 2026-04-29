@@ -30,6 +30,12 @@ function shouldResetDevelopmentWebviewState(context: vscode.ExtensionContext): b
 	return context.extensionMode === vscode.ExtensionMode.Development;
 }
 
+function semanticMode(): 'sidecar-first' | 'governor-first' {
+	return process.env.CORGI_SEMANTIC_MODE?.trim() === 'governor-first'
+		? 'governor-first'
+		: 'sidecar-first';
+}
+
 type WebviewMessage =
 	| { type: 'ready' }
 	| { type: 'refresh_state' }
@@ -475,6 +481,18 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	) {
 		const rawText = text.trim();
 		if (!rawText) {
+			return;
+		}
+
+		if (semanticMode() === 'governor-first') {
+			await this.applyAction(
+				this.buildControllerAction({
+					type: 'submit_prompt',
+					text: rawText,
+					request_id: requestId,
+					semantic_mode: 'governor-first',
+				}, includeSessionRef)
+			);
 			return;
 		}
 

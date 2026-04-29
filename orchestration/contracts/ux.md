@@ -97,6 +97,9 @@ preconditions must fail closed and must not trigger route guessing.
   - requires explicit route metadata such as `turn_type` or a compatible
     `semantic_route_type`
   - must not infer routing from raw prompt keywords when route metadata is absent
+  - may use experimental `semantic_mode=governor-first`, where Governor returns
+    candidate user-facing copy plus an internal control proposal; orchestration
+    must validate the proposal before committing transcript or state changes
   - may omit `session_ref`, including first-turn/bootstrap submission
   - must still carry a unique `request_id`
   - must fail closed if it does provide a mismatched `session_ref`

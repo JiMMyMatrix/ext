@@ -240,6 +240,7 @@ suite('Corgi Webview UX', () => {
 		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
 
 		assert.ok(transportSource.includes('CORGI_GOVERNOR_RUNTIME'));
+		assert.ok(transportSource.includes('--semantic-mode'));
 		assert.ok(transportSource.includes("get<string>('governorRuntime')"));
 		assert.ok(transportSource.includes("configured === 'exec' ? 'exec' : 'app-server'"));
 		assert.ok(transportSource.includes("'--governor-runtime', 'external'"));
@@ -282,6 +283,8 @@ suite('Corgi Webview UX', () => {
 	test('prompt submits omit sessionRef while state-bound actions still gate it on authoritative transport state', () => {
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 
+		assert.ok(webviewSource.includes('CORGI_SEMANTIC_MODE'));
+		assert.ok(webviewSource.includes("semantic_mode: 'governor-first'"));
 		assert.ok(webviewSource.includes('private hasAuthoritativeTransportState = false;'));
 		assert.ok(webviewSource.includes('this.hasAuthoritativeTransportState = true;'));
 		assert.ok(
@@ -1202,6 +1205,10 @@ suite('Corgi Webview UX', () => {
 		assert.notStrictEqual(
 			revisedModel.planReadyRequest.contextRef,
 			planReadyModel.planReadyRequest?.contextRef
+		);
+		assert.strictEqual(
+			revisedModel.planReadyRequest.planVersion,
+			(planReadyModel.planReadyRequest?.planVersion ?? 1) + 1
 		);
 		const lastItem = revisedModel.feed[revisedModel.feed.length - 1];
 		assert.strictEqual(lastItem.type, 'actor_event');

@@ -40,6 +40,8 @@ export type SemanticRouteType =
 
 export type SemanticConfidence = 'high' | 'low';
 
+export type SemanticMode = 'sidecar-first' | 'governor-first';
+
 export type SemanticActionName =
 	| 'interrupt_run'
 	| 'none';
@@ -54,6 +56,7 @@ export interface SemanticContextFlags {
 }
 
 export interface SemanticMetadata {
+	semantic_mode?: SemanticMode;
 	semantic_input_version?: string;
 	semantic_summary_ref?: string;
 	semantic_context_flags?: SemanticContextFlags;
@@ -118,6 +121,8 @@ export interface PlanReadyRequest extends RequestCard {
 	foregroundRequestId?: string;
 	acceptedIntakeSummary: AcceptedIntakeSummary;
 	allowedActions: PlanReadyAction[];
+	planVersion?: number;
+	planContextRef?: string;
 }
 
 export interface PermissionRequest extends RequestCard {
@@ -850,12 +855,16 @@ function buildAcceptedSummary(
 function buildPlanReadyRequest(
 	summary: AcceptedIntakeSummary,
 	now: string,
-	foregroundRequestId?: string
+	foregroundRequestId?: string,
+	planVersion = 1
 ): PlanReadyRequest {
 	const id = nextId('plan-ready');
+	const contextRef = buildContextRef('plan-ready');
 	return {
 		id,
-		contextRef: buildContextRef('plan-ready'),
+		contextRef,
+		planContextRef: contextRef,
+		planVersion,
 		title: 'Plan ready',
 		body: 'Review the Governor plan, then execute it or add details for a revision.',
 		requestedAt: now,
@@ -1780,6 +1789,19 @@ export function applyModelAction(
 		}
 
 		case 'revise_plan': {
+			if (!action.request_id) {
+				return appendError(
+					model,
+					'Request id required',
+					'Plan revisions require a fresh controller request id.',
+					undefined,
+					now,
+					undefined,
+					'error.stale_context',
+					{ kind: 'plan' }
+				);
+			}
+
 			if (!hasPlanReadyRequest(model)) {
 				return appendError(
 					model,
@@ -1788,6 +1810,19 @@ export function applyModelAction(
 					undefined,
 					now,
 					action.request_id
+				);
+			}
+
+			if (model.snapshot.currentStage !== 'plan_ready') {
+				return appendError(
+					model,
+					'Plan changed',
+					'The current session is no longer at a plan-ready checkpoint.',
+					undefined,
+					now,
+					action.request_id,
+					'error.stale_context',
+					{ kind: 'plan' }
 				);
 			}
 
@@ -1839,7 +1874,8 @@ export function applyModelAction(
 			const planReadyRequest = buildPlanReadyRequest(
 				model.planReadyRequest.acceptedIntakeSummary,
 				now,
-				action.request_id ?? model.planReadyRequest.foregroundRequestId
+				action.request_id ?? model.planReadyRequest.foregroundRequestId,
+				(model.planReadyRequest.planVersion ?? 1) + 1
 			);
 			return {
 				...withUserTurn,

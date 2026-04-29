@@ -1,6 +1,7 @@
 import { CodexAppServerClient, type AppServerTurnResult } from './codexAppServerClient';
 
 export type GovernorRuntimeRequest = {
+	runtimeKind?: 'dialogue' | 'semantic_intake';
 	runtimeRequestId: string;
 	requestId?: string;
 	preferredAppServerThreadId?: string;

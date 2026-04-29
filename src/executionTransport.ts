@@ -222,6 +222,9 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		if (action?.type === 'set_permission_scope') {
 			args.push('--permission-scope', action.permission_scope);
 		}
+		if (action && 'semantic_mode' in action && action.semantic_mode) {
+			args.push('--semantic-mode', action.semantic_mode);
+		}
 		if (action && action.type !== 'reconnect' && 'semantic_route_type' in action) {
 			if (action.semantic_route_type) {
 				switch (action.semantic_route_type) {
