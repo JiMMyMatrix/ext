@@ -2026,6 +2026,12 @@ export function getExecutionWindowHtml(
 			governorWaitTimers = [];
 		}
 
+		function clearForegroundRequest() {
+			clearDraftPreviewTimer();
+			clearGovernorWaitTimers();
+			ui.foregroundRequest = undefined;
+		}
+
 		function resetDraftPreview() {
 			clearDraftPreviewTimer();
 			if (!ui.foregroundRequest) {
@@ -2122,6 +2128,14 @@ export function getExecutionWindowHtml(
 					scheduleWebviewSnapshot('governor_wait_heartbeat');
 				}, delay)
 			);
+		}
+
+		function authoritativePermissionContextRef() {
+			return model?.snapshot?.pendingPermissionRequest?.contextRef;
+		}
+
+		function authoritativePlanContextRef() {
+			return model?.planReadyRequest?.contextRef;
 		}
 
 		function ensureForegroundRequest(userText, hint, requestKey) {
@@ -2457,6 +2471,73 @@ export function getExecutionWindowHtml(
 				return;
 			}
 			startForegroundRequest(userText || ui.foregroundRequest.userText, '', requestKey);
+		}
+
+		function foregroundRequestHasAuthoritativeSurface(requestKey) {
+			if (!model || !requestKey) {
+				return false;
+			}
+			const snapshot = model.snapshot;
+			return Boolean(
+				model.activeForegroundRequestId === requestKey ||
+					model.activeClarification ||
+					snapshot.pendingPermissionRequest?.foregroundRequestId === requestKey ||
+					snapshot.pendingInterrupt ||
+					model.planReadyRequest?.foregroundRequestId === requestKey ||
+					(snapshot.currentActor === 'governor' && snapshot.runState === 'running') ||
+					latestRequestActorEvent(requestKey) ||
+					latestRequestError(requestKey) ||
+					latestSemanticBlockStatus(requestKey)
+			);
+		}
+
+		function reconcileLocalUiWithModel() {
+			if (!model) {
+				clearForegroundRequest();
+				ui.pendingPermissionContextRef = undefined;
+				ui.pendingPermissionHiddenAt = undefined;
+				ui.pendingPlanContextRef = undefined;
+				ui.pendingPlanHiddenAt = undefined;
+				ui.planRevisionMode = false;
+				return;
+			}
+
+			if (
+				ui.pendingPermissionContextRef &&
+				authoritativePermissionContextRef() !== ui.pendingPermissionContextRef
+			) {
+				ui.pendingPermissionContextRef = undefined;
+				ui.pendingPermissionHiddenAt = undefined;
+			}
+
+			if (
+				ui.pendingPlanContextRef &&
+				authoritativePlanContextRef() !== ui.pendingPlanContextRef
+			) {
+				ui.pendingPlanContextRef = undefined;
+				ui.pendingPlanHiddenAt = undefined;
+			}
+
+			if (!model.snapshot || !isPlanReady(model.snapshot)) {
+				ui.planRevisionMode = false;
+			}
+
+			if (!ui.foregroundRequest) {
+				return;
+			}
+
+			const requestKey = ui.foregroundRequest.requestKey;
+			if (latestGovernorReplyForRequest(requestKey)) {
+				clearForegroundRequest();
+				return;
+			}
+
+			if (
+				ui.foregroundRequest.status === 'live' &&
+				!foregroundRequestHasAuthoritativeSurface(requestKey)
+			) {
+				clearForegroundRequest();
+			}
 		}
 
 		function syncForegroundRequestFromModel() {
@@ -3463,30 +3544,7 @@ export function getExecutionWindowHtml(
 			}
 
 			model = message.payload;
-			if (ui.pendingPermissionContextRef) {
-				const authoritativePermissionContext =
-					model?.snapshot?.pendingPermissionRequest?.contextRef;
-				if (
-					!authoritativePermissionContext ||
-					authoritativePermissionContext !== ui.pendingPermissionContextRef
-				) {
-					ui.pendingPermissionContextRef = undefined;
-					ui.pendingPermissionHiddenAt = undefined;
-				}
-			}
-			if (ui.pendingPlanContextRef) {
-				const authoritativePlanContext = model?.planReadyRequest?.contextRef;
-				if (
-					!authoritativePlanContext ||
-					authoritativePlanContext !== ui.pendingPlanContextRef
-				) {
-					ui.pendingPlanContextRef = undefined;
-					ui.pendingPlanHiddenAt = undefined;
-				}
-			}
-			if (!model?.snapshot || !isPlanReady(model.snapshot)) {
-				ui.planRevisionMode = false;
-			}
+			reconcileLocalUiWithModel();
 			syncForegroundRequestFromModel();
 			if (
 				typeof ui.initialFeedCount !== 'number' ||

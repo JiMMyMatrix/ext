@@ -371,6 +371,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('function trimForegroundBullets()'));
 		assert.ok(webviewSource.includes('function foregroundRequestCanReceiveTrace(requestKey)'));
 		assert.ok(webviewSource.includes('function applyRuntimeProgress(event)'));
+		assert.ok(webviewSource.includes('function reconcileLocalUiWithModel()'));
+		assert.ok(webviewSource.includes('function foregroundRequestHasAuthoritativeSurface(requestKey)'));
+		assert.ok(webviewSource.includes('function clearForegroundRequest()'));
+		assert.ok(webviewSource.includes('reconcileLocalUiWithModel();'));
 		assert.ok(webviewSource.includes('function setDraftPreviewTarget(value)'));
 		assert.ok(webviewSource.includes('function scheduleDraftPreviewTyping()'));
 		assert.ok(webviewSource.includes('function scheduleGovernorWaitHeartbeat(event)'));
@@ -430,7 +434,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!webviewSource.includes('const maxHideMs'));
 		assert.ok(webviewSource.includes('Permission choice sent. Waiting for a reply from the Governor...'));
 		assert.ok(webviewSource.includes('data-action="refresh_state"'));
-		assert.ok(webviewSource.includes('authoritativePermissionContext !== ui.pendingPermissionContextRef'));
+		assert.ok(webviewSource.includes('authoritativePermissionContextRef() !== ui.pendingPermissionContextRef'));
+		assert.ok(webviewSource.includes('authoritativePlanContextRef() !== ui.pendingPlanContextRef'));
 		assert.ok(!webviewSource.includes('pendingPermissionRequest?.contextRef !=='));
 	});
 
