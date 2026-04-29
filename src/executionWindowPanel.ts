@@ -171,7 +171,19 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 	private handleRuntimeEvent(event: ExecutionRuntimeEvent) {
 		this.appendDevelopmentLog(
-			`runtime ${event.stage}${event.elapsedMs !== undefined ? ` ${event.elapsedMs}ms` : ''}`
+			[
+				`runtime ${event.stage}`,
+				event.runtimeKind ? `kind=${event.runtimeKind}` : undefined,
+				event.requestId ? `request=${event.requestId}` : undefined,
+				event.runtimeRequestId ? `runtime=${event.runtimeRequestId}` : undefined,
+				event.elapsedMs !== undefined ? `elapsed=${event.elapsedMs}ms` : undefined,
+				event.totalElapsedMs !== undefined ? `total=${event.totalElapsedMs}ms` : undefined,
+				event.promptChars !== undefined ? `promptChars=${event.promptChars}` : undefined,
+				event.modelName ? `model=${event.modelName}` : undefined,
+				event.reasoning ? `reasoning=${event.reasoning}` : undefined,
+			]
+				.filter(Boolean)
+				.join(' ')
 		);
 		if (event.model) {
 			this.model = event.model;
@@ -1505,6 +1517,7 @@ export function getExecutionWindowHtml(
 			pendingPlanContextRef: undefined,
 			pendingPlanHiddenAt: undefined,
 			planRevisionMode: false,
+			lastRuntimeTimings: [],
 		};
 
 		const app = document.getElementById('app');
@@ -1586,6 +1599,9 @@ export function getExecutionWindowHtml(
 				actions: collectTextRows(actionBand, '.action-card'),
 				messages: collectTextRows(feed, '.message, .activity-row, .turn-divider, .feed-empty'),
 				progress: collectTextRows(feed, '.progress-bullet, .activity-summary'),
+				runtimeTimings: cloneForSnapshot(
+					ui.foregroundRequest?.runtimeTimings || ui.lastRuntimeTimings || []
+				),
 				composer: {
 					placeholder: compactText(composerInput.placeholder, 240),
 					hint: compactText(composerHint.innerText || composerHint.textContent || '', 300),
@@ -2000,6 +2016,7 @@ export function getExecutionWindowHtml(
 		function startForegroundRequest(userText, hint, requestKey) {
 			clearDraftPreviewTimer();
 			clearGovernorWaitTimers();
+			ui.lastRuntimeTimings = [];
 			ui.foregroundRequest = {
 				id: 'foreground-' + String(Date.now()),
 				requestKey: requestKey || nextForegroundRequestKey(),
@@ -2008,6 +2025,7 @@ export function getExecutionWindowHtml(
 				hint: hint || '',
 				draftPreview: '',
 				draftPreviewTarget: '',
+				runtimeTimings: [],
 				bullets: [],
 			};
 		}
@@ -2029,6 +2047,12 @@ export function getExecutionWindowHtml(
 		function clearForegroundRequest() {
 			clearDraftPreviewTimer();
 			clearGovernorWaitTimers();
+			if (
+				Array.isArray(ui.foregroundRequest?.runtimeTimings) &&
+				ui.foregroundRequest.runtimeTimings.length > 0
+			) {
+				ui.lastRuntimeTimings = ui.foregroundRequest.runtimeTimings;
+			}
 			ui.foregroundRequest = undefined;
 		}
 
@@ -2098,16 +2122,23 @@ export function getExecutionWindowHtml(
 				return;
 			}
 			const isSemanticIntake = event.runtimeKind === 'semantic_intake';
+			const isPlan = event.runtimeKind === 'plan';
 			const beats = isSemanticIntake
 				? [
 					[12000, 'Still interpreting the request', 'Governor is still interpreting the request...'],
 					[30000, 'Still checking intent and workflow state', 'Governor is still checking intent and workflow state...'],
 				]
+				: isPlan
+					? [
+						[12000, 'Still drafting the plan', 'Governor is still drafting the plan...'],
+						[30000, 'Governor is shaping the plan', 'Governor is still shaping the plan checkpoint...'],
+						[60000, 'Governor is taking a deeper planning pass', 'The Governor is still working. This model can take a little longer.'],
+					]
 				: [
 					[12000, 'Still waiting for the Governor', 'Still waiting for a reply from the Governor...'],
 					[30000, 'Governor is still thinking', 'Governor is still thinking through the plan...'],
 					[60000, 'Governor is taking a deeper pass', 'The Governor is still working. This model can take a little longer.'],
-				];
+			];
 			governorWaitTimers = beats.map(([delay, label, hint]) =>
 				setTimeout(() => {
 					if (
@@ -2295,36 +2326,103 @@ export function getExecutionWindowHtml(
 			);
 		}
 
+		function runtimeTimingFromEvent(event) {
+			const timing = {
+				stage: String(event.stage || ''),
+				message: compactText(event.message || '', 180),
+				recordedAt: new Date().toISOString(),
+			};
+			if (typeof event.elapsedMs === 'number') {
+				timing.elapsedMs = event.elapsedMs;
+			}
+			if (typeof event.totalElapsedMs === 'number') {
+				timing.totalElapsedMs = event.totalElapsedMs;
+			}
+			if (typeof event.promptChars === 'number') {
+				timing.promptChars = event.promptChars;
+			}
+			if (event.modelName) {
+				timing.modelName = String(event.modelName);
+			}
+			if (event.reasoning) {
+				timing.reasoning = String(event.reasoning);
+			}
+			if (event.emittedAt) {
+				const emittedAt = Date.parse(event.emittedAt);
+				if (!Number.isNaN(emittedAt)) {
+					timing.uiLagMs = Math.max(0, Date.now() - emittedAt);
+				}
+			}
+			return timing;
+		}
+
+		function recordRuntimeTiming(event) {
+			if (!runtimeProgressMatchesForeground(event) || !ui.foregroundRequest) {
+				return;
+			}
+			ui.foregroundRequest.runtimeTimings = [
+				...(Array.isArray(ui.foregroundRequest.runtimeTimings)
+					? ui.foregroundRequest.runtimeTimings
+					: []),
+				runtimeTimingFromEvent(event),
+			].slice(-16);
+			ui.lastRuntimeTimings = ui.foregroundRequest.runtimeTimings;
+		}
+
 		function applyRuntimeProgress(event) {
 			if (!runtimeProgressMatchesForeground(event)) {
 				return;
 			}
-			if (event.stage === 'turn_started') {
+			recordRuntimeTiming(event);
+			if (event.stage === 'governor_runtime_requested') {
 				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
 				replaceForegroundTail(
-					'Governor is reading the request',
+					'Preparing Governor handoff',
 					'active',
-					'Governor is reading the request...'
+					'Preparing the request for the Governor...'
+				);
+				scheduleGovernorWaitHeartbeat(event);
+			} else if (event.stage === 'turn_request_sent') {
+				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
+				replaceForegroundTail(
+					'Governor request sent',
+					'active',
+					'The Governor has the request now...'
+				);
+				scheduleGovernorWaitHeartbeat(event);
+			} else if (event.stage === 'turn_started') {
+				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
+				const isPlan = event.runtimeKind === 'plan';
+				replaceForegroundTail(
+					isPlan ? 'Governor is reading the plan request' : 'Governor is reading the request',
+					'active',
+					isPlan ? 'Governor is reading the plan request...' : 'Governor is reading the request...'
 				);
 				scheduleGovernorWaitHeartbeat(event);
 			} else if (event.stage === 'first_delta') {
 				clearGovernorWaitTimers();
 				const isSemanticIntake = event.runtimeKind === 'semantic_intake';
+				const isPlan = event.runtimeKind === 'plan';
 				replaceForegroundTail(
 					isSemanticIntake
 						? 'Governor is interpreting the request'
-						: 'Governor is drafting a reply',
+						: isPlan
+							? 'Governor is drafting the plan'
+							: 'Governor is drafting a reply',
 					'active',
 					isSemanticIntake
 						? 'Governor is interpreting the request...'
-						: 'Governor is drafting a reply...'
+						: isPlan
+							? 'Governor is drafting the plan...'
+							: 'Governor is drafting a reply...'
 				);
 			} else if (event.stage === 'draft_preview') {
 				clearGovernorWaitTimers();
+				const isPlan = event.runtimeKind === 'plan';
 				replaceForegroundTail(
-					'Governor is drafting a reply',
+					isPlan ? 'Governor is drafting the plan' : 'Governor is drafting a reply',
 					'active',
-					'Governor is drafting a reply...'
+					isPlan ? 'Governor is drafting the plan...' : 'Governor is drafting a reply...'
 				);
 				if (typeof event.previewText === 'string' && event.previewText.trim()) {
 					setDraftPreviewTarget(event.previewText);

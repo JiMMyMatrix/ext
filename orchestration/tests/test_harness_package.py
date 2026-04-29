@@ -313,7 +313,10 @@ class HarnessPackageTests(unittest.TestCase):
 
             self.assertEqual(prepared["kind"], "governor_runtime_request")
             runtime_request = prepared["request"]
+            self.assertEqual(runtime_request["runtimeKind"], "plan")
             self.assertEqual(runtime_request["resultStage"], "plan_ready")
+            self.assertIn("Governor planning checkpoint", runtime_request["initialPrompt"])
+            self.assertNotIn("Read first:", runtime_request["initialPrompt"])
 
             model = session.dispatch_session_action(
                 "complete_governor_turn",
@@ -352,6 +355,8 @@ class HarnessPackageTests(unittest.TestCase):
 
             self.assertEqual(prepared["kind"], "governor_runtime_request")
             self.assertEqual(prepared["request"]["runtimeKind"], "semantic_intake")
+            self.assertIn("Governor semantic-intake proposer", prepared["request"]["initialPrompt"])
+            self.assertNotIn("Read first:", prepared["request"]["initialPrompt"])
             self.assertEqual(prepared["model"]["snapshot"]["currentStage"], "semantic_intake")
             self.assertEqual(prepared["model"]["feed"][-1]["type"], "user_message")
             self.assertNotIn("proposal", json.dumps(prepared["model"]))

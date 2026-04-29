@@ -527,35 +527,32 @@ def _resume_governor_dialogue_prompt(context_prompt: str) -> str:
 def _initial_governor_semantic_intake_prompt(
 	context_prompt: str, *, repo_root: str | Path | None = None
 ) -> str:
-	governor_contract = prompt_path("governor.txt", repo_root).read_text(encoding="utf-8").strip()
 	return "\n\n".join(
 		[
-			governor_contract,
-			"Semantic intake lane rules:\n"
-			"- You are interpreting one human free-text turn for Corgi.\n"
-			"- You may propose intent and user-facing copy, but you do not authorize workflow state.\n"
-			"- Orchestration will validate every proposal before any state change.\n"
-			"- Return JSON only. Do not include Markdown fences.\n"
-			"- user_visible_reply is candidate user-facing copy.\n"
-			"- internal_reason is internal and must never be written for the normal transcript.\n"
-			"- governor_dialogue is read-only: explanation, progress, comparison, or idea discussion only.\n"
-			"- governed_work_intent is work: analysis, planning, review, implementation, or repo inspection.\n"
-			"- If read-only dialogue and work are mixed or ambiguous, use route_type=block or clarification_needed.\n"
-			"- Never propose dispatch creation or execution as already authorized.\n"
-			"- The context block is semantic-intake context; return JSON only.",
-			"Required JSON shape:\n"
+			"Governor semantic-intake proposer for Corgi.",
+			"Task: classify one human free-text turn and propose safe controller presentation. "
+			"Do not authorize workflow state; orchestration validates everything.",
+			"Rules:\n"
+			"- Return JSON only; no Markdown fences.\n"
+			"- governor_dialogue is read-only discussion/progress/explanation.\n"
+			"- governed_work_intent is repo work: analyze, plan, review, implement, inspect.\n"
+			"- Use clarification_needed for ambiguous dialogue-vs-work intent.\n"
+			"- Use block for mixed or unsafe intent.\n"
+			"- recommended_permission is only a recommendation; never imply it was granted.\n"
+			"- Hide internal_reason from users.",
+			"JSON shape:\n"
 			'{\n'
-			'  "user_visible_reply": "short user-facing text",\n'
+			'  "user_visible_reply": "short candidate user-facing text",\n'
 			'  "proposal": {\n'
 			'    "route_type": "governor_dialogue | governed_work_intent | clarification_needed | permission_needed | plan_ready | block",\n'
-			'    "normalized_intent": "normalized intent text",\n'
+			'    "normalized_intent": "",\n'
 			'    "recommended_permission": "observe | plan | execute | none",\n'
 			'    "needs_clarification": false,\n'
 			'    "clarification_question": "",\n'
-			'    "clarification_options": [{"label": "Architecture", "value": "Focus on architecture."}],\n'
-			'    "plan_intent": {"objective": "", "steps": [], "risks": [], "readiness": ""},\n'
+			'    "clarification_options": [],\n'
+			'    "plan_intent": null,\n'
 			'    "confidence": "high | low",\n'
-			'    "internal_reason": "brief internal validation reason"\n'
+			'    "internal_reason": ""\n'
 			'  }\n'
 			'}',
 			context_prompt,
@@ -568,6 +565,32 @@ def _resume_governor_semantic_intake_prompt(context_prompt: str) -> str:
 		[
 			"Continue as the Governor semantic intake proposer for this repository.",
 			"Return JSON only with user_visible_reply and proposal. Do not authorize workflow state.",
+			context_prompt,
+		]
+	)
+
+
+def _initial_governor_plan_prompt(context_prompt: str) -> str:
+	return "\n\n".join(
+		[
+			"Governor planning checkpoint for Corgi.",
+			"Purpose: produce a bounded, user-facing plan for the already accepted intake.",
+			"Authority rules:\n"
+			"- Use the accepted/current intake as the source of truth.\n"
+			"- Do not create dispatch truth, start execution, or imply Execute permission.\n"
+			"- Do not perform the analysis or deeply inspect the repo unless the provided context is insufficient.\n"
+			"- Return only final user-facing plan text; no JSON, hidden ids, or runtime metadata.",
+			"Output requirements: concise readable prose, normally under 180 words, covering objective, proposed steps, likely files/areas, risks or unknowns, and execution readiness.",
+			context_prompt,
+		]
+	)
+
+
+def _resume_governor_plan_prompt(context_prompt: str) -> str:
+	return "\n\n".join(
+		[
+			"Continue the Governor planning checkpoint for the current accepted intake.",
+			"Return only a concise revised user-facing plan. Do not execute or authorize execution.",
 			context_prompt,
 		]
 	)
@@ -629,7 +652,11 @@ def _run_governor_exec(
 
 
 def _continue_governor_dialogue(
-	session: dict[str, Any], prompt: str, *, repo_root: str | Path | None = None
+	session: dict[str, Any],
+	prompt: str,
+	*,
+	repo_root: str | Path | None = None,
+	runtime_kind: str = "dialogue",
 ) -> tuple[str, list[str], str | None]:
 	context = _governor_dialogue_context(session, prompt, repo_root=repo_root)
 	governor_meta = _governor_dialogue_meta(session)
@@ -637,7 +664,11 @@ def _continue_governor_dialogue(
 	model_name, reasoning = _governor_runtime_settings(repo_root)
 
 	def create_session() -> tuple[str, str]:
-		initial_prompt = _initial_governor_dialogue_prompt(context["prompt"], repo_root=repo_root)
+		initial_prompt = (
+			_initial_governor_plan_prompt(context["prompt"])
+			if runtime_kind == "plan"
+			else _initial_governor_dialogue_prompt(context["prompt"], repo_root=repo_root)
+		)
 		return _run_governor_exec(
 			[
 				"codex",
@@ -658,13 +689,18 @@ def _continue_governor_dialogue(
 
 	if thread_id:
 		try:
+			resume_prompt = (
+				_resume_governor_plan_prompt(context["prompt"])
+				if runtime_kind == "plan"
+				else _resume_governor_dialogue_prompt(context["prompt"])
+			)
 			thread_id, body = _run_governor_exec(
 				[
 					"codex",
 					"exec",
 					"resume",
 					thread_id,
-					_resume_governor_dialogue_prompt(context["prompt"]),
+					resume_prompt,
 					"--model",
 					model_name,
 					"-c",
@@ -720,20 +756,31 @@ def _prepare_governor_dialogue_runtime_request(
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
 	result_stage: str = "dialogue_ready",
+	runtime_kind: str = "dialogue",
 ) -> dict[str, Any]:
 	context = _governor_dialogue_context(session, prompt, repo_root=repo_root)
 	governor_meta = _governor_dialogue_meta(session)
 	model_name, reasoning = _governor_runtime_settings(repo_root)
 	runtime_request_id = _next_id("governor-runtime")
+	initial_prompt = (
+		_initial_governor_plan_prompt(context["prompt"])
+		if runtime_kind == "plan"
+		else _initial_governor_dialogue_prompt(context["prompt"], repo_root=repo_root)
+	)
+	resume_prompt = (
+		_resume_governor_plan_prompt(context["prompt"])
+		if runtime_kind == "plan"
+		else _resume_governor_dialogue_prompt(context["prompt"])
+	)
 	pending = {
-		"runtimeKind": "dialogue",
+		"runtimeKind": runtime_kind,
 		"runtimeRequestId": runtime_request_id,
 		"requestId": request_id,
 		"preferredAppServerThreadId": governor_meta.get("appServerThreadId")
 		if isinstance(governor_meta.get("appServerThreadId"), str)
 		else None,
-		"initialPrompt": _initial_governor_dialogue_prompt(context["prompt"], repo_root=repo_root),
-		"resumePrompt": _resume_governor_dialogue_prompt(context["prompt"]),
+		"initialPrompt": initial_prompt,
+		"resumePrompt": resume_prompt,
 		"model": model_name,
 		"reasoning": reasoning,
 		"resultStage": result_stage,
@@ -1467,6 +1514,7 @@ def _append_governor_dialogue_response(
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
 	result_stage: str = "dialogue_ready",
+	runtime_kind: str = "dialogue",
 	governor_runtime: str = "exec",
 ) -> bool:
 	model = session["model"]
@@ -1487,6 +1535,7 @@ def _append_governor_dialogue_response(
 			semantic_paraphrase=semantic_paraphrase,
 			semantic_normalized_text=semantic_normalized_text,
 			result_stage=result_stage,
+			runtime_kind=runtime_kind,
 		)
 		return True
 	try:
@@ -1494,6 +1543,7 @@ def _append_governor_dialogue_response(
 			session,
 			prompt,
 			repo_root=repo_root,
+			runtime_kind=runtime_kind,
 		)
 	except RuntimeError:
 		_append_error(
@@ -2104,9 +2154,8 @@ def _accept_pending_intake(
 		return _append_governor_dialogue_response(
 			session,
 			(
-				"Plan the accepted request for the user. Keep the reply concise but actionable. "
-				"Use readable prose, not JSON. Normally include: objective, proposed steps, "
-				"likely files or areas involved, risks or unknowns, and execution readiness. "
+				"Produce the bounded Plan-ready checkpoint for the accepted request. "
+				"Do not execute or deeply analyze yet. "
 				f"Accepted request: {summary}"
 			),
 			now,
@@ -2122,6 +2171,7 @@ def _accept_pending_intake(
 			semantic_paraphrase=semantic_paraphrase,
 			semantic_normalized_text=semantic_normalized_text or summary,
 			result_stage="plan_ready",
+			runtime_kind="plan",
 			governor_runtime=governor_runtime,
 		)
 	return True
@@ -2355,6 +2405,12 @@ def handle_submit_prompt(
 			semantic_normalized_text=semantic_prompt,
 			in_response_to_request_id=request_id,
 		)
+		dialogue_result_stage = (
+			"plan_ready"
+			if model["snapshot"].get("currentStage") == "plan_ready"
+			and model.get("acceptedIntakeSummary")
+			else "dialogue_ready"
+		)
 		_append_governor_dialogue_response(
 			session,
 			semantic_prompt,
@@ -2370,12 +2426,8 @@ def handle_submit_prompt(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=semantic_prompt,
-			result_stage=(
-				"plan_ready"
-				if model["snapshot"].get("currentStage") == "plan_ready"
-				and model.get("acceptedIntakeSummary")
-				else "dialogue_ready"
-			),
+			result_stage=dialogue_result_stage,
+			runtime_kind="plan" if dialogue_result_stage == "plan_ready" else "dialogue",
 			governor_runtime=governor_runtime,
 		)
 		return
@@ -3163,13 +3215,14 @@ def handle_revise_plan(
 	model["activeForegroundRequestId"] = request_id or plan_ready.get("foregroundRequestId")
 	_append_governor_dialogue_response(
 		session,
-		f"Revise the current accepted plan version {plan_ready.get('planVersion') or 1} with this user guidance: {prompt}",
+		f"Revise Plan version {plan_ready.get('planVersion') or 1}. User guidance: {prompt}",
 		now,
 		repo_root=repo_root,
 		request_id=request_id,
 		turn_type="governor_dialogue",
 		semantic_normalized_text=prompt,
 		result_stage="plan_ready",
+		runtime_kind="plan",
 		governor_runtime=governor_runtime,
 	)
 

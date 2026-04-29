@@ -248,8 +248,12 @@ suite('Corgi Webview UX', () => {
 		assert.ok(transportSource.includes('prewarm()'));
 		assert.ok(transportSource.includes('onRuntimeEvent'));
 		assert.ok(transportSource.includes('model?: ExecutionWindowModel'));
-		assert.ok(transportSource.includes('this.handleGovernorRuntimeResponse(result.request, result.model)'));
+		assert.ok(transportSource.includes('this.handleGovernorRuntimeResponse(result.request, result.model, elapsedMs)'));
 		assert.ok(transportSource.includes('model: preparedModel'));
+		assert.ok(transportSource.includes('orchestration_command_started'));
+		assert.ok(transportSource.includes('orchestration_command_completed'));
+		assert.ok(transportSource.includes('totalElapsedMs'));
+		assert.ok(transportSource.includes('governorPromptLengthForRequest'));
 		assert.ok(transportSource.includes("get<string>('governorRuntime')"));
 		assert.ok(transportSource.includes("configured === 'exec' ? 'exec' : 'app-server'"));
 		assert.ok(transportSource.includes("'--governor-runtime', 'external'"));
@@ -288,6 +292,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(clientSource.includes('item/completed'));
 		assert.ok(clientSource.includes('turn/completed'));
 		assert.ok(clientSource.includes('turn/interrupt'));
+		assert.ok(clientSource.includes('turn_request_sent'));
 		assert.ok(clientSource.includes('draft_preview'));
 		assert.ok(clientSource.includes('compactPreviewText'));
 		assert.ok(clientSource.includes('text.length <= 5000'));
@@ -305,12 +310,20 @@ suite('Corgi Webview UX', () => {
 		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
 		const clientSource = fs.readFileSync(CODEX_APP_SERVER_CLIENT_TS_PATH, 'utf8');
 
-		assert.ok(clientSource.includes("runtimeKind?: 'dialogue' | 'semantic_intake'"));
+		assert.ok(clientSource.includes("runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake'"));
 		assert.ok(transportSource.includes('runtimeKind: event.runtimeKind'));
 		assert.ok(webviewSource.includes("event.runtimeKind === 'semantic_intake'"));
+		assert.ok(webviewSource.includes("event.runtimeKind === 'plan'"));
 		assert.ok(webviewSource.includes('if (event.model)'));
 		assert.ok(webviewSource.includes('this.model = event.model'));
 		assert.ok(webviewSource.includes('Governor is interpreting the request'));
+		assert.ok(webviewSource.includes('Governor is drafting the plan'));
+		assert.ok(webviewSource.includes('Still drafting the plan'));
+		assert.ok(webviewSource.includes('runtimeTimings'));
+		assert.ok(webviewSource.includes('lastRuntimeTimings'));
+		assert.ok(webviewSource.includes('uiLagMs'));
+		assert.ok(webviewSource.includes('Preparing Governor handoff'));
+		assert.ok(webviewSource.includes('Governor request sent'));
 		assert.match(
 			webviewSource,
 			/snapshot\.currentActor === 'governor'[\s\S]*?snapshot\.currentStage === 'semantic_intake'[\s\S]*?snapshot\.runState === 'running'/

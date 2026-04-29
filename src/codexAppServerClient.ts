@@ -27,13 +27,14 @@ export type AppServerProgressEvent = {
 		| 'initialized'
 		| 'account_checked'
 		| 'thread_started'
+		| 'turn_request_sent'
 		| 'turn_started'
 		| 'first_delta'
 		| 'draft_preview'
 		| 'turn_completed';
 	requestId?: string;
 	runtimeRequestId?: string;
-	runtimeKind?: 'dialogue' | 'semantic_intake';
+	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake';
 	elapsedMs?: number;
 	message?: string;
 	previewText?: string;
@@ -42,7 +43,7 @@ export type AppServerProgressEvent = {
 export type AppServerTurnRequest = {
 	requestId?: string;
 	runtimeRequestId?: string;
-	runtimeKind?: 'dialogue' | 'semantic_intake';
+	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake';
 	previewEnabled?: boolean;
 	threadId?: string;
 	prompt: string;
@@ -59,7 +60,7 @@ type ActiveTurn = {
 	itemId?: string;
 	requestId?: string;
 	runtimeRequestId?: string;
-	runtimeKind?: 'dialogue' | 'semantic_intake';
+	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake';
 	previewEnabled: boolean;
 	startedAt: number;
 	receivedDelta: boolean;
@@ -141,6 +142,7 @@ export class CodexAppServerClient extends EventEmitter {
 			throw new Error('app-server turn prompt is empty');
 		}
 
+		const turnStartedAt = Date.now();
 		const resultPromise = new Promise<AppServerTurnResult>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				if (this.activeTurn) {
@@ -155,7 +157,7 @@ export class CodexAppServerClient extends EventEmitter {
 				runtimeRequestId: request.runtimeRequestId,
 				runtimeKind: request.runtimeKind,
 				previewEnabled: request.previewEnabled === true,
-				startedAt: Date.now(),
+				startedAt: turnStartedAt,
 				receivedDelta: false,
 				lastPreviewAt: 0,
 				lastPreviewLength: 0,
@@ -167,6 +169,14 @@ export class CodexAppServerClient extends EventEmitter {
 		});
 
 		try {
+			this.emitProgress({
+				stage: 'turn_request_sent',
+				runtimeRequestId: request.runtimeRequestId,
+				requestId: request.requestId,
+				runtimeKind: request.runtimeKind,
+				elapsedMs: Date.now() - turnStartedAt,
+				message: 'Governor request sent',
+			});
 			await this.request('turn/start', {
 				threadId,
 				input: [
@@ -493,8 +503,8 @@ export class CodexAppServerClient extends EventEmitter {
 		if (!fullText) {
 			return;
 		}
-		const hasEnoughNewText = fullText.length - activeTurn.lastPreviewLength >= 180;
-		const waitedLongEnough = now - activeTurn.lastPreviewAt >= 1600;
+		const hasEnoughNewText = fullText.length - activeTurn.lastPreviewLength >= 120;
+		const waitedLongEnough = now - activeTurn.lastPreviewAt >= 1100;
 		const hasSentenceBoundary = /[.!?。！？]\\s*$/.test(fullText);
 		if (
 			activeTurn.lastPreviewAt > 0 &&
