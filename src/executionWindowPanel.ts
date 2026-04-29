@@ -1099,15 +1099,39 @@ export function getExecutionWindowHtml(
 			font-weight: 600;
 		}
 
-		.message-body {
-			white-space: pre-wrap;
-			word-break: break-word;
-		}
+			.message-body {
+				white-space: pre-wrap;
+				word-break: break-word;
+			}
 
-		.message.user {
-			align-self: flex-end;
-			max-width: 92%;
-			border: 1px solid var(--line);
+			.message-body.is-governor-copy {
+				display: grid;
+				gap: 8px;
+				white-space: normal;
+			}
+
+			.message-body.is-governor-copy p {
+				margin: 0;
+			}
+
+			.message-body.is-governor-copy strong {
+				color: var(--text);
+				font-weight: 700;
+			}
+
+			.inline-code {
+				border: 1px solid var(--line);
+				border-radius: 5px;
+				background: color-mix(in srgb, var(--panel-raised) 85%, transparent);
+				padding: 0 4px;
+				font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
+				font-size: 0.92em;
+			}
+
+			.message.user {
+				align-self: flex-end;
+				max-width: 92%;
+				border: 1px solid var(--line);
 			border-radius: 14px;
 			background: var(--panel-raised);
 			padding: 9px 10px;
@@ -3019,13 +3043,96 @@ export function getExecutionWindowHtml(
 			);
 		}
 
-		function renderArtifactActions() {
-			return '';
-		}
+			function renderArtifactActions() {
+				return '';
+			}
 
-		function displayScope(value) {
-			const scope = String(value || '').trim().toLowerCase();
-			if (scope === 'observe' || scope === 'plan' || scope === 'execute') {
+			function isGovernorMessage(item) {
+				return item?.type === 'actor_event' && item.source_actor === 'governor';
+			}
+
+			function splitGovernorParagraphs(value) {
+				const text = String(value || '').replace(/\\s+/g, ' ').trim();
+				if (!text) {
+					return [];
+				}
+
+				const explicitParagraphs = String(value || '')
+					.split(/\\n\\s*\\n/g)
+					.map((part) => part.replace(/\\s+/g, ' ').trim())
+					.filter(Boolean);
+				if (explicitParagraphs.length > 1) {
+					return explicitParagraphs;
+				}
+
+				return text
+					.replace(/\\s+(Proposed steps:)/gi, '\\n$1')
+					.replace(/\\s+(Likely (?:files\\/areas|files|areas)(?: include| involved)?[:]?)/gi, '\\n$1')
+					.replace(/\\s+(Risks?(?: or unknowns)?[:]?)/gi, '\\n$1')
+					.replace(/\\s+(Unknowns[:]?)/gi, '\\n$1')
+					.replace(/\\s+(Execution readiness[:]?)/gi, '\\n$1')
+					.replace(/\\s+(Readiness[:]?)/gi, '\\n$1')
+					.replace(/\\s+(Main risk(?: is)?)/gi, '\\n$1')
+					.replace(/\\s+(Key risks?(?: are)?)/gi, '\\n$1')
+					.replace(/\\s+(This is plan-ready only)/gi, '\\n$1')
+					.replace(/\\s+(Execution should wait)/gi, '\\n$1')
+					.split('\\n')
+					.map((part) => part.trim())
+					.filter(Boolean);
+			}
+
+			function renderInlineGovernorText(value) {
+				const marker = String.fromCharCode(96);
+				const text = String(value || '');
+				let html = '';
+				let cursor = 0;
+				while (cursor < text.length) {
+					const start = text.indexOf(marker, cursor);
+					if (start < 0) {
+						html += escapeHtml(text.slice(cursor));
+						break;
+					}
+					const end = text.indexOf(marker, start + 1);
+					if (end < 0) {
+						html += escapeHtml(text.slice(cursor));
+						break;
+					}
+					html += escapeHtml(text.slice(cursor, start));
+					html += '<code class="inline-code">' + escapeHtml(text.slice(start + 1, end)) + '</code>';
+					cursor = end + 1;
+				}
+				return html;
+			}
+
+			function renderGovernorParagraph(value) {
+				const text = String(value || '').trim();
+				const labelMatch = text.match(
+					/^(Objective|Proposed steps|Likely files\\/areas|Likely files|Likely areas|Risks or unknowns|Risks|Unknowns|Execution readiness|Readiness|Main risk|Key risks)(?::|\\s+is|\\s+are)?\\s*/i
+				);
+				if (!labelMatch) {
+					return '<p>' + renderInlineGovernorText(text) + '</p>';
+				}
+				const label = labelMatch[1];
+				const rest = text.slice(labelMatch[0].length).trim();
+				return (
+					'<p><strong>' +
+					escapeHtml(label.charAt(0).toUpperCase() + label.slice(1)) +
+					(rest ? ':</strong> ' + renderInlineGovernorText(rest) : '</strong>') +
+					'</p>'
+				);
+			}
+
+			function renderGovernorMessageBody(value) {
+				const paragraphs = splitGovernorParagraphs(value);
+				if (paragraphs.length === 0) {
+					return '';
+				}
+				return paragraphs.map(renderGovernorParagraph).join('');
+			}
+
+			function displayScope(value) {
+				const scope = String(value || '').trim().toLowerCase();
+				if (scope === 'observe' || scope === 'plan' || scope === 'execute') {
 				return scope.charAt(0).toUpperCase() + scope.slice(1);
 			}
 			return 'Plan';
@@ -3043,9 +3150,9 @@ export function getExecutionWindowHtml(
 				body: item.body || '',
 			};
 
-			if (item.type === 'actor_event' && item.source_actor === 'governor') {
-				return fallback;
-			}
+				if (item.type === 'actor_event' && item.source_actor === 'governor') {
+					return fallback;
+				}
 
 			const args = presentationArgs(item);
 			switch (item.presentation_key) {
@@ -3158,11 +3265,16 @@ export function getExecutionWindowHtml(
 			);
 		}
 
-		function renderMessage(item) {
-			const copy = displayCopy(item);
-			if (item.type === 'error') {
-				return (
-					'<article class="message error">' +
+			function renderMessage(item) {
+				const copy = displayCopy(item);
+				const governorMessage = isGovernorMessage(item);
+				const body = copy.body || copy.title;
+				const renderedBody = governorMessage
+					? renderGovernorMessageBody(body)
+					: escapeHtml(body);
+				if (item.type === 'error') {
+					return (
+						'<article class="message error">' +
 						'<div class="message-label">Error</div>' +
 						'<div class="message-body">' + escapeHtml(copy.title) + '</div>' +
 						(copy.body ? '<div class="activity-summary">' + escapeHtml(copy.body) + '</div>' : '') +
@@ -3180,14 +3292,18 @@ export function getExecutionWindowHtml(
 				);
 			}
 
-			return (
-				'<article class="message assistant ' +
-					(item.authoritative ? '' : 'is-informational') +
-				'">' +
-					'<div class="message-body">' + escapeHtml(copy.body || copy.title) + '</div>' +
-					(isMeaningfulMilestone(item)
-						? renderArtifactQuickAction(milestoneArtifact(item))
-						: '') +
+				return (
+					'<article class="message assistant ' +
+						(item.authoritative ? '' : 'is-informational') +
+					'">' +
+						'<div class="message-body' +
+						(governorMessage ? ' is-governor-copy' : '') +
+						'">' +
+						renderedBody +
+						'</div>' +
+						(isMeaningfulMilestone(item)
+							? renderArtifactQuickAction(milestoneArtifact(item))
+							: '') +
 					renderDetails(item) +
 				'</article>'
 			);

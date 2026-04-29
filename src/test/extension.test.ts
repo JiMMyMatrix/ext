@@ -482,7 +482,8 @@ suite('Corgi Webview UX', () => {
 			)
 		);
 		assert.ok(webviewSource.includes('const copy = displayCopy(item);'));
-		assert.ok(webviewSource.includes("escapeHtml(copy.body || copy.title)"));
+		assert.ok(webviewSource.includes('renderGovernorMessageBody(body)'));
+		assert.ok(webviewSource.includes('escapeHtml(body)'));
 
 		const permissionModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
