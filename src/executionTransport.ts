@@ -2,11 +2,17 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import {
+	AppServerGovernorRuntime,
+	type GovernorRuntime,
+	type GovernorRuntimeRequest,
+} from './governorRuntime';
 import { type ExecutionWindowModel, type ModelAction } from './phase1Model';
 
 export interface ExecutionTransport {
 	load(): Promise<ExecutionWindowModel>;
 	dispatch(action: ModelAction): Promise<ExecutionWindowModel>;
+	dispose?(): void;
 }
 
 export class TransportUnavailableError extends Error {
@@ -141,11 +147,20 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	private readonly scriptPath: string;
 	private readonly cwd: string;
 	private readonly pythonExecutable: string;
+	private readonly governorRuntimeMode: 'exec' | 'app-server';
+	private readonly useEphemeralAppServerThreads: boolean;
+	private appServerRuntime: GovernorRuntime | undefined;
 
-	constructor(target: Extract<ExecutionTransportTarget, { kind: 'orchestration' }>) {
+	constructor(
+		target: Extract<ExecutionTransportTarget, { kind: 'orchestration' }>,
+		options: { developmentMode: boolean }
+	) {
 		this.cwd = target.cwd;
 		this.scriptPath = target.scriptPath;
 		this.pythonExecutable = resolvePythonExecutable();
+		this.governorRuntimeMode = resolveGovernorRuntimeMode();
+		this.useEphemeralAppServerThreads =
+			options.developmentMode || process.env.CORGI_APP_SERVER_EPHEMERAL === '1';
 	}
 
 	public async load(): Promise<ExecutionWindowModel> {
@@ -173,7 +188,24 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		}
 	}
 
-	private run(group: string, command: string, action?: ModelAction): Promise<ExecutionWindowModel> {
+	public dispose(): void {
+		this.appServerRuntime?.shutdown();
+	}
+
+	private async run(group: string, command: string, action?: ModelAction): Promise<ExecutionWindowModel> {
+		const result = await this.runRaw(group, command, action);
+		if (isGovernorRuntimeResponse(result)) {
+			return this.handleGovernorRuntimeResponse(result.request);
+		}
+		return result as ExecutionWindowModel;
+	}
+
+	private runRaw(
+		group: string,
+		command: string,
+		action?: ModelAction,
+		extraArgs: string[] = []
+	): Promise<unknown> {
 		const args = [this.scriptPath, group, command];
 		if (action && 'text' in action && typeof action.text === 'string') {
 			args.push('--text', action.text);
@@ -232,6 +264,10 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 				args.push('--semantic-block-reason', action.semantic_block_reason);
 			}
 		}
+		if (this.shouldUseExternalGovernor(command)) {
+			args.push('--governor-runtime', 'external');
+		}
+		args.push(...extraArgs);
 
 		return new Promise((resolve, reject) => {
 			execFile(
@@ -253,7 +289,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 					}
 
 					try {
-						resolve(JSON.parse(stdout) as ExecutionWindowModel);
+						resolve(JSON.parse(stdout) as unknown);
 					} catch (parseError) {
 						reject(
 							new Error(
@@ -267,6 +303,93 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 			);
 		});
 	}
+
+	private shouldUseExternalGovernor(command: string): boolean {
+		return (
+			this.governorRuntimeMode === 'app-server' &&
+			[
+				'submit-prompt',
+				'answer-clarification',
+				'set-permission-scope',
+				'revise-plan',
+			].includes(command)
+		);
+	}
+
+	private async handleGovernorRuntimeResponse(
+		request: GovernorRuntimeRequest
+	): Promise<ExecutionWindowModel> {
+		const runtime = this.getAppServerRuntime();
+		try {
+			const result = await runtime.sendDialogueTurn(request, this.cwd);
+			return (await this.runRaw(
+				'session',
+				'complete-governor-turn',
+				undefined,
+				[
+					'--runtime-request-id',
+					request.runtimeRequestId,
+					'--body',
+					result.body,
+					'--runtime-source',
+					result.runtimeSource,
+					...(result.threadId ? ['--thread-id', result.threadId] : []),
+					...(result.turnId ? ['--turn-id', result.turnId] : []),
+					...(result.itemId ? ['--item-id', result.itemId] : []),
+				]
+			)) as ExecutionWindowModel;
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			return (await this.runRaw(
+				'session',
+				'fallback-governor-turn',
+				undefined,
+				[
+					'--runtime-request-id',
+					request.runtimeRequestId,
+					'--reason',
+					reason,
+				]
+			)) as ExecutionWindowModel;
+		}
+	}
+
+	private getAppServerRuntime(): GovernorRuntime {
+		this.appServerRuntime ??= new AppServerGovernorRuntime({
+			ephemeralThreads: this.useEphemeralAppServerThreads,
+		});
+		return this.appServerRuntime;
+	}
+}
+
+function resolveGovernorRuntimeMode(): 'exec' | 'app-server' {
+	const envMode = process.env.CORGI_GOVERNOR_RUNTIME?.trim();
+	if (envMode === 'app-server' || envMode === 'exec') {
+		return envMode;
+	}
+	if (typeof vscode.workspace.getConfiguration !== 'function') {
+		return 'app-server';
+	}
+	const configured = vscode.workspace
+		.getConfiguration('corgi')
+		.get<string>('governorRuntime');
+	return configured === 'exec' ? 'exec' : 'app-server';
+}
+
+type GovernorRuntimeResponse = {
+	kind: 'governor_runtime_request';
+	model: ExecutionWindowModel;
+	request: GovernorRuntimeRequest;
+};
+
+function isGovernorRuntimeResponse(value: unknown): value is GovernorRuntimeResponse {
+	const payload = value as Partial<GovernorRuntimeResponse> | undefined;
+	return (
+		typeof payload === 'object' &&
+		payload !== null &&
+		payload.kind === 'governor_runtime_request' &&
+		typeof payload.request?.runtimeRequestId === 'string'
+	);
 }
 
 export function createExecutionTransport(
@@ -280,7 +403,9 @@ export function createExecutionTransport(
 		extensionUri
 	);
 	if (target.kind === 'orchestration') {
-		return new OrchestrationExecutionTransport(target);
+		return new OrchestrationExecutionTransport(target, {
+			developmentMode: extensionMode === vscode.ExtensionMode.Development,
+		});
 	}
 
 	return new UnavailableExecutionTransport(target);

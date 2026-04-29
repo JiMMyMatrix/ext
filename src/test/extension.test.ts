@@ -45,6 +45,14 @@ const EXECUTION_TRANSPORT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionTransport.ts'
 );
+const CODEX_APP_SERVER_CLIENT_TS_PATH = path.resolve(
+	__dirname,
+	'../../src/codexAppServerClient.ts'
+);
+const GOVERNOR_RUNTIME_TS_PATH = path.resolve(
+	__dirname,
+	'../../src/governorRuntime.ts'
+);
 const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
 	__dirname,
 	'../../src/test/fixtures/semantic-routing.json'
@@ -215,6 +223,60 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!extensionSource.includes('CORGI_RESET_WEBVIEW_STATE'));
 		assert.ok(!developmentSessionSource.includes('CORGI_RESET_WEBVIEW_STATE'));
 		assert.ok(!webviewSource.includes('CORGI_RESET_WEBVIEW_STATE'));
+	});
+
+	test('declares app-server Governor runtime as default while keeping exec selectable', () => {
+		const manifest = loadPackageJson();
+		const contributes = manifest.contributes as Record<string, unknown>;
+		const configuration = contributes.configuration as Record<string, unknown>;
+		const properties = configuration.properties as Record<string, unknown>;
+		const runtimeSetting = properties['corgi.governorRuntime'] as Record<string, unknown>;
+
+		assert.strictEqual(runtimeSetting.default, 'app-server');
+		assert.deepStrictEqual(runtimeSetting.enum, ['exec', 'app-server']);
+	});
+
+	test('transport gates app-server runtime behind selector and completes or falls back internally', () => {
+		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
+
+		assert.ok(transportSource.includes('CORGI_GOVERNOR_RUNTIME'));
+		assert.ok(transportSource.includes("get<string>('governorRuntime')"));
+		assert.ok(transportSource.includes("configured === 'exec' ? 'exec' : 'app-server'"));
+		assert.ok(transportSource.includes("'--governor-runtime', 'external'"));
+		assert.ok(transportSource.includes("'complete-governor-turn'"));
+		assert.ok(transportSource.includes("'fallback-governor-turn'"));
+		assert.ok(transportSource.includes('isGovernorRuntimeResponse'));
+	});
+
+	test('development app-server runtime uses ephemeral threads for clean test launches', () => {
+		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
+		const clientSource = fs.readFileSync(CODEX_APP_SERVER_CLIENT_TS_PATH, 'utf8');
+		const runtimeSource = fs.readFileSync(GOVERNOR_RUNTIME_TS_PATH, 'utf8');
+
+		assert.ok(
+			transportSource.includes(
+				'developmentMode: extensionMode === vscode.ExtensionMode.Development'
+			)
+		);
+		assert.ok(transportSource.includes('CORGI_APP_SERVER_EPHEMERAL'));
+		assert.ok(runtimeSource.includes('ephemeralThreads'));
+		assert.ok(clientSource.includes('ephemeral: request.ephemeralThread'));
+	});
+
+	test('app-server client keeps protocol details internal and handles fallback-relevant failures', () => {
+		const clientSource = fs.readFileSync(CODEX_APP_SERVER_CLIENT_TS_PATH, 'utf8');
+		const runtimeSource = fs.readFileSync(GOVERNOR_RUNTIME_TS_PATH, 'utf8');
+
+		assert.ok(clientSource.includes("'codex'"));
+		assert.ok(clientSource.includes("'app-server'"));
+		assert.ok(clientSource.includes('analytics.enabled=false'));
+		assert.ok(clientSource.includes('pendingRequests'));
+		assert.ok(clientSource.includes('item/agentMessage/delta'));
+		assert.ok(clientSource.includes('item/completed'));
+		assert.ok(clientSource.includes('turn/completed'));
+		assert.ok(clientSource.includes('app-server emitted malformed JSON'));
+		assert.ok(runtimeSource.includes("account.kind === 'apiKey'"));
+		assert.ok(runtimeSource.includes('expects ChatGPT auth'));
 	});
 
 	test('prompt submits omit sessionRef while state-bound actions still gate it on authoritative transport state', () => {
@@ -714,6 +776,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes("type: 'webview_snapshot'"));
 		assert.ok(webviewSource.includes('corgi_webview_snapshot.json'));
 		assert.ok(webviewSource.includes('removeOldWebviewSnapshotFiles'));
+		assert.ok(webviewSource.includes('fs.renameSync(tempSnapshotPath, snapshotPath)'));
 		assert.ok(webviewSource.includes("filename.startsWith('corgi_webview_snapshot')"));
 		assert.ok(!webviewSource.includes('corgi_webview_snapshot.txt'));
 		assert.ok(webviewSource.includes('this.context.extensionMode === vscode.ExtensionMode.Development'));

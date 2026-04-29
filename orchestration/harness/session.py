@@ -616,6 +616,174 @@ def _continue_governor_dialogue(
 	return body, context["details"], context["primary_ref"]
 
 
+def _pending_governor_runtime_request(session: dict[str, Any]) -> dict[str, Any] | None:
+	pending = session.setdefault("meta", {}).get("pendingGovernorRuntimeRequest")
+	return pending if isinstance(pending, dict) else None
+
+
+def _build_governor_runtime_request_envelope(pending: dict[str, Any]) -> dict[str, Any]:
+	return {
+		"runtimeRequestId": pending["runtimeRequestId"],
+		"requestId": pending.get("requestId"),
+		"preferredAppServerThreadId": pending.get("preferredAppServerThreadId"),
+		"initialPrompt": pending["initialPrompt"],
+		"resumePrompt": pending["resumePrompt"],
+		"model": pending["model"],
+		"reasoning": pending["reasoning"],
+		"resultStage": pending["resultStage"],
+		"context": pending.get("context") or {},
+	}
+
+
+def _prepare_governor_dialogue_runtime_request(
+	session: dict[str, Any],
+	prompt: str,
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	turn_type: str = "governor_dialogue",
+	semantic_input_version: str | None = None,
+	semantic_summary_ref: str | None = None,
+	semantic_context_flags: dict[str, Any] | None = None,
+	semantic_route_type: str | None = None,
+	semantic_confidence: str | None = None,
+	semantic_block_reason: str | None = None,
+	semantic_paraphrase: str | None = None,
+	semantic_normalized_text: str | None = None,
+	result_stage: str = "dialogue_ready",
+) -> dict[str, Any]:
+	context = _governor_dialogue_context(session, prompt, repo_root=repo_root)
+	governor_meta = _governor_dialogue_meta(session)
+	model_name, reasoning = _governor_runtime_settings(repo_root)
+	runtime_request_id = _next_id("governor-runtime")
+	pending = {
+		"runtimeRequestId": runtime_request_id,
+		"requestId": request_id,
+		"preferredAppServerThreadId": governor_meta.get("appServerThreadId")
+		if isinstance(governor_meta.get("appServerThreadId"), str)
+		else None,
+		"initialPrompt": _initial_governor_dialogue_prompt(context["prompt"], repo_root=repo_root),
+		"resumePrompt": _resume_governor_dialogue_prompt(context["prompt"]),
+		"model": model_name,
+		"reasoning": reasoning,
+		"resultStage": result_stage,
+		"createdAt": now,
+		"prompt": prompt,
+		"details": context["details"],
+		"primaryRef": context["primary_ref"],
+		"turnType": turn_type,
+		"semanticInputVersion": semantic_input_version,
+		"semanticSummaryRef": semantic_summary_ref,
+		"semanticContextFlags": semantic_context_flags,
+		"semanticRouteType": semantic_route_type,
+		"semanticConfidence": semantic_confidence,
+		"semanticBlockReason": semantic_block_reason,
+		"semanticParaphrase": semantic_paraphrase,
+		"semanticNormalizedText": semantic_normalized_text or prompt,
+		"context": {
+			"sessionRef": session["model"]["snapshot"].get("sessionRef"),
+			"foregroundRequestId": request_id,
+			"currentStage": session["model"]["snapshot"].get("currentStage"),
+		},
+	}
+	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = pending
+	_refresh_snapshot(
+		session["model"],
+		now,
+		currentActor="governor",
+		currentStage="waiting_for_governor",
+		runState="running",
+		transportState="connected",
+	)
+	return pending
+
+
+def _append_completed_governor_dialogue_response(
+	session: dict[str, Any],
+	pending: dict[str, Any],
+	body: str,
+	now: str,
+	*,
+	app_server_thread_id: str | None = None,
+	app_server_turn_id: str | None = None,
+	app_server_item_id: str | None = None,
+	runtime_source: str = "app-server",
+) -> bool:
+	model = session["model"]
+	reply = trim_text(body)
+	if not reply:
+		_append_error(
+			model,
+			"Governor unavailable",
+			"Corgi couldn't get a Governor reply right now. Please try again.",
+			now,
+			in_response_to_request_id=pending.get("requestId"),
+		)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="orchestration",
+			currentStage="dialogue_failed",
+			runState="idle",
+			transportState="connected",
+		)
+		model["activeForegroundRequestId"] = None
+		return False
+
+	governor_meta = _governor_dialogue_meta(session)
+	if app_server_thread_id:
+		governor_meta["appServerThreadId"] = app_server_thread_id
+	if app_server_turn_id:
+		governor_meta["lastAppServerTurnId"] = app_server_turn_id
+	if app_server_item_id:
+		governor_meta["lastAppServerItemId"] = app_server_item_id
+	governor_meta["lastRuntimeSource"] = runtime_source
+	governor_meta["lastUsedAt"] = utc_now()
+	model["feed"].append(
+		_feed_item(
+			"actor_event",
+			"Governor response",
+			reply,
+			authoritative=True,
+			now=now,
+			details=pending.get("details") if isinstance(pending.get("details"), list) else [],
+			source_layer="governor",
+			source_actor="governor",
+			source_artifact_ref=pending.get("primaryRef"),
+			**_semantic_provenance(
+				turn_type=pending.get("turnType") or "governor_dialogue",
+				semantic_input_version=pending.get("semanticInputVersion"),
+				semantic_summary_ref=pending.get("semanticSummaryRef"),
+				semantic_context_flags=pending.get("semanticContextFlags")
+				if isinstance(pending.get("semanticContextFlags"), dict)
+				else None,
+				semantic_route_type=pending.get("semanticRouteType"),
+				semantic_confidence=pending.get("semanticConfidence"),
+				semantic_block_reason=pending.get("semanticBlockReason"),
+				semantic_paraphrase=pending.get("semanticParaphrase"),
+				semantic_normalized_text=pending.get("semanticNormalizedText") or pending.get("prompt"),
+				in_response_to_request_id=pending.get("requestId"),
+			),
+		)
+	)
+	result_stage = pending.get("resultStage") or "dialogue_ready"
+	_refresh_snapshot(
+		model,
+		now,
+		currentActor="governor",
+		currentStage=result_stage,
+		runState="idle",
+		transportState="connected",
+	)
+	if result_stage == "plan_ready":
+		_set_plan_ready_request(model, now, foreground_request_id=pending.get("requestId"))
+	else:
+		model["planReadyRequest"] = None
+	model["activeForegroundRequestId"] = None
+	return True
+
+
 def _append_governor_dialogue_response(
 	session: dict[str, Any],
 	prompt: str,
@@ -633,8 +801,28 @@ def _append_governor_dialogue_response(
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
 	result_stage: str = "dialogue_ready",
+	governor_runtime: str = "exec",
 ) -> bool:
 	model = session["model"]
+	if governor_runtime == "external":
+		_prepare_governor_dialogue_runtime_request(
+			session,
+			prompt,
+			now,
+			repo_root=repo_root,
+			request_id=request_id,
+			turn_type=turn_type,
+			semantic_input_version=semantic_input_version,
+			semantic_summary_ref=semantic_summary_ref,
+			semantic_context_flags=semantic_context_flags,
+			semantic_route_type=semantic_route_type,
+			semantic_confidence=semantic_confidence,
+			semantic_block_reason=semantic_block_reason,
+			semantic_paraphrase=semantic_paraphrase,
+			semantic_normalized_text=semantic_normalized_text,
+			result_stage=result_stage,
+		)
+		return True
 	try:
 		body, details, primary_ref = _continue_governor_dialogue(
 			session,
@@ -1141,6 +1329,7 @@ def _accept_pending_intake(
 	semantic_block_reason: str | None = None,
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
+	governor_runtime: str = "exec",
 ) -> bool:
 	model = session["model"]
 	current_foreground_request_id = model.get("activeForegroundRequestId") or request_id
@@ -1255,6 +1444,7 @@ def _accept_pending_intake(
 			semantic_paraphrase=semantic_paraphrase,
 			semantic_normalized_text=semantic_normalized_text or summary,
 			result_stage="plan_ready",
+			governor_runtime=governor_runtime,
 		)
 	return True
 
@@ -1275,6 +1465,7 @@ def _apply_governor_dialogue_permission(
 	semantic_block_reason: str | None = None,
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
+	governor_runtime: str = "exec",
 ) -> bool:
 	model = session["model"]
 	pending_permission = model["snapshot"].get("pendingPermissionRequest")
@@ -1326,6 +1517,7 @@ def _apply_governor_dialogue_permission(
 		semantic_block_reason=semantic_block_reason,
 		semantic_paraphrase=semantic_paraphrase,
 		semantic_normalized_text=semantic_normalized_text,
+		governor_runtime=governor_runtime,
 	)
 
 
@@ -1345,6 +1537,7 @@ def handle_submit_prompt(
 	semantic_route_type: str | None = None,
 	semantic_confidence: str | None = None,
 	semantic_block_reason: str | None = None,
+	governor_runtime: str = "exec",
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -1484,6 +1677,7 @@ def handle_submit_prompt(
 				and model.get("acceptedIntakeSummary")
 				else "dialogue_ready"
 			),
+			governor_runtime=governor_runtime,
 		)
 		return
 
@@ -1667,6 +1861,7 @@ def handle_submit_prompt(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=semantic_prompt,
+			governor_runtime=governor_runtime,
 		)
 		return
 
@@ -1727,6 +1922,7 @@ def handle_answer_clarification(
 	semantic_route_type: str | None = None,
 	semantic_confidence: str | None = None,
 	semantic_block_reason: str | None = None,
+	governor_runtime: str = "exec",
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -1848,6 +2044,7 @@ def handle_answer_clarification(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=semantic_answer,
+			governor_runtime=governor_runtime,
 		)
 		return
 	model["snapshot"]["pendingPermissionRequest"] = _permission_request(
@@ -1908,6 +2105,7 @@ def handle_set_permission_scope(
 	semantic_block_reason: str | None = None,
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
+	governor_runtime: str = "exec",
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -2010,6 +2208,7 @@ def handle_set_permission_scope(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=semantic_paraphrase,
 			semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
+			governor_runtime=governor_runtime,
 		)
 		return
 	if continuation_kind == "plan_execution":
@@ -2061,6 +2260,7 @@ def handle_set_permission_scope(
 		semantic_block_reason=semantic_block_reason,
 		semantic_paraphrase=semantic_paraphrase,
 		semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
+		governor_runtime=governor_runtime,
 	)
 
 
@@ -2176,6 +2376,7 @@ def handle_revise_plan(
 	session_ref: str | None = None,
 	request_id: str | None = None,
 	context_ref: str | None = None,
+	governor_runtime: str = "exec",
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -2238,7 +2439,142 @@ def handle_revise_plan(
 		turn_type="governor_dialogue",
 		semantic_normalized_text=prompt,
 		result_stage="plan_ready",
+		governor_runtime=governor_runtime,
 	)
+
+
+def handle_complete_governor_turn(
+	session: dict[str, Any],
+	*,
+	runtime_request_id: str | None = None,
+	body: str | None = None,
+	thread_id: str | None = None,
+	turn_id: str | None = None,
+	item_id: str | None = None,
+	runtime_source: str = "app-server",
+) -> None:
+	now = utc_now()
+	model = session["model"]
+	pending = _pending_governor_runtime_request(session)
+	if not pending or not runtime_request_id or pending.get("runtimeRequestId") != runtime_request_id:
+		_append_error(
+			model,
+			"Governor runtime request changed",
+			"The pending Governor runtime request changed before completion was applied.",
+			now,
+			presentation_key="error.stale_context",
+			presentation_args={"kind": "governor_runtime"},
+		)
+		return
+	_append_completed_governor_dialogue_response(
+		session,
+		pending,
+		body or "",
+		now,
+		app_server_thread_id=thread_id,
+		app_server_turn_id=turn_id,
+		app_server_item_id=item_id,
+		runtime_source=runtime_source,
+	)
+	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
+
+
+def handle_fallback_governor_turn(
+	session: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+	runtime_request_id: str | None = None,
+	reason: str | None = None,
+) -> None:
+	now = utc_now()
+	model = session["model"]
+	pending = _pending_governor_runtime_request(session)
+	if not pending or not runtime_request_id or pending.get("runtimeRequestId") != runtime_request_id:
+		_append_error(
+			model,
+			"Governor runtime request changed",
+			"The pending Governor runtime request changed before fallback was applied.",
+			now,
+			presentation_key="error.stale_context",
+			presentation_args={"kind": "governor_runtime"},
+		)
+		return
+	governor_meta = _governor_dialogue_meta(session)
+	governor_meta["lastAppServerFallbackReason"] = trim_text(reason or "app-server unavailable")
+	thread_id = governor_meta.get("threadId") if isinstance(governor_meta.get("threadId"), str) else None
+	model_name = pending.get("model") or _governor_runtime_settings(repo_root)[0]
+	reasoning = pending.get("reasoning") or _governor_runtime_settings(repo_root)[1]
+
+	def create_session() -> tuple[str, str]:
+		return _run_governor_exec(
+			[
+				"codex",
+				"exec",
+				"--skip-git-repo-check",
+				"--cd",
+				str(resolve_paths(repo_root).repo_root),
+				"--sandbox",
+				"read-only",
+				"--model",
+				str(model_name),
+				"-c",
+				f'model_reasoning_effort="{reasoning}"',
+				str(pending.get("initialPrompt") or pending.get("prompt") or ""),
+			],
+			repo_root=repo_root,
+		)
+
+	try:
+		if thread_id:
+			try:
+				thread_id, body = _run_governor_exec(
+					[
+						"codex",
+						"exec",
+						"resume",
+						thread_id,
+						str(pending.get("resumePrompt") or pending.get("prompt") or ""),
+						"--model",
+						str(model_name),
+						"-c",
+						f'model_reasoning_effort="{reasoning}"',
+					],
+					repo_root=repo_root,
+				)
+			except RuntimeError:
+				governor_meta["threadId"] = None
+				thread_id, body = create_session()
+		else:
+			thread_id, body = create_session()
+	except RuntimeError:
+		_append_error(
+			model,
+			"Governor unavailable",
+			"Corgi couldn't get a Governor reply right now. Please try again.",
+			now,
+			in_response_to_request_id=pending.get("requestId"),
+		)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="orchestration",
+			currentStage="dialogue_failed",
+			runState="idle",
+			transportState="connected",
+		)
+		model["activeForegroundRequestId"] = None
+		session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
+		return
+
+	governor_meta["threadId"] = thread_id
+	_append_completed_governor_dialogue_response(
+		session,
+		pending,
+		body,
+		now,
+		runtime_source="exec-fallback",
+	)
+	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
 
 
 def handle_decline_permission(
@@ -2505,10 +2841,18 @@ def dispatch_session_action(
 	semantic_route_type: str | None = None,
 	semantic_confidence: str | None = None,
 	semantic_block_reason: str | None = None,
+	governor_runtime: str = "exec",
+	runtime_request_id: str | None = None,
+	runtime_body: str | None = None,
+	runtime_thread_id: str | None = None,
+	runtime_turn_id: str | None = None,
+	runtime_item_id: str | None = None,
+	runtime_source: str = "app-server",
+	fallback_reason: str | None = None,
 ) -> dict[str, Any]:
 	session = load_session(repo_root)
 	now = utc_now()
-	if command != "state" and _is_duplicate_request(session, request_id):
+	if command not in {"state", "complete_governor_turn", "fallback_governor_turn"} and _is_duplicate_request(session, request_id):
 		_append_error(
 			session["model"],
 			"Duplicate request",
@@ -2535,6 +2879,7 @@ def dispatch_session_action(
 			semantic_route_type=semantic_route_type,
 			semantic_confidence=semantic_confidence,
 			semantic_block_reason=semantic_block_reason,
+			governor_runtime=governor_runtime,
 		)
 	elif command == "answer_clarification":
 		handle_answer_clarification(
@@ -2552,6 +2897,7 @@ def dispatch_session_action(
 			semantic_route_type=semantic_route_type,
 			semantic_confidence=semantic_confidence,
 			semantic_block_reason=semantic_block_reason,
+			governor_runtime=governor_runtime,
 		)
 	elif command == "set_permission_scope":
 		handle_set_permission_scope(
@@ -2570,6 +2916,7 @@ def dispatch_session_action(
 			semantic_block_reason=semantic_block_reason,
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=normalized_text,
+			governor_runtime=governor_runtime,
 		)
 	elif command == "decline_permission":
 		handle_decline_permission(
@@ -2595,6 +2942,24 @@ def dispatch_session_action(
 			session_ref=session_ref,
 			request_id=request_id,
 			context_ref=context_ref,
+			governor_runtime=governor_runtime,
+		)
+	elif command == "complete_governor_turn":
+		handle_complete_governor_turn(
+			session,
+			runtime_request_id=runtime_request_id,
+			body=runtime_body,
+			thread_id=runtime_thread_id,
+			turn_id=runtime_turn_id,
+			item_id=runtime_item_id,
+			runtime_source=runtime_source,
+		)
+	elif command == "fallback_governor_turn":
+		handle_fallback_governor_turn(
+			session,
+			repo_root=repo_root,
+			runtime_request_id=runtime_request_id,
+			reason=fallback_reason,
 		)
 	elif command == "interrupt_run":
 		handle_interrupt(
@@ -2623,9 +2988,16 @@ def dispatch_session_action(
 	elif command != "state":
 		raise ValueError(f"unsupported session command: {command}")
 
-	if command != "state":
+	if command not in {"state", "complete_governor_turn", "fallback_governor_turn"}:
 		_remember_request(session, request_id, command, now)
 	save_session(session, repo_root=repo_root)
+	pending = _pending_governor_runtime_request(session)
+	if governor_runtime == "external" and pending:
+		return {
+			"kind": "governor_runtime_request",
+			"model": public_model(session),
+			"request": _build_governor_runtime_request_envelope(pending),
+		}
 	return public_model(session)
 
 
@@ -2634,6 +3006,9 @@ def build_parser() -> argparse.ArgumentParser:
 	subparsers = parser.add_subparsers(dest="command", required=True)
 
 	subparsers.add_parser("state")
+
+	def add_governor_runtime(parser: argparse.ArgumentParser) -> None:
+		parser.add_argument("--governor-runtime", choices=["exec", "external"], default="exec")
 
 	submit = subparsers.add_parser("submit_prompt")
 	submit.add_argument("--text", required=True)
@@ -2649,6 +3024,7 @@ def build_parser() -> argparse.ArgumentParser:
 	submit.add_argument("--semantic-route-type")
 	submit.add_argument("--semantic-confidence")
 	submit.add_argument("--semantic-block-reason")
+	add_governor_runtime(submit)
 
 	answer = subparsers.add_parser("answer_clarification")
 	answer.add_argument("--text", required=True)
@@ -2664,6 +3040,7 @@ def build_parser() -> argparse.ArgumentParser:
 	answer.add_argument("--semantic-route-type")
 	answer.add_argument("--semantic-confidence")
 	answer.add_argument("--semantic-block-reason")
+	add_governor_runtime(answer)
 
 	set_scope = subparsers.add_parser("set_permission_scope")
 	set_scope.add_argument("--text")
@@ -2680,6 +3057,7 @@ def build_parser() -> argparse.ArgumentParser:
 	set_scope.add_argument("--semantic-route-type")
 	set_scope.add_argument("--semantic-confidence")
 	set_scope.add_argument("--semantic-block-reason")
+	add_governor_runtime(set_scope)
 	decline = subparsers.add_parser("decline_permission")
 	decline.add_argument("--request-id")
 	decline.add_argument("--session-ref")
@@ -2693,6 +3071,17 @@ def build_parser() -> argparse.ArgumentParser:
 	revise_plan.add_argument("--request-id")
 	revise_plan.add_argument("--session-ref")
 	revise_plan.add_argument("--context-ref")
+	add_governor_runtime(revise_plan)
+	complete_governor = subparsers.add_parser("complete_governor_turn")
+	complete_governor.add_argument("--runtime-request-id", required=True)
+	complete_governor.add_argument("--body", required=True)
+	complete_governor.add_argument("--thread-id")
+	complete_governor.add_argument("--turn-id")
+	complete_governor.add_argument("--item-id")
+	complete_governor.add_argument("--runtime-source", default="app-server")
+	fallback_governor = subparsers.add_parser("fallback_governor_turn")
+	fallback_governor.add_argument("--runtime-request-id", required=True)
+	fallback_governor.add_argument("--reason")
 	interrupt = subparsers.add_parser("interrupt_run")
 	interrupt.add_argument("--text")
 	interrupt.add_argument("--request-id")
@@ -2736,6 +3125,14 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
 			semantic_route_type=getattr(args, "semantic_route_type", None),
 			semantic_confidence=getattr(args, "semantic_confidence", None),
 			semantic_block_reason=getattr(args, "semantic_block_reason", None),
+			governor_runtime=getattr(args, "governor_runtime", "exec"),
+			runtime_request_id=getattr(args, "runtime_request_id", None),
+			runtime_body=getattr(args, "body", None),
+			runtime_thread_id=getattr(args, "thread_id", None),
+			runtime_turn_id=getattr(args, "turn_id", None),
+			runtime_item_id=getattr(args, "item_id", None),
+			runtime_source=getattr(args, "runtime_source", "app-server"),
+			fallback_reason=getattr(args, "reason", None),
 		)
 	except (ValueError, json.JSONDecodeError) as exc:
 		raise SystemExit(str(exc))

@@ -33,6 +33,17 @@ submission, clarification answers, permission choices, plan-ready actions, stop,
 and reconnect. Plan-ready actions are state-bound actions on the accepted plan,
 not new free-text prompts.
 
+Governor dialogue and Plan generation use the long-lived Codex App Server path
+by default. Set `CORGI_GOVERNOR_RUNTIME=exec` or the VS Code setting
+`corgi.governorRuntime = "exec"` to force the legacy `codex exec` /
+`codex exec resume` path. App-server mode is limited to Governor dialogue and
+Plan turns, expects ChatGPT authentication, keeps Executor and Reviewer on the
+existing path, and falls back to `codex exec` if app-server startup, auth,
+protocol handling, or message completion fails.
+In Extension Development Host runs, app-server Governor threads are started as
+ephemeral test threads and the local UI session snapshot is reset on launch;
+production reloads keep authoritative session memory.
+
 The Markdown files in this directory are supporting spec and explanation.
 They are not the primary runtime substrate.
 

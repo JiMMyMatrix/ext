@@ -20,6 +20,8 @@ def _session_command(command: str, argv: list[str]) -> int:
 		"decline-permission": ["decline_permission"],
 		"execute-plan": ["execute_plan"],
 		"revise-plan": ["revise_plan"],
+		"complete-governor-turn": ["complete_governor_turn"],
+		"fallback-governor-turn": ["fallback_governor_turn"],
 		"interrupt": ["interrupt_run"],
 		"reconnect": ["reconnect"],
 	}
@@ -69,6 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
 			"decline-permission",
 			"execute-plan",
 			"revise-plan",
+			"complete-governor-turn",
+			"fallback-governor-turn",
 			"interrupt",
 			"reconnect",
 		],

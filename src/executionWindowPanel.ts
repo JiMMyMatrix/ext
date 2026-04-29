@@ -135,6 +135,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 	public dispose() {
 		this.disposeWebviewListeners();
+		this.transport.dispose?.();
 
 		while (this.disposables.length) {
 			this.disposables.pop()?.dispose();
@@ -185,15 +186,20 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			payload,
 		};
 		const snapshotPath = path.join(monitorDir, 'corgi_webview_snapshot.json');
+		fs.mkdirSync(monitorDir, { recursive: true });
+		this.removeOldWebviewSnapshotFiles(monitorDir, snapshotPath);
 		if (!this.shouldReplaceWebviewSnapshot(snapshotPath, snapshot)) {
 			return;
 		}
 
 		const json = JSON.stringify(snapshot, null, 2);
+		const tempSnapshotPath = path.join(
+			monitorDir,
+			`corgi_webview_snapshot.${process.pid}.${this.monitorSessionId}.tmp`
+		);
 
-		fs.mkdirSync(monitorDir, { recursive: true });
-		this.removeOldWebviewSnapshotFiles(monitorDir, snapshotPath);
-		fs.writeFileSync(snapshotPath, json, 'utf8');
+		fs.writeFileSync(tempSnapshotPath, json, 'utf8');
+		fs.renameSync(tempSnapshotPath, snapshotPath);
 	}
 
 	private removeOldWebviewSnapshotFiles(
@@ -1198,7 +1204,7 @@ export function getExecutionWindowHtml(
 			);
 			background-repeat: no-repeat;
 			background-size: 360% 100%;
-			background-position: 0% 50%;
+			background-position: 100% 50%;
 			-webkit-background-clip: text;
 			background-clip: text;
 			color: transparent;
@@ -1337,16 +1343,16 @@ export function getExecutionWindowHtml(
 
 		@keyframes progressShimmer {
 			0% {
-				background-position: 0% 50%;
+				background-position: 100% 50%;
 			}
 			16% {
-				background-position: 0% 50%;
+				background-position: 100% 50%;
 			}
 			84% {
-				background-position: 100% 50%;
+				background-position: 0% 50%;
 			}
 			100% {
-				background-position: 100% 50%;
+				background-position: 0% 50%;
 			}
 		}
 

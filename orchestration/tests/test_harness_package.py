@@ -48,6 +48,14 @@ class HarnessPackageTests(unittest.TestCase):
             "semantic_confidence": "high",
         }
 
+    def _write_governor_prompt(self, repo_root: Path) -> None:
+        prompt_dir = repo_root / "orchestration" / "prompts"
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        (prompt_dir / "governor.txt").write_text(
+            "You are the Governor. Return only user-facing text.",
+            encoding="utf-8",
+        )
+
     def test_intake_module_ready_and_acceptance_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
@@ -183,6 +191,163 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["feed"][-1]["title"], "Governor response")
             self.assertEqual(model["feed"][-1]["body"], "Hello from the interactive governor.")
             self.assertEqual(model["feed"][-1]["in_response_to_request_id"], "req-hello")
+
+    def test_external_governor_prepare_and_complete_appends_real_governor_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_governor_prompt(repo_root)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="hello!",
+                request_id="req-hello",
+                repo_root=repo_root,
+                **self._semantic_submit("governor_dialogue"),
+            )
+
+            prepared = session.dispatch_session_action(
+                "set_permission_scope",
+                permission_scope="observe",
+                request_id="req-observe",
+                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                governor_runtime="external",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(prepared["kind"], "governor_runtime_request")
+            runtime_request = prepared["request"]
+            self.assertEqual(runtime_request["requestId"], "req-hello")
+            self.assertIn("initialPrompt", runtime_request)
+            self.assertIn("resumePrompt", runtime_request)
+            self.assertEqual(prepared["model"]["snapshot"]["currentStage"], "waiting_for_governor")
+            payload = session.load_session(repo_root)
+            self.assertEqual(
+                payload["meta"]["pendingGovernorRuntimeRequest"]["runtimeRequestId"],
+                runtime_request["runtimeRequestId"],
+            )
+
+            model = session.dispatch_session_action(
+                "complete_governor_turn",
+                runtime_request_id=runtime_request["runtimeRequestId"],
+                runtime_body="Hello from app-server Governor.",
+                runtime_thread_id="thread-app-1",
+                runtime_turn_id="turn-app-1",
+                runtime_item_id="item-app-1",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["currentStage"], "dialogue_ready")
+            self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
+            self.assertEqual(model["feed"][-1]["type"], "actor_event")
+            self.assertEqual(model["feed"][-1]["source_actor"], "governor")
+            self.assertEqual(model["feed"][-1]["body"], "Hello from app-server Governor.")
+            payload = session.load_session(repo_root)
+            self.assertIsNone(payload["meta"].get("pendingGovernorRuntimeRequest"))
+            self.assertEqual(
+                payload["meta"]["governorDialogue"]["appServerThreadId"],
+                "thread-app-1",
+            )
+
+    def test_external_governor_plan_completion_creates_plan_ready_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_governor_prompt(repo_root)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="analyze the repo",
+                request_id="req-analyze",
+                repo_root=repo_root,
+                **self._semantic_submit("governed_work_intent"),
+            )
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Focus on architecture.",
+                request_id="req-clarify",
+                context_ref=model["activeClarification"]["contextRef"],
+                repo_root=repo_root,
+            )
+            prepared = session.dispatch_session_action(
+                "set_permission_scope",
+                permission_scope="plan",
+                request_id="req-plan",
+                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                governor_runtime="external",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(prepared["kind"], "governor_runtime_request")
+            runtime_request = prepared["request"]
+            self.assertEqual(runtime_request["resultStage"], "plan_ready")
+
+            model = session.dispatch_session_action(
+                "complete_governor_turn",
+                runtime_request_id=runtime_request["runtimeRequestId"],
+                runtime_body="Objective: inspect the repo. Steps: map extension and orchestration.",
+                runtime_thread_id="thread-plan-1",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["currentStage"], "plan_ready")
+            self.assertIsNotNone(model["planReadyRequest"])
+            self.assertEqual(
+                model["planReadyRequest"]["allowedActions"],
+                ["execute_plan", "revise_plan"],
+            )
+
+    def test_external_governor_unknown_runtime_request_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "complete_governor_turn",
+                runtime_request_id="missing",
+                runtime_body="Should not be accepted.",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["feed"][-1]["type"], "error")
+            self.assertEqual(model["feed"][-1]["title"], "Governor runtime request changed")
+
+    def test_external_governor_fallback_uses_exec_path_with_governor_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_governor_prompt(repo_root)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="hello!",
+                request_id="req-hello",
+                repo_root=repo_root,
+                **self._semantic_submit("governor_dialogue"),
+            )
+            prepared = session.dispatch_session_action(
+                "set_permission_scope",
+                permission_scope="observe",
+                request_id="req-observe",
+                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                governor_runtime="external",
+                repo_root=repo_root,
+            )
+            runtime_request_id = prepared["request"]["runtimeRequestId"]
+
+            with mock.patch.object(
+                session,
+                "_run_governor_exec",
+                return_value=("thread-exec-1", "Fallback Governor reply."),
+            ):
+                model = session.dispatch_session_action(
+                    "fallback_governor_turn",
+                    runtime_request_id=runtime_request_id,
+                    fallback_reason="app-server failed in test",
+                    repo_root=repo_root,
+                )
+
+            self.assertEqual(model["feed"][-1]["type"], "actor_event")
+            self.assertEqual(model["feed"][-1]["source_actor"], "governor")
+            self.assertEqual(model["feed"][-1]["body"], "Fallback Governor reply.")
+            payload = session.load_session(repo_root)
+            self.assertEqual(payload["meta"]["governorDialogue"]["threadId"], "thread-exec-1")
+            self.assertEqual(
+                payload["meta"]["governorDialogue"]["lastRuntimeSource"],
+                "exec-fallback",
+            )
 
     def test_scenario_fixture_loader_materializes_checked_in_state(self) -> None:
         self.assertIn("accepted_idle", list_scenarios())
