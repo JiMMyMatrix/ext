@@ -483,7 +483,7 @@ def _load_runtime_toml(config_path: Path) -> dict[str, Any]:
 
 
 def _governor_runtime_settings(repo_root: str | Path | None = None) -> tuple[str, str]:
-	model = "gpt-5.4"
+	model = "gpt-5.5"
 	reasoning = "xhigh"
 	config_path = resolve_paths(repo_root).runtime_root / "config.toml"
 	if config_path.exists():
@@ -3334,6 +3334,46 @@ def handle_fallback_governor_turn(
 	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
 
 
+def handle_fail_governor_turn(
+	session: dict[str, Any],
+	*,
+	runtime_request_id: str | None = None,
+	reason: str | None = None,
+) -> None:
+	now = utc_now()
+	model = session["model"]
+	pending = _pending_governor_runtime_request(session)
+	if not pending or not runtime_request_id or pending.get("runtimeRequestId") != runtime_request_id:
+		_append_error(
+			model,
+			"Governor runtime request changed",
+			"The pending Governor runtime request changed before the failure was applied.",
+			now,
+			presentation_key="error.stale_context",
+			presentation_args={"kind": "governor_runtime"},
+		)
+		return
+	governor_meta = _governor_dialogue_meta(session)
+	governor_meta["lastAppServerFailureReason"] = trim_text(reason or "app-server unavailable")
+	_append_error(
+		model,
+		"Governor unavailable",
+		"Corgi couldn't get a Governor reply right now. Please try again.",
+		now,
+		in_response_to_request_id=pending.get("requestId"),
+	)
+	_refresh_snapshot(
+		model,
+		now,
+		currentActor="orchestration",
+		currentStage="dialogue_failed",
+		runState="idle",
+		transportState="connected",
+	)
+	model["activeForegroundRequestId"] = None
+	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
+
+
 def handle_decline_permission(
 	session: dict[str, Any],
 	*,
@@ -3610,7 +3650,7 @@ def dispatch_session_action(
 ) -> dict[str, Any]:
 	session = load_session(repo_root)
 	now = utc_now()
-	if command not in {"state", "complete_governor_turn", "fallback_governor_turn"} and _is_duplicate_request(session, request_id):
+	if command not in {"state", "complete_governor_turn", "fallback_governor_turn", "fail_governor_turn"} and _is_duplicate_request(session, request_id):
 		_append_error(
 			session["model"],
 			"Duplicate request",
@@ -3721,6 +3761,12 @@ def dispatch_session_action(
 			runtime_request_id=runtime_request_id,
 			reason=fallback_reason,
 		)
+	elif command == "fail_governor_turn":
+		handle_fail_governor_turn(
+			session,
+			runtime_request_id=runtime_request_id,
+			reason=fallback_reason,
+		)
 	elif command == "interrupt_run":
 		handle_interrupt(
 			session,
@@ -3748,7 +3794,7 @@ def dispatch_session_action(
 	elif command != "state":
 		raise ValueError(f"unsupported session command: {command}")
 
-	if command not in {"state", "complete_governor_turn", "fallback_governor_turn"}:
+	if command not in {"state", "complete_governor_turn", "fallback_governor_turn", "fail_governor_turn"}:
 		_remember_request(session, request_id, command, now)
 	save_session(session, repo_root=repo_root)
 	pending = _pending_governor_runtime_request(session)
@@ -3843,6 +3889,9 @@ def build_parser() -> argparse.ArgumentParser:
 	fallback_governor = subparsers.add_parser("fallback_governor_turn")
 	fallback_governor.add_argument("--runtime-request-id", required=True)
 	fallback_governor.add_argument("--reason")
+	fail_governor = subparsers.add_parser("fail_governor_turn")
+	fail_governor.add_argument("--runtime-request-id", required=True)
+	fail_governor.add_argument("--reason")
 	interrupt = subparsers.add_parser("interrupt_run")
 	interrupt.add_argument("--text")
 	interrupt.add_argument("--request-id")

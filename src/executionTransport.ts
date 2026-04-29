@@ -5,13 +5,27 @@ import * as vscode from 'vscode';
 import {
 	AppServerGovernorRuntime,
 	type GovernorRuntime,
+	type GovernorRuntimeProgressEvent,
 	type GovernorRuntimeRequest,
 } from './governorRuntime';
 import { type ExecutionWindowModel, type ModelAction } from './phase1Model';
 
+export type ExecutionRuntimeEvent = {
+	stage: string;
+	message: string;
+	requestId?: string;
+	runtimeRequestId?: string;
+	runtimeKind?: 'dialogue' | 'semantic_intake';
+	elapsedMs?: number;
+	previewText?: string;
+	model?: ExecutionWindowModel;
+};
+
 export interface ExecutionTransport {
 	load(): Promise<ExecutionWindowModel>;
 	dispatch(action: ModelAction): Promise<ExecutionWindowModel>;
+	prewarm?(): void;
+	onRuntimeEvent?: vscode.Event<ExecutionRuntimeEvent>;
 	dispose?(): void;
 }
 
@@ -149,7 +163,16 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	private readonly pythonExecutable: string;
 	private readonly governorRuntimeMode: 'exec' | 'app-server';
 	private readonly useEphemeralAppServerThreads: boolean;
+	private readonly runtimeEventListeners = new Set<(event: ExecutionRuntimeEvent) => void>();
+	public readonly onRuntimeEvent: vscode.Event<ExecutionRuntimeEvent> = (listener) => {
+		this.runtimeEventListeners.add(listener);
+		return {
+			dispose: () => this.runtimeEventListeners.delete(listener),
+		};
+	};
 	private appServerRuntime: GovernorRuntime | undefined;
+	private appServerProgressUnsubscribe: (() => void) | undefined;
+	private prewarmPromise: Promise<void> | undefined;
 	private disposed = false;
 
 	constructor(
@@ -191,13 +214,47 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 
 	public dispose(): void {
 		this.disposed = true;
+		this.appServerProgressUnsubscribe?.();
 		this.appServerRuntime?.shutdown();
+		this.runtimeEventListeners.clear();
+	}
+
+	public prewarm(): void {
+		if (this.governorRuntimeMode !== 'app-server' || this.disposed) {
+			return;
+		}
+		if (this.prewarmPromise) {
+			return;
+		}
+		const startedAt = Date.now();
+		this.emitRuntimeEvent({
+			stage: 'app_server_prewarm_started',
+			message: 'Warming up Governor runtime',
+		});
+		const runtime = this.getAppServerRuntime();
+		this.prewarmPromise = runtime
+			.prewarm?.()
+			.then(() => {
+				this.emitRuntimeEvent({
+					stage: 'app_server_prewarm_ready',
+					message: 'Governor runtime is warm',
+					elapsedMs: Date.now() - startedAt,
+				});
+			})
+			.catch((error: unknown) => {
+				this.emitRuntimeEvent({
+					stage: 'app_server_prewarm_failed',
+					message: error instanceof Error ? error.message : String(error),
+					elapsedMs: Date.now() - startedAt,
+				});
+				this.prewarmPromise = undefined;
+			});
 	}
 
 	private async run(group: string, command: string, action?: ModelAction): Promise<ExecutionWindowModel> {
 		const result = await this.runRaw(group, command, action);
 		if (isGovernorRuntimeResponse(result)) {
-			return this.handleGovernorRuntimeResponse(result.request);
+			return this.handleGovernorRuntimeResponse(result.request, result.model);
 		}
 		return result as ExecutionWindowModel;
 	}
@@ -322,11 +379,29 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	}
 
 	private async handleGovernorRuntimeResponse(
-		request: GovernorRuntimeRequest
+		request: GovernorRuntimeRequest,
+		preparedModel: ExecutionWindowModel
 	): Promise<ExecutionWindowModel> {
 		const runtime = this.getAppServerRuntime();
+		const startedAt = Date.now();
+		this.emitRuntimeEvent({
+			stage: 'governor_runtime_requested',
+			message: 'Waiting for a reply from the Governor...',
+			requestId: request.requestId,
+			runtimeRequestId: request.runtimeRequestId,
+			runtimeKind: request.runtimeKind,
+			model: preparedModel,
+		});
 		try {
 			const result = await runtime.sendDialogueTurn(request, this.cwd);
+			this.emitRuntimeEvent({
+				stage: 'governor_runtime_completed',
+				message: 'Governor replied',
+				requestId: request.requestId,
+				runtimeRequestId: request.runtimeRequestId,
+				runtimeKind: request.runtimeKind,
+				elapsedMs: Date.now() - startedAt,
+			});
 			return (await this.runRaw(
 				'session',
 				'complete-governor-turn',
@@ -348,9 +423,17 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 			if (this.disposed || isAppServerShutdownReason(reason)) {
 				return (await this.runRaw('session', 'state')) as ExecutionWindowModel;
 			}
+			this.emitRuntimeEvent({
+				stage: 'governor_runtime_failed',
+				message: reason,
+				requestId: request.requestId,
+				runtimeRequestId: request.runtimeRequestId,
+				runtimeKind: request.runtimeKind,
+				elapsedMs: Date.now() - startedAt,
+			});
 			return (await this.runRaw(
 				'session',
-				'fallback-governor-turn',
+				'fail-governor-turn',
 				undefined,
 				[
 					'--runtime-request-id',
@@ -363,10 +446,34 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	}
 
 	private getAppServerRuntime(): GovernorRuntime {
-		this.appServerRuntime ??= new AppServerGovernorRuntime({
-			ephemeralThreads: this.useEphemeralAppServerThreads,
-		});
+		if (!this.appServerRuntime) {
+			const runtime = new AppServerGovernorRuntime({
+				ephemeralThreads: this.useEphemeralAppServerThreads,
+			});
+			this.appServerProgressUnsubscribe = runtime.onProgress?.((event) =>
+				this.emitAppServerProgress(event)
+			);
+			this.appServerRuntime = runtime;
+		}
 		return this.appServerRuntime;
+	}
+
+	private emitAppServerProgress(event: GovernorRuntimeProgressEvent): void {
+		this.emitRuntimeEvent({
+			stage: event.stage,
+			message: event.message ?? event.stage,
+			requestId: event.requestId,
+			runtimeRequestId: event.runtimeRequestId,
+			runtimeKind: event.runtimeKind,
+			elapsedMs: event.elapsedMs,
+			previewText: event.previewText,
+		});
+	}
+
+	private emitRuntimeEvent(event: ExecutionRuntimeEvent): void {
+		for (const listener of this.runtimeEventListeners) {
+			listener(event);
+		}
 	}
 }
 

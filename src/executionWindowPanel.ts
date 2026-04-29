@@ -16,6 +16,7 @@ import {
 	createExecutionTransport,
 	TransportUnavailableError,
 	type ExecutionTransport,
+	type ExecutionRuntimeEvent,
 } from './executionTransport';
 import {
 	SemanticSidecar,
@@ -109,6 +110,11 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			this.workspaceRoot,
 			context.extensionUri
 		);
+		if (this.transport.onRuntimeEvent) {
+			this.disposables.push(
+				this.transport.onRuntimeEvent((event) => this.handleRuntimeEvent(event))
+			);
+		}
 		this.semanticSidecar = new SemanticSidecar();
 	}
 
@@ -131,6 +137,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			})
 		);
 		void this.refreshState();
+		this.transport.prewarm?.();
 	}
 
 	public async openView() {
@@ -160,6 +167,39 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			type: 'state',
 			payload: this.model,
 		});
+	}
+
+	private handleRuntimeEvent(event: ExecutionRuntimeEvent) {
+		this.appendDevelopmentLog(
+			`runtime ${event.stage}${event.elapsedMs !== undefined ? ` ${event.elapsedMs}ms` : ''}`
+		);
+		if (event.model) {
+			this.model = event.model;
+			this.postState();
+		}
+		void this.view?.webview.postMessage({
+			type: 'runtime_progress',
+			payload: event,
+		});
+	}
+
+	private appendDevelopmentLog(message: string) {
+		if (this.context.extensionMode !== vscode.ExtensionMode.Development) {
+			return;
+		}
+
+		const monitorRoot = this.monitorRootUri();
+		if (!monitorRoot) {
+			return;
+		}
+
+		const logDir = resolveOrchestrationStateRootPath(monitorRoot.fsPath);
+		fs.mkdirSync(logDir, { recursive: true });
+		fs.appendFileSync(
+			path.join(logDir, 'corgi_extension_dev.log'),
+			`${new Date().toISOString()} ${message}\n`,
+			'utf8'
+		);
 	}
 
 	private shouldWriteWebviewSnapshots(): boolean {
@@ -1182,6 +1222,24 @@ export function getExecutionWindowHtml(
 			font-size: 11px;
 		}
 
+		.draft-preview {
+			margin-top: 8px;
+			max-width: min(100%, 46rem);
+			color: var(--text);
+			font-size: 13px;
+			line-height: 1.55;
+			opacity: 0.72;
+			white-space: pre-wrap;
+		}
+
+		.draft-preview-label {
+			margin-bottom: 4px;
+			color: var(--muted);
+			font-size: 11px;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+		}
+
 		.progress-bullet {
 			display: grid;
 			grid-template-columns: 10px minmax(0, 1fr);
@@ -1426,6 +1484,8 @@ export function getExecutionWindowHtml(
 		let model = undefined;
 		let hasRendered = false;
 		let monitorSnapshotTimer = undefined;
+		let draftPreviewTimer = undefined;
+		let governorWaitTimers = [];
 		const ui = {
 			draft: typeof persisted.draft === 'string' ? persisted.draft : '',
 			expandedIds: new Set(Array.isArray(persisted.expandedIds) ? persisted.expandedIds : []),
@@ -1938,14 +1998,130 @@ export function getExecutionWindowHtml(
 		}
 
 		function startForegroundRequest(userText, hint, requestKey) {
+			clearDraftPreviewTimer();
+			clearGovernorWaitTimers();
 			ui.foregroundRequest = {
 				id: 'foreground-' + String(Date.now()),
 				requestKey: requestKey || nextForegroundRequestKey(),
 				userText: userText || '',
 				status: 'live',
 				hint: hint || '',
+				draftPreview: '',
+				draftPreviewTarget: '',
 				bullets: [],
 			};
+		}
+
+		function clearDraftPreviewTimer() {
+			if (draftPreviewTimer) {
+				clearTimeout(draftPreviewTimer);
+				draftPreviewTimer = undefined;
+			}
+		}
+
+		function clearGovernorWaitTimers() {
+			for (const timer of governorWaitTimers) {
+				clearTimeout(timer);
+			}
+			governorWaitTimers = [];
+		}
+
+		function resetDraftPreview() {
+			clearDraftPreviewTimer();
+			if (!ui.foregroundRequest) {
+				return;
+			}
+			ui.foregroundRequest.draftPreview = '';
+			ui.foregroundRequest.draftPreviewTarget = '';
+		}
+
+		function nextDraftPreviewSlice(current, target) {
+			const normalizedCurrent = target.startsWith(current) ? current : '';
+			const remaining = target.slice(normalizedCurrent.length);
+			const nextWord = remaining.match(/^\\s*\\S+\\s*/);
+			if (!nextWord) {
+				return target;
+			}
+			return normalizedCurrent + nextWord[0];
+		}
+
+		function scheduleDraftPreviewTyping() {
+			if (draftPreviewTimer || !ui.foregroundRequest) {
+				return;
+			}
+			draftPreviewTimer = setTimeout(() => {
+				draftPreviewTimer = undefined;
+				if (!ui.foregroundRequest) {
+					return;
+				}
+				const target = String(ui.foregroundRequest.draftPreviewTarget || '');
+				const current = String(ui.foregroundRequest.draftPreview || '');
+				if (!target || current === target) {
+					return;
+				}
+				ui.foregroundRequest.draftPreview = nextDraftPreviewSlice(current, target);
+				renderFeed();
+				scheduleWebviewSnapshot('draft_preview_type');
+				if (ui.foregroundRequest.draftPreview !== target) {
+					scheduleDraftPreviewTyping();
+				}
+			}, 55);
+		}
+
+		function setDraftPreviewTarget(value) {
+			if (!ui.foregroundRequest) {
+				return;
+			}
+			const target = String(value || '').trim();
+			if (!target) {
+				resetDraftPreview();
+				return;
+			}
+			if (!target.startsWith(String(ui.foregroundRequest.draftPreview || ''))) {
+				ui.foregroundRequest.draftPreview = '';
+			}
+			ui.foregroundRequest.draftPreviewTarget = target;
+			scheduleDraftPreviewTyping();
+		}
+
+		function scheduleGovernorWaitHeartbeat(event) {
+			clearGovernorWaitTimers();
+			const requestKey = event?.requestId;
+			const runtimeRequestId = event?.runtimeRequestId || '';
+			if (!requestKey) {
+				return;
+			}
+			const isSemanticIntake = event.runtimeKind === 'semantic_intake';
+			const beats = isSemanticIntake
+				? [
+					[12000, 'Still interpreting the request', 'Governor is still interpreting the request...'],
+					[30000, 'Still checking intent and workflow state', 'Governor is still checking intent and workflow state...'],
+				]
+				: [
+					[12000, 'Still waiting for the Governor', 'Still waiting for a reply from the Governor...'],
+					[30000, 'Governor is still thinking', 'Governor is still thinking through the plan...'],
+					[60000, 'Governor is taking a deeper pass', 'The Governor is still working. This model can take a little longer.'],
+				];
+			governorWaitTimers = beats.map(([delay, label, hint]) =>
+				setTimeout(() => {
+					if (
+						!ui.foregroundRequest ||
+						ui.foregroundRequest.requestKey !== requestKey ||
+						ui.foregroundRequest.status !== 'live' ||
+						(runtimeRequestId && ui.foregroundRequest.runtimeRequestId !== runtimeRequestId) ||
+						ui.foregroundRequest.draftPreviewTarget ||
+						latestRequestActorEvent(requestKey) ||
+						latestRequestError(requestKey)
+					) {
+						return;
+					}
+					replaceForegroundTail(label, 'active', hint);
+					persistUiState();
+					renderFeed();
+					renderComposer();
+					scheduleWebviewSnapshot('governor_wait_heartbeat');
+				}, delay)
+			);
 		}
 
 		function ensureForegroundRequest(userText, hint, requestKey) {
@@ -2001,6 +2177,9 @@ export function getExecutionWindowHtml(
 			if (hint) {
 				ui.foregroundRequest.hint = hint;
 			}
+			if ((state || '').toString() === 'failed') {
+				resetDraftPreview();
+			}
 		}
 
 		function replaceForegroundTail(label, state, hint) {
@@ -2018,6 +2197,9 @@ export function getExecutionWindowHtml(
 			trimForegroundBullets();
 			if (hint) {
 				ui.foregroundRequest.hint = hint;
+			}
+			if ((state || '').toString() === 'failed') {
+				resetDraftPreview();
 			}
 		}
 
@@ -2090,6 +2272,68 @@ export function getExecutionWindowHtml(
 			}, 6500);
 		}
 
+		function runtimeProgressMatchesForeground(event) {
+			return Boolean(
+				event &&
+					event.requestId &&
+					ui.foregroundRequest &&
+					ui.foregroundRequest.requestKey === event.requestId
+			);
+		}
+
+		function applyRuntimeProgress(event) {
+			if (!runtimeProgressMatchesForeground(event)) {
+				return;
+			}
+			if (event.stage === 'turn_started') {
+				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
+				replaceForegroundTail(
+					'Governor is reading the request',
+					'active',
+					'Governor is reading the request...'
+				);
+				scheduleGovernorWaitHeartbeat(event);
+			} else if (event.stage === 'first_delta') {
+				clearGovernorWaitTimers();
+				const isSemanticIntake = event.runtimeKind === 'semantic_intake';
+				replaceForegroundTail(
+					isSemanticIntake
+						? 'Governor is interpreting the request'
+						: 'Governor is drafting a reply',
+					'active',
+					isSemanticIntake
+						? 'Governor is interpreting the request...'
+						: 'Governor is drafting a reply...'
+				);
+			} else if (event.stage === 'draft_preview') {
+				clearGovernorWaitTimers();
+				replaceForegroundTail(
+					'Governor is drafting a reply',
+					'active',
+					'Governor is drafting a reply...'
+				);
+				if (typeof event.previewText === 'string' && event.previewText.trim()) {
+					setDraftPreviewTarget(event.previewText);
+				}
+			} else if (event.stage === 'governor_runtime_failed') {
+				clearGovernorWaitTimers();
+				replaceForegroundTail(
+					'Governor runtime had trouble',
+					'failed',
+					'Governor did not reply. Corgi is updating the state now.'
+				);
+				resetDraftPreview();
+			} else if (event.stage === 'governor_runtime_completed') {
+				clearGovernorWaitTimers();
+			} else {
+				return;
+			}
+			persistUiState();
+			renderFeed();
+			renderComposer();
+			scheduleWebviewSnapshot('runtime_progress');
+		}
+
 		function freezeForegroundRequest(label, state, hint) {
 			if (!ui.foregroundRequest) {
 				return;
@@ -2109,6 +2353,8 @@ export function getExecutionWindowHtml(
 				ui.foregroundRequest.bullets[ui.foregroundRequest.bullets.length - 1].state = state || 'done';
 			}
 			ui.foregroundRequest.status = 'frozen';
+			resetDraftPreview();
+			clearGovernorWaitTimers();
 			if (hint) {
 				ui.foregroundRequest.hint = hint;
 			}
@@ -2261,11 +2507,6 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
-			if (snapshot.runState === 'running') {
-				replaceForegroundTail('Execution started', 'active', 'Corgi is actively working on this request.');
-				return;
-			}
-
 			const latestActorEvent = latestRequestActorEvent(requestKey);
 			if (latestActorEvent) {
 				freezeForegroundRequest('Governor responded', 'done', 'Corgi is ready for the next step.');
@@ -2273,11 +2514,24 @@ export function getExecutionWindowHtml(
 			}
 
 			if (snapshot.currentActor === 'governor') {
+				if (snapshot.currentStage === 'semantic_intake') {
+					replaceForegroundTail(
+						'Governor is interpreting the request',
+						'active',
+						'Governor is interpreting the request...'
+					);
+					return;
+				}
 				setForegroundSingleBullet(
 					'Waiting for a reply from the Governor...',
 					'active',
 					'Waiting for a reply from the Governor...'
 				);
+				return;
+			}
+
+			if (snapshot.runState === 'running') {
+				replaceForegroundTail('Execution started', 'active', 'Corgi is actively working on this request.');
 				return;
 			}
 
@@ -2840,6 +3094,13 @@ export function getExecutionWindowHtml(
 							.join('') +
 					  '</ul>'
 					: '';
+			const draftPreviewText = String(ui.foregroundRequest.draftPreview || '').trim();
+			const draftPreviewMarkup = draftPreviewText
+				? '<div class="draft-preview" aria-live="polite">' +
+					'<div class="draft-preview-label">Governor draft</div>' +
+					'<div>' + escapeHtml(draftPreviewText) + '</div>' +
+				  '</div>'
+				: '';
 
 			return (
 				(ui.foregroundRequest.userText && !hasAuthoritativeUserEcho
@@ -2852,6 +3113,7 @@ export function getExecutionWindowHtml(
 					(ui.foregroundRequest.status === 'frozen' ? 'is-frozen' : '') +
 				'">' +
 					bulletMarkup +
+					draftPreviewMarkup +
 					(shouldRenderHint
 						? '<div class="activity-summary">' + escapeHtml(ui.foregroundRequest.hint) + '</div>'
 						: '') +
@@ -3192,6 +3454,10 @@ export function getExecutionWindowHtml(
 
 		window.addEventListener('message', (event) => {
 			const message = event.data;
+			if (message?.type === 'runtime_progress') {
+				applyRuntimeProgress(message.payload || {});
+				return;
+			}
 			if (message?.type !== 'state') {
 				return;
 			}

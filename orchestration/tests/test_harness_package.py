@@ -554,6 +554,45 @@ class HarnessPackageTests(unittest.TestCase):
                 "exec-fallback",
             )
 
+    def test_external_governor_fail_fast_records_error_without_exec_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_governor_prompt(repo_root)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="hello!",
+                request_id="req-hello",
+                repo_root=repo_root,
+                **self._semantic_submit("governor_dialogue"),
+            )
+            prepared = session.dispatch_session_action(
+                "set_permission_scope",
+                permission_scope="observe",
+                request_id="req-observe",
+                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                governor_runtime="external",
+                repo_root=repo_root,
+            )
+
+            with mock.patch.object(session, "_run_governor_exec") as exec_mock:
+                model = session.dispatch_session_action(
+                    "fail_governor_turn",
+                    runtime_request_id=prepared["request"]["runtimeRequestId"],
+                    fallback_reason="app-server timed out",
+                    repo_root=repo_root,
+                )
+
+            exec_mock.assert_not_called()
+            self.assertEqual(model["feed"][-1]["type"], "error")
+            self.assertEqual(model["feed"][-1]["title"], "Governor unavailable")
+            self.assertEqual(model["snapshot"]["currentStage"], "dialogue_failed")
+            payload = session.load_session(repo_root)
+            self.assertIsNone(payload["meta"].get("pendingGovernorRuntimeRequest"))
+            self.assertEqual(
+                payload["meta"]["governorDialogue"]["lastAppServerFailureReason"],
+                "app-server timed out",
+            )
+
     def test_scenario_fixture_loader_materializes_checked_in_state(self) -> None:
         self.assertIn("accepted_idle", list_scenarios())
         self.assertIn("completed_with_governor_decision", list_scenarios())

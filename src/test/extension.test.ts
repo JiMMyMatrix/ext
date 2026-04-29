@@ -53,6 +53,10 @@ const GOVERNOR_RUNTIME_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/governorRuntime.ts'
 );
+const GOVERNOR_RUNTIME_CONFIG_PATH = path.resolve(
+	__dirname,
+	'../../orchestration/runtime/config.toml'
+);
 const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
 	__dirname,
 	'../../src/test/fixtures/semantic-routing.json'
@@ -241,11 +245,16 @@ suite('Corgi Webview UX', () => {
 
 		assert.ok(transportSource.includes('CORGI_GOVERNOR_RUNTIME'));
 		assert.ok(transportSource.includes('--semantic-mode'));
+		assert.ok(transportSource.includes('prewarm()'));
+		assert.ok(transportSource.includes('onRuntimeEvent'));
+		assert.ok(transportSource.includes('model?: ExecutionWindowModel'));
+		assert.ok(transportSource.includes('this.handleGovernorRuntimeResponse(result.request, result.model)'));
+		assert.ok(transportSource.includes('model: preparedModel'));
 		assert.ok(transportSource.includes("get<string>('governorRuntime')"));
 		assert.ok(transportSource.includes("configured === 'exec' ? 'exec' : 'app-server'"));
 		assert.ok(transportSource.includes("'--governor-runtime', 'external'"));
 		assert.ok(transportSource.includes("'complete-governor-turn'"));
-		assert.ok(transportSource.includes("'fallback-governor-turn'"));
+		assert.ok(transportSource.includes("'fail-governor-turn'"));
 		assert.ok(transportSource.includes('isAppServerShutdownReason'));
 		assert.ok(transportSource.includes('isGovernorRuntimeResponse'));
 	});
@@ -278,9 +287,34 @@ suite('Corgi Webview UX', () => {
 		assert.ok(clientSource.includes('item/agentMessage/delta'));
 		assert.ok(clientSource.includes('item/completed'));
 		assert.ok(clientSource.includes('turn/completed'));
+		assert.ok(clientSource.includes('turn/interrupt'));
+		assert.ok(clientSource.includes('draft_preview'));
+		assert.ok(clientSource.includes('compactPreviewText'));
+		assert.ok(clientSource.includes('text.length <= 5000'));
 		assert.ok(clientSource.includes('app-server emitted malformed JSON'));
 		assert.ok(runtimeSource.includes("account.kind === 'apiKey'"));
 		assert.ok(runtimeSource.includes('expects ChatGPT auth'));
+		assert.ok(runtimeSource.includes("previewEnabled: request.runtimeKind !== 'semantic_intake'"));
+		assert.ok(runtimeSource.includes('CORGI_SEMANTIC_INTAKE_TIMEOUT_MS'));
+		assert.ok(runtimeSource.includes('DEFAULT_SEMANTIC_INTAKE_TIMEOUT_MS = 60_000'));
+		assert.ok(!runtimeSource.includes("? 25_000"));
+	});
+
+	test('semantic-intake runtime progress is presented as interpretation, not user-visible drafting', () => {
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
+		const clientSource = fs.readFileSync(CODEX_APP_SERVER_CLIENT_TS_PATH, 'utf8');
+
+		assert.ok(clientSource.includes("runtimeKind?: 'dialogue' | 'semantic_intake'"));
+		assert.ok(transportSource.includes('runtimeKind: event.runtimeKind'));
+		assert.ok(webviewSource.includes("event.runtimeKind === 'semantic_intake'"));
+		assert.ok(webviewSource.includes('if (event.model)'));
+		assert.ok(webviewSource.includes('this.model = event.model'));
+		assert.ok(webviewSource.includes('Governor is interpreting the request'));
+		assert.match(
+			webviewSource,
+			/snapshot\.currentActor === 'governor'[\s\S]*?snapshot\.currentStage === 'semantic_intake'[\s\S]*?snapshot\.runState === 'running'/
+		);
 	});
 
 	test('prompt submits omit sessionRef while state-bound actions still gate it on authoritative transport state', () => {
@@ -336,11 +370,40 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('const visibleBullets = bullets.slice(-3);'));
 		assert.ok(webviewSource.includes('function trimForegroundBullets()'));
 		assert.ok(webviewSource.includes('function foregroundRequestCanReceiveTrace(requestKey)'));
+		assert.ok(webviewSource.includes('function applyRuntimeProgress(event)'));
+		assert.ok(webviewSource.includes('function setDraftPreviewTarget(value)'));
+		assert.ok(webviewSource.includes('function scheduleDraftPreviewTyping()'));
+		assert.ok(webviewSource.includes('function scheduleGovernorWaitHeartbeat(event)'));
+		assert.ok(webviewSource.includes('Still waiting for the Governor'));
+		assert.ok(webviewSource.includes('Governor is taking a deeper pass'));
+		assert.ok(webviewSource.includes('nextDraftPreviewSlice(current, target)'));
+		assert.ok(webviewSource.includes("scheduleWebviewSnapshot('draft_preview_type')"));
+		assert.ok(webviewSource.includes("scheduleWebviewSnapshot('governor_wait_heartbeat')"));
+		assert.ok(webviewSource.includes('draft-preview'));
+		assert.ok(webviewSource.includes('Governor draft'));
+		assert.ok(
+			!/function ensureForegroundRequest[\s\S]*?\(state \|\| ''\)[\s\S]*?\n\t\tfunction latestForegroundUserTextFromModel/.test(
+				webviewSource
+			)
+		);
 		assert.ok(webviewSource.includes('snapshot.pendingPermissionRequest'));
 		assert.ok(webviewSource.includes('model.activeClarification'));
 		assert.ok(webviewSource.includes('activity-trace'));
 		assert.ok(webviewSource.includes('Still working behind the scenes'));
 		assert.ok(webviewSource.includes('background: transparent;'));
+	});
+
+	test('governor runtime config uses gpt-5.5 with xhigh reasoning', () => {
+		const configSource = fs.readFileSync(GOVERNOR_RUNTIME_CONFIG_PATH, 'utf8');
+		const sessionSource = fs.readFileSync(
+			path.resolve(__dirname, '../../orchestration/harness/session.py'),
+			'utf8'
+		);
+
+		assert.ok(configSource.includes('model = "gpt-5.5"'));
+		assert.ok(configSource.includes('model_reasoning_effort = "xhigh"'));
+		assert.ok(sessionSource.includes('model = "gpt-5.5"'));
+		assert.ok(sessionSource.includes('reasoning = "xhigh"'));
 	});
 
 	test('permission continuation collapses progress into a specific wait state', () => {

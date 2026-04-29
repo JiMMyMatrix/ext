@@ -21,7 +21,29 @@ export type AppServerTurnResult = {
 	message: string;
 };
 
+export type AppServerProgressEvent = {
+	stage:
+		| 'process_starting'
+		| 'initialized'
+		| 'account_checked'
+		| 'thread_started'
+		| 'turn_started'
+		| 'first_delta'
+		| 'draft_preview'
+		| 'turn_completed';
+	requestId?: string;
+	runtimeRequestId?: string;
+	runtimeKind?: 'dialogue' | 'semantic_intake';
+	elapsedMs?: number;
+	message?: string;
+	previewText?: string;
+};
+
 export type AppServerTurnRequest = {
+	requestId?: string;
+	runtimeRequestId?: string;
+	runtimeKind?: 'dialogue' | 'semantic_intake';
+	previewEnabled?: boolean;
 	threadId?: string;
 	prompt: string;
 	model: string;
@@ -35,6 +57,14 @@ type ActiveTurn = {
 	threadId?: string;
 	turnId?: string;
 	itemId?: string;
+	requestId?: string;
+	runtimeRequestId?: string;
+	runtimeKind?: 'dialogue' | 'semantic_intake';
+	previewEnabled: boolean;
+	startedAt: number;
+	receivedDelta: boolean;
+	lastPreviewAt: number;
+	lastPreviewLength: number;
 	deltas: string[];
 	completedMessage?: string;
 	resolve: (value: AppServerTurnResult) => void;
@@ -68,6 +98,7 @@ export class CodexAppServerClient extends EventEmitter {
 		});
 		this.notify('initialized', {});
 		this.initialized = true;
+		this.emitProgress({ stage: 'initialized', message: 'Governor runtime initialized' });
 	}
 
 	public async readAccount(): Promise<AppServerAccountStatus> {
@@ -77,6 +108,7 @@ export class CodexAppServerClient extends EventEmitter {
 			const account = asObject(response?.account);
 			const type = typeof account?.type === 'string' ? account.type : undefined;
 			if (type === 'chatgpt') {
+				this.emitProgress({ stage: 'account_checked', message: 'Governor auth is ready' });
 				return {
 					kind: 'chatgpt',
 					email: typeof account?.email === 'string' ? account.email : undefined,
@@ -111,11 +143,22 @@ export class CodexAppServerClient extends EventEmitter {
 
 		const resultPromise = new Promise<AppServerTurnResult>((resolve, reject) => {
 			const timer = setTimeout(() => {
+				if (this.activeTurn) {
+					this.interruptTurn(this.activeTurn);
+				}
 				this.activeTurn = undefined;
 				reject(new Error('app-server Governor turn timed out'));
 			}, timeoutMs);
 			this.activeTurn = {
 				threadId,
+				requestId: request.requestId,
+				runtimeRequestId: request.runtimeRequestId,
+				runtimeKind: request.runtimeKind,
+				previewEnabled: request.previewEnabled === true,
+				startedAt: Date.now(),
+				receivedDelta: false,
+				lastPreviewAt: 0,
+				lastPreviewLength: 0,
 				deltas: [],
 				resolve,
 				reject,
@@ -182,6 +225,13 @@ export class CodexAppServerClient extends EventEmitter {
 		if (!threadId) {
 			throw new Error('app-server thread/start returned no thread id');
 		}
+		this.emitProgress({
+			stage: 'thread_started',
+			runtimeRequestId: request.runtimeRequestId,
+			requestId: request.requestId,
+			runtimeKind: request.runtimeKind,
+			message: 'Governor thread ready',
+		});
 		return threadId;
 	}
 
@@ -202,6 +252,7 @@ export class CodexAppServerClient extends EventEmitter {
 			return;
 		}
 		this.exited = false;
+		this.emitProgress({ stage: 'process_starting', message: 'Starting Governor runtime' });
 		this.process = spawn('codex', [
 			'app-server',
 			'-c',
@@ -302,6 +353,14 @@ export class CodexAppServerClient extends EventEmitter {
 				if (this.activeTurn) {
 					this.activeTurn.threadId = stringAt(params, ['threadId']) ?? this.activeTurn.threadId;
 					this.activeTurn.turnId = stringAt(params, ['turn', 'id']) ?? stringAt(params, ['turnId']) ?? this.activeTurn.turnId;
+					this.emitProgress({
+						stage: 'turn_started',
+						runtimeRequestId: this.activeTurn.runtimeRequestId,
+						requestId: this.activeTurn.requestId,
+						runtimeKind: this.activeTurn.runtimeKind,
+						elapsedMs: Date.now() - this.activeTurn.startedAt,
+						message: 'Governor turn started',
+					});
 				}
 				break;
 			case 'item/agentMessage/delta':
@@ -309,6 +368,18 @@ export class CodexAppServerClient extends EventEmitter {
 					this.activeTurn.deltas.push(params.delta);
 					this.activeTurn.itemId = stringAt(params, ['itemId']) ?? this.activeTurn.itemId;
 					this.activeTurn.turnId = stringAt(params, ['turnId']) ?? this.activeTurn.turnId;
+					if (!this.activeTurn.receivedDelta) {
+						this.activeTurn.receivedDelta = true;
+						this.emitProgress({
+							stage: 'first_delta',
+							runtimeRequestId: this.activeTurn.runtimeRequestId,
+							requestId: this.activeTurn.requestId,
+							runtimeKind: this.activeTurn.runtimeKind,
+							elapsedMs: Date.now() - this.activeTurn.startedAt,
+							message: 'Governor is drafting a reply',
+						});
+					}
+					this.maybeEmitDraftPreview();
 				}
 				break;
 			case 'item/completed': {
@@ -354,6 +425,14 @@ export class CodexAppServerClient extends EventEmitter {
 		const message = (activeTurn.completedMessage ?? activeTurn.deltas.join('')).trim();
 		clearTimeout(activeTurn.timer);
 		this.activeTurn = undefined;
+		this.emitProgress({
+			stage: 'turn_completed',
+			runtimeRequestId: activeTurn.runtimeRequestId,
+			requestId: activeTurn.requestId,
+			runtimeKind: activeTurn.runtimeKind,
+			elapsedMs: Date.now() - activeTurn.startedAt,
+			message: 'Governor turn completed',
+		});
 		if (!message) {
 			activeTurn.reject(new Error('app-server turn completed without a Governor message'));
 			return;
@@ -375,6 +454,22 @@ export class CodexAppServerClient extends EventEmitter {
 		this.activeTurn = undefined;
 	}
 
+	private interruptTurn(activeTurn: ActiveTurn): void {
+		const params: JsonObject = {};
+		if (activeTurn.threadId) {
+			params.threadId = activeTurn.threadId;
+		}
+		if (activeTurn.turnId) {
+			params.turnId = activeTurn.turnId;
+		}
+		if (Object.keys(params).length === 0) {
+			return;
+		}
+		void this.request('turn/interrupt', params, 5_000).catch(() => {
+			// Best-effort cleanup only; timeout reporting remains the authoritative failure.
+		});
+	}
+
 	private rejectAll(error: Error): void {
 		for (const pending of this.pendingRequests.values()) {
 			clearTimeout(pending.timer);
@@ -382,6 +477,42 @@ export class CodexAppServerClient extends EventEmitter {
 		}
 		this.pendingRequests.clear();
 		this.rejectActiveTurn(error);
+	}
+
+	private emitProgress(event: AppServerProgressEvent): void {
+		this.emit('progress', event);
+	}
+
+	private maybeEmitDraftPreview(): void {
+		const activeTurn = this.activeTurn;
+		if (!activeTurn?.previewEnabled) {
+			return;
+		}
+		const now = Date.now();
+		const fullText = activeTurn.deltas.join('').trim();
+		if (!fullText) {
+			return;
+		}
+		const hasEnoughNewText = fullText.length - activeTurn.lastPreviewLength >= 180;
+		const waitedLongEnough = now - activeTurn.lastPreviewAt >= 1600;
+		const hasSentenceBoundary = /[.!?。！？]\\s*$/.test(fullText);
+		if (
+			activeTurn.lastPreviewAt > 0 &&
+			(!waitedLongEnough || (!hasEnoughNewText && !hasSentenceBoundary))
+		) {
+			return;
+		}
+		activeTurn.lastPreviewAt = now;
+		activeTurn.lastPreviewLength = fullText.length;
+		this.emitProgress({
+			stage: 'draft_preview',
+			runtimeRequestId: activeTurn.runtimeRequestId,
+			requestId: activeTurn.requestId,
+			runtimeKind: activeTurn.runtimeKind,
+			elapsedMs: now - activeTurn.startedAt,
+			message: 'Governor draft preview',
+			previewText: compactPreviewText(fullText),
+		});
 	}
 }
 
@@ -397,6 +528,14 @@ function readOnlySandbox(): JsonObject {
 
 function normalizeReasoning(reasoning: string): string {
 	return reasoning === 'minimal' ? 'low' : reasoning;
+}
+
+function compactPreviewText(value: string): string {
+	const text = value.replace(/\\s+/g, ' ').trim();
+	if (text.length <= 5000) {
+		return text;
+	}
+	return `...${text.slice(-5000)}`;
 }
 
 function asObject(value: unknown): JsonObject | undefined {
