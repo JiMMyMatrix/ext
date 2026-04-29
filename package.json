@@ -69,6 +69,7 @@
     "check:orchestration": "bash orchestration/scripts/verify_architecture.sh",
     "lint": "eslint src",
     "test": "mocha --ui tdd --require ./scripts/vscode-node-shim.cjs \"out/test/**/*.test.js\"",
+    "test:window": "bash scripts/launch-corgi-test-window.sh",
     "test:vscode": "vscode-test",
     "test:orchestration": "node scripts/run-orchestration-tests.cjs"
   },

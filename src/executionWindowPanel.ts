@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { resolveOrchestrationStateRootPath } from './agentPaths';
 import {
 	appendError,
 	appendControllerSemanticClarification,
@@ -179,11 +180,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			return;
 		}
 
-		const monitorDir = path.join(
-			monitorRoot.fsPath,
-			'.agent',
-			'orchestration'
-		);
+		const monitorDir = resolveOrchestrationStateRootPath(monitorRoot.fsPath);
 		const snapshot: WebviewSnapshotFile = {
 			recordedAt: new Date().toISOString(),
 			monitorSessionId: this.monitorSessionId,
@@ -1165,6 +1162,12 @@ export function getExecutionWindowHtml(
 			border: 1px solid transparent;
 		}
 
+		.activity-trace {
+			background: transparent;
+			box-shadow: none;
+			opacity: 0.96;
+		}
+
 		.progress-list {
 			list-style: none;
 			margin: 0;
@@ -1900,6 +1903,13 @@ export function getExecutionWindowHtml(
 			return 'bullet-' + String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8);
 		}
 
+		function trimForegroundBullets() {
+			if (!ui.foregroundRequest || !Array.isArray(ui.foregroundRequest.bullets)) {
+				return;
+			}
+			ui.foregroundRequest.bullets = ui.foregroundRequest.bullets.slice(-3);
+		}
+
 		function nextForegroundRequestKey() {
 			return 'corgi-request:' + String(Date.now()) + ':' + Math.random().toString(36).slice(2, 8);
 		}
@@ -1987,6 +1997,7 @@ export function getExecutionWindowHtml(
 				label,
 				state: state || 'active',
 			});
+			trimForegroundBullets();
 			if (hint) {
 				ui.foregroundRequest.hint = hint;
 			}
@@ -2004,6 +2015,7 @@ export function getExecutionWindowHtml(
 					state: state || bullets[bullets.length - 1].state,
 				};
 			}
+			trimForegroundBullets();
 			if (hint) {
 				ui.foregroundRequest.hint = hint;
 			}
@@ -2020,6 +2032,62 @@ export function getExecutionWindowHtml(
 			];
 			ui.foregroundRequest.status = 'live';
 			ui.foregroundRequest.hint = hint || label;
+		}
+
+		function foregroundRequestIsLive(requestKey) {
+			return Boolean(
+				ui.foregroundRequest &&
+					ui.foregroundRequest.status === 'live' &&
+					ui.foregroundRequest.requestKey === requestKey
+			);
+		}
+
+		function foregroundRequestCanReceiveTrace(requestKey) {
+			if (!foregroundRequestIsLive(requestKey)) {
+				return false;
+			}
+			if (!model) {
+				return true;
+			}
+			const snapshot = model.snapshot;
+			return !(
+				model.activeClarification ||
+				snapshot.pendingPermissionRequest ||
+				snapshot.pendingInterrupt ||
+				snapshot.runState === 'running' ||
+				isPlanReady(snapshot) ||
+				latestRequestActorEvent(requestKey) ||
+				latestRequestError(requestKey) ||
+				latestSemanticBlockStatus(requestKey)
+			);
+		}
+
+		function appendTraceIfLive(requestKey, label, hint) {
+			if (!foregroundRequestCanReceiveTrace(requestKey)) {
+				return;
+			}
+			appendForegroundBullet(label, 'active', hint || label);
+			persistUiState();
+			renderFeed();
+			renderComposer();
+			scheduleWebviewSnapshot('activity_trace');
+		}
+
+		function scheduleActivityTrace(requestKey) {
+			setTimeout(() => {
+				appendTraceIfLive(
+					requestKey,
+					'Checking workflow state',
+					'Checking workflow state...'
+				);
+			}, 1800);
+			setTimeout(() => {
+				appendTraceIfLive(
+					requestKey,
+					'Still working behind the scenes',
+					'Still working behind the scenes...'
+				);
+			}, 6500);
 		}
 
 		function freezeForegroundRequest(label, state, hint) {
@@ -2780,6 +2848,7 @@ export function getExecutionWindowHtml(
 					  '</article>'
 					: '') +
 				'<article class="message assistant is-informational progress-cluster ' +
+					'activity-trace ' +
 					(ui.foregroundRequest.status === 'frozen' ? 'is-frozen' : '') +
 				'">' +
 					bulletMarkup +
@@ -2912,11 +2981,13 @@ export function getExecutionWindowHtml(
 					'active',
 					'Waiting for a reply from the Governor...'
 				);
+				scheduleActivityTrace(requestId);
 				vscode.postMessage({ type: 'revise_plan', text, requestId });
 				ui.planRevisionMode = false;
 			} else {
-				startForegroundRequest(text, 'Model clarifying...', requestId);
-				appendForegroundBullet('Model clarifying', 'active', 'Model clarifying...');
+				startForegroundRequest(text, 'Interpreting request...', requestId);
+				appendForegroundBullet('Interpreting request', 'active', 'Interpreting request...');
+				scheduleActivityTrace(requestId);
 				vscode.postMessage({ type: 'submit_prompt', text, requestId });
 			}
 
@@ -3014,6 +3085,7 @@ export function getExecutionWindowHtml(
 					'active',
 					'Requesting Execute permission...'
 				);
+				scheduleActivityTrace(requestId);
 				ui.planRevisionMode = false;
 				ui.pendingPlanContextRef = model?.planReadyRequest?.contextRef;
 				ui.pendingPlanHiddenAt = Date.now();
@@ -3086,6 +3158,7 @@ export function getExecutionWindowHtml(
 							? 'Starting execution...'
 							: 'Waiting for a reply from the Governor...'
 					);
+					scheduleActivityTrace(requestKey);
 					renderActionBand();
 					renderFeed();
 					renderComposer();

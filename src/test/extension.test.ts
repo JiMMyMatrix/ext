@@ -246,6 +246,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(transportSource.includes("'--governor-runtime', 'external'"));
 		assert.ok(transportSource.includes("'complete-governor-turn'"));
 		assert.ok(transportSource.includes("'fallback-governor-turn'"));
+		assert.ok(transportSource.includes('isAppServerShutdownReason'));
 		assert.ok(transportSource.includes('isGovernorRuntimeResponse'));
 	});
 
@@ -261,6 +262,8 @@ suite('Corgi Webview UX', () => {
 		);
 		assert.ok(transportSource.includes('CORGI_APP_SERVER_EPHEMERAL'));
 		assert.ok(runtimeSource.includes('ephemeralThreads'));
+		assert.ok(runtimeSource.includes('this.options.ephemeralThreads'));
+		assert.ok(runtimeSource.includes('isUnavailableAppServerThreadError'));
 		assert.ok(clientSource.includes('ephemeral: request.ephemeralThread'));
 	});
 
@@ -331,6 +334,12 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('if (latestGovernorReplyForRequest(requestKey)) {'));
 		assert.ok(webviewSource.includes("return '';"));
 		assert.ok(webviewSource.includes('const visibleBullets = bullets.slice(-3);'));
+		assert.ok(webviewSource.includes('function trimForegroundBullets()'));
+		assert.ok(webviewSource.includes('function foregroundRequestCanReceiveTrace(requestKey)'));
+		assert.ok(webviewSource.includes('snapshot.pendingPermissionRequest'));
+		assert.ok(webviewSource.includes('model.activeClarification'));
+		assert.ok(webviewSource.includes('activity-trace'));
+		assert.ok(webviewSource.includes('Still working behind the scenes'));
 		assert.ok(webviewSource.includes('background: transparent;'));
 	});
 
@@ -726,7 +735,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes("renderRevealPill('Current work', railTask, 'is-primary')"));
 		assert.ok(html.includes('View source'));
 		assert.ok(html.includes('foregroundRequest'));
-		assert.ok(html.includes('Model clarifying'));
+		assert.ok(html.includes('Interpreting request'));
+		assert.ok(html.includes('Checking workflow state'));
 		assert.ok(html.includes('normalizeUiText'));
 		assert.ok(html.includes('[hidden]'));
 		assert.ok(html.includes('display: none !important;'));

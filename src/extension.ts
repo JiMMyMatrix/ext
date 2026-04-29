@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { resolveOrchestrationStateRootPath } from './agentPaths';
 import { resetDevelopmentSessionState } from './developmentSession';
 import { ExecutionWindowPanel } from './executionWindowPanel';
 
@@ -11,7 +12,7 @@ function appendDevelopmentLog(context: vscode.ExtensionContext, message: string)
 
 	const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri ?? context.extensionUri;
 
-	const logDir = path.join(workspaceRoot.fsPath, '.agent', 'orchestration');
+	const logDir = resolveOrchestrationStateRootPath(workspaceRoot.fsPath);
 	fs.mkdirSync(logDir, { recursive: true });
 	fs.appendFileSync(
 		path.join(logDir, 'corgi_extension_dev.log'),

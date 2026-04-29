@@ -43,17 +43,14 @@ export class AppServerGovernorRuntime implements GovernorRuntime {
 	): Promise<GovernorRuntimeResult> {
 		await this.client.initialize();
 		await this.ensureChatGptAuth();
-		const prompt = request.preferredAppServerThreadId
-			? request.resumePrompt
-			: request.initialPrompt;
-		const result = await this.client.startTurn({
-			threadId: request.preferredAppServerThreadId,
-			prompt,
-			model: request.model,
-			reasoning: request.reasoning,
+		const preferredThreadId = this.options.ephemeralThreads
+			? undefined
+			: request.preferredAppServerThreadId;
+		const result = await this.startTurnWithFreshThreadRetry(
+			request,
 			cwd,
-			ephemeralThread: this.options.ephemeralThreads,
-		});
+			preferredThreadId
+		);
 		return runtimeResult(result);
 	}
 
@@ -75,6 +72,37 @@ export class AppServerGovernorRuntime implements GovernorRuntime {
 			throw new Error('codex app-server reported API key auth; Corgi expects ChatGPT auth for this experimental path');
 		}
 	}
+
+	private async startTurnWithFreshThreadRetry(
+		request: GovernorRuntimeRequest,
+		cwd: string,
+		preferredThreadId: string | undefined
+	): Promise<AppServerTurnResult> {
+		try {
+			return await this.startTurn(request, cwd, preferredThreadId);
+		} catch (error) {
+			if (!preferredThreadId || !isUnavailableAppServerThreadError(error)) {
+				throw error;
+			}
+			return this.startTurn(request, cwd, undefined);
+		}
+	}
+
+	private startTurn(
+		request: GovernorRuntimeRequest,
+		cwd: string,
+		threadId: string | undefined
+	): Promise<AppServerTurnResult> {
+		return this.client.startTurn({
+			threadId,
+			prompt: threadId ? request.resumePrompt : request.initialPrompt,
+			model: request.model,
+			reasoning: request.reasoning,
+			cwd,
+			ephemeralThread: this.options.ephemeralThreads,
+			timeoutMs: request.runtimeKind === 'semantic_intake' ? 25_000 : undefined,
+		});
+	}
 }
 
 function runtimeResult(result: AppServerTurnResult): GovernorRuntimeResult {
@@ -85,4 +113,9 @@ function runtimeResult(result: AppServerTurnResult): GovernorRuntimeResult {
 		itemId: result.itemId,
 		runtimeSource: 'app-server',
 	};
+}
+
+function isUnavailableAppServerThreadError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /no rollout found|thread .*not found|unknown thread/i.test(message);
 }

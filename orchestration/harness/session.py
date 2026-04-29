@@ -279,14 +279,18 @@ def _transition_summary(lane: str | None, *, repo_root: str | Path | None = None
 		if isinstance(payload.get("next_action"), dict)
 		else None,
 		"ref": repo_relative(
-			resolve_paths(repo_root).repo_root / ".agent" / "governor" / lane / "proposed_transition.json",
+			resolve_paths(repo_root).agent_root / "governor" / lane / "proposed_transition.json",
 			repo_root,
 		),
 	}
 
 
 def _governor_dialogue_context(
-	session: dict[str, Any], prompt: str, *, repo_root: str | Path | None = None
+	session: dict[str, Any],
+	prompt: str,
+	*,
+	repo_root: str | Path | None = None,
+	semantic_intake: bool = False,
 ) -> dict[str, Any]:
 	model = session["model"]
 	snapshot = model["snapshot"]
@@ -381,19 +385,33 @@ def _governor_dialogue_context(
 			details.append(
 				f"Next internal action: {transition_summary['next_action_kind']} -> {transition_summary.get('next_action_ref') or 'none'}"
 			)
-	context_lines = [
-		"Processed Governor dialogue input",
-		"This request already passed through controller/orchestration gating.",
-		"Reply only with the user-facing answer in plain text.",
-		"Do not expose request ids, session refs, context refs, semantic provenance, or raw orchestration/control-plane metadata.",
-		"If you need evidence, inspect the repository and authoritative artifacts directly before answering.",
-		"",
-		"Current session state:",
-		f"- permission_scope: {snapshot.get('permissionScope') or 'unset'}",
-		f"- current_actor: {actor}",
-		f"- current_stage: {stage}",
-		f"- run_state: {snapshot.get('runState') or 'idle'}",
-	]
+	if semantic_intake:
+		context_lines = [
+			"Processed Governor semantic-intake input",
+			"This request is being interpreted before workflow state changes.",
+			"Return JSON only, using the semantic-intake schema from the outer prompt.",
+			"Do not expose request ids, session refs, context refs, semantic provenance, or raw orchestration/control-plane metadata.",
+			"",
+			"Current session state:",
+			f"- permission_scope: {snapshot.get('permissionScope') or 'unset'}",
+			f"- current_actor: {actor}",
+			f"- current_stage: {stage}",
+			f"- run_state: {snapshot.get('runState') or 'idle'}",
+		]
+	else:
+		context_lines = [
+			"Processed Governor dialogue input",
+			"This request already passed through controller/orchestration gating.",
+			"Reply only with the user-facing answer in plain text.",
+			"Do not expose request ids, session refs, context refs, semantic provenance, or raw orchestration/control-plane metadata.",
+			"If you need evidence, inspect the repository and authoritative artifacts directly before answering.",
+			"",
+			"Current session state:",
+			f"- permission_scope: {snapshot.get('permissionScope') or 'unset'}",
+			f"- current_actor: {actor}",
+			f"- current_stage: {stage}",
+			f"- run_state: {snapshot.get('runState') or 'idle'}",
+		]
 	if task:
 		context_lines.append(f"- current_task: {task}")
 	if lane:
@@ -424,7 +442,7 @@ def _governor_dialogue_context(
 		[
 			"",
 			f"Processed user request: {prompt}",
-			"Return only the human-facing reply with no headings or metadata.",
+			"Return JSON only." if semantic_intake else "Return only the human-facing reply with no headings or metadata.",
 		]
 	)
 	return {
@@ -524,7 +542,7 @@ def _initial_governor_semantic_intake_prompt(
 			"- governed_work_intent is work: analysis, planning, review, implementation, or repo inspection.\n"
 			"- If read-only dialogue and work are mixed or ambiguous, use route_type=block or clarification_needed.\n"
 			"- Never propose dispatch creation or execution as already authorized.\n"
-			"- The context block may include older dialogue wording that asks for plain text; ignore that wording for this semantic-intake turn and return JSON only.",
+			"- The context block is semantic-intake context; return JSON only.",
 			"Required JSON shape:\n"
 			'{\n'
 			'  "user_visible_reply": "short user-facing text",\n'
@@ -758,9 +776,15 @@ def _prepare_governor_semantic_intake_runtime_request(
 	repo_root: str | Path | None = None,
 	request_id: str | None = None,
 ) -> dict[str, Any]:
-	context = _governor_dialogue_context(session, prompt, repo_root=repo_root)
+	context = _governor_dialogue_context(
+		session,
+		prompt,
+		repo_root=repo_root,
+		semantic_intake=True,
+	)
 	governor_meta = _governor_dialogue_meta(session)
-	model_name, reasoning = _governor_runtime_settings(repo_root)
+	model_name, _reasoning = _governor_runtime_settings(repo_root)
+	reasoning = "low"
 	runtime_request_id = _next_id("governor-runtime")
 	pending = {
 		"runtimeKind": "semantic_intake",

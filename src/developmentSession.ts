@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { resolveOrchestrationStateRootPath } from './agentPaths';
 import { resolveExecutionTransportTarget } from './executionTransport';
 
 export function shouldResetDevelopmentSessionState(
@@ -28,7 +29,7 @@ export function resetDevelopmentSessionState(
 	}
 
 	fs.rmSync(
-		path.join(target.cwd, '.agent', 'orchestration', 'ui_session.json'),
+		path.join(resolveOrchestrationStateRootPath(target.cwd), 'ui_session.json'),
 		{ force: true }
 	);
 	return true;

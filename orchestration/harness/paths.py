@@ -34,10 +34,20 @@ def resolve_repo_root(repo_root: str | Path | None = None) -> Path:
 	return Path(os.environ.get("ORCHESTRATION_REPO_ROOT") or _PACKAGE_ROOT).resolve()
 
 
+def resolve_agent_root(root: Path) -> Path:
+	configured = os.environ.get("ORCHESTRATION_AGENT_ROOT")
+	if not configured:
+		return root / ".agent"
+	candidate = Path(configured)
+	if not candidate.is_absolute():
+		candidate = root / candidate
+	return candidate.resolve()
+
+
 def resolve_paths(repo_root: str | Path | None = None) -> HarnessPaths:
 	root = resolve_repo_root(repo_root)
 	orchestration_root = root / "orchestration"
-	agent_root = root / ".agent"
+	agent_root = resolve_agent_root(root)
 	orchestration_state_root = agent_root / "orchestration"
 	return HarnessPaths(
 		repo_root=root,

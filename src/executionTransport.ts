@@ -150,6 +150,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	private readonly governorRuntimeMode: 'exec' | 'app-server';
 	private readonly useEphemeralAppServerThreads: boolean;
 	private appServerRuntime: GovernorRuntime | undefined;
+	private disposed = false;
 
 	constructor(
 		target: Extract<ExecutionTransportTarget, { kind: 'orchestration' }>,
@@ -189,6 +190,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	}
 
 	public dispose(): void {
+		this.disposed = true;
 		this.appServerRuntime?.shutdown();
 	}
 
@@ -343,6 +345,9 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 			)) as ExecutionWindowModel;
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
+			if (this.disposed || isAppServerShutdownReason(reason)) {
+				return (await this.runRaw('session', 'state')) as ExecutionWindowModel;
+			}
 			return (await this.runRaw(
 				'session',
 				'fallback-governor-turn',
@@ -363,6 +368,10 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		});
 		return this.appServerRuntime;
 	}
+}
+
+function isAppServerShutdownReason(reason: string): boolean {
+	return reason.includes('app-server client shutting down');
 }
 
 function resolveGovernorRuntimeMode(): 'exec' | 'app-server' {
