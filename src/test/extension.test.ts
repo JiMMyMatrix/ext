@@ -840,7 +840,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('Scope: '));
 		assert.ok(html.includes('Waiting for clarification'));
 		assert.ok(html.includes('Waiting for permission: '));
-		assert.ok(html.includes('Execution started'));
+		assert.ok(html.includes('Dispatch queued'));
 		assert.ok(html.includes('Permission needed'));
 		assert.ok(html.includes('set_permission_scope'));
 		assert.ok(html.includes('data-permission-scope'));
@@ -1224,6 +1224,24 @@ suite('Corgi Webview UX', () => {
 		const lastItem = continuationModel.feed[continuationModel.feed.length - 1];
 		assert.strictEqual(lastItem.type, 'permission_request');
 		assert.strictEqual(lastItem.in_response_to_request_id, 'req-do-it');
+
+		const dispatchedModel = applyModelAction(continuationModel, {
+			type: 'set_permission_scope',
+			permission_scope: 'execute',
+			context_ref: continuationModel.snapshot.pendingPermissionRequest?.contextRef,
+			request_id: 'req-execute-click',
+			now: '2026-04-10T10:00:25.000Z',
+		});
+
+		assert.strictEqual(dispatchedModel.snapshot.permissionScope, 'execute');
+		assert.strictEqual(dispatchedModel.snapshot.currentActor, 'executor');
+		assert.strictEqual(dispatchedModel.snapshot.currentStage, 'dispatch_queued');
+		assert.strictEqual(dispatchedModel.snapshot.runState, 'running');
+		assert.strictEqual(dispatchedModel.planReadyRequest, undefined);
+		const dispatchItem = dispatchedModel.feed[dispatchedModel.feed.length - 1];
+		assert.strictEqual(dispatchItem.type, 'system_status');
+		assert.strictEqual(dispatchItem.title, 'Dispatch queued');
+		assert.strictEqual(dispatchItem.in_response_to_request_id, 'req-do-it');
 	});
 
 	test('execute plan action with stale context fails closed', () => {
@@ -1334,8 +1352,8 @@ suite('Corgi Webview UX', () => {
 
 		assert.strictEqual(runningModel.snapshot.permissionScope, 'execute');
 		assert.strictEqual(runningModel.snapshot.runState, 'running');
-		assert.strictEqual(runningModel.snapshot.currentActor, 'governor');
-		assert.strictEqual(runningModel.snapshot.currentStage, 'running');
+		assert.strictEqual(runningModel.snapshot.currentActor, 'executor');
+		assert.strictEqual(runningModel.snapshot.currentStage, 'dispatch_queued');
 		assert.ok(runningModel.acceptedIntakeSummary?.body.includes('Execute permission'));
 	});
 

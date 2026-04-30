@@ -2734,7 +2734,7 @@ export function getExecutionWindowHtml(
 			}
 
 			if (snapshot.runState === 'running') {
-				replaceForegroundTail('Execution started', 'active', 'Corgi is actively working on this request.');
+				replaceForegroundTail('Dispatch queued', 'active', 'Corgi queued dispatch truth for the accepted plan.');
 				return;
 			}
 

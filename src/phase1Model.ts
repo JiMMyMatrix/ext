@@ -1054,12 +1054,14 @@ function acceptIntake(
 	return {
 		snapshot: refreshSnapshot(model.snapshot, now, {
 			currentActor:
-				permissionScope === 'execute' || permissionScope === 'plan'
+				permissionScope === 'plan'
 					? 'governor'
-					: 'orchestration',
+					: permissionScope === 'execute'
+						? 'executor'
+						: 'orchestration',
 			currentStage:
 				permissionScope === 'execute'
-					? 'running'
+					? 'dispatch_queued'
 					: permissionScope === 'plan'
 						? 'plan_ready'
 						: 'intake_accepted',
@@ -1074,8 +1076,10 @@ function acceptIntake(
 			...model.feed,
 			createFeedItem(
 				'system_status',
-				permissionScope === 'execute' ? 'Permission confirmed: Execute' : 'Accepted and ready',
-				acceptedIntakeSummary.body,
+				permissionScope === 'execute' ? 'Dispatch queued' : 'Accepted and ready',
+				permissionScope === 'execute'
+					? 'Execute permission is active and dispatch truth was queued for the accepted plan.'
+					: acceptedIntakeSummary.body,
 				true,
 				now,
 				undefined,
@@ -1651,8 +1655,8 @@ export function applyModelAction(
 						permissionScope: action.permission_scope,
 						pendingPermissionRequest: undefined,
 						pendingInterrupt: undefined,
-						currentActor: 'governor',
-						currentStage: 'running',
+						currentActor: 'executor',
+						currentStage: 'dispatch_queued',
 						runState: 'running',
 						transportState: 'connected',
 					}),
@@ -1660,8 +1664,8 @@ export function applyModelAction(
 						...withUserTurn.feed,
 						createFeedItem(
 							'system_status',
-							'Permission confirmed: Execute',
-							'Execute permission is active for this accepted plan.',
+							'Dispatch queued',
+							'Execute permission is active and dispatch truth was queued for the accepted plan.',
 							true,
 							now,
 							undefined,
@@ -1760,8 +1764,8 @@ export function applyModelAction(
 			return {
 				...model,
 				snapshot: refreshSnapshot(model.snapshot, now, {
-					currentActor: 'governor',
-					currentStage: 'running',
+					currentActor: 'executor',
+					currentStage: 'dispatch_queued',
 					runState: 'running',
 					pendingPermissionRequest: undefined,
 					pendingInterrupt: undefined,
@@ -1771,8 +1775,8 @@ export function applyModelAction(
 					...model.feed,
 					createFeedItem(
 						'system_status',
-						'Execution started',
-						'Corgi is starting execution for the accepted plan.',
+						'Dispatch queued',
+						'Execute permission is active and dispatch truth was queued for the accepted plan.',
 						true,
 						now,
 						undefined,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -35,6 +37,7 @@ from orchestration.harness.paths import (
 	utc_now,
 	write_json,
 )
+from orchestration.harness import dispatch as dispatch_harness
 from orchestration.harness.transition import load_transition
 
 
@@ -1985,6 +1988,123 @@ def _build_plan_ready_request(
 	}
 
 
+def _accepted_intake_ref(session: dict[str, Any], repo_root: str | Path | None = None) -> str | None:
+	intake_ref = session["meta"].get("activeIntakeRef")
+	if not isinstance(intake_ref, str) or not intake_ref:
+		return None
+	path = accepted_intake_path(intake_ref, repo_root=repo_root)
+	if not path.exists():
+		return None
+	return repo_relative(path, repo_root)
+
+
+def _plan_execution_objective(model: dict[str, Any]) -> str:
+	plan_ready = model.get("planReadyRequest")
+	summary: Any = None
+	if isinstance(plan_ready, dict):
+		summary = plan_ready.get("acceptedIntakeSummary")
+	if not isinstance(summary, dict):
+		summary = model.get("acceptedIntakeSummary")
+	if isinstance(summary, dict):
+		body = trim_text(summary.get("body"))
+		if body:
+			return body
+	task = trim_text(model["snapshot"].get("task"))
+	if task:
+		return task
+	return "Execute the accepted Corgi plan."
+
+
+def _emit_plan_execution_dispatch(
+	session: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+) -> dict[str, Any] | None:
+	model = session["model"]
+	paths = resolve_paths(repo_root)
+	branch = model["snapshot"].get("branch") or git_branch_name(repo_root)
+	lane = model["snapshot"].get("lane") or default_lane(branch)
+	dispatch_ref = f"{lane}/{_next_id('dispatch')}"
+	dispatch_dir = paths.agent_root / "dispatches" / Path(dispatch_ref)
+	review_ref = repo_relative(
+		paths.agent_root / "reviews" / Path(dispatch_ref) / "review.json",
+		repo_root,
+	)
+	objective = _plan_execution_objective(model)
+	accepted_ref = _accepted_intake_ref(session, repo_root)
+	plan_ready = model.get("planReadyRequest") if isinstance(model.get("planReadyRequest"), dict) else {}
+	inputs = [
+		ref
+		for ref in [
+			accepted_ref,
+			f"plan_context_ref:{plan_ready.get('planContextRef')}" if plan_ready else None,
+			f"plan_version:{plan_ready.get('planVersion')}" if plan_ready else None,
+		]
+		if isinstance(ref, str) and ref.strip()
+	]
+	args = [
+		"--dispatch-ref",
+		dispatch_ref,
+		"--objective",
+		objective,
+		"--lane",
+		lane,
+		"--execution-mode",
+		"manual_artifact_report",
+		"--required-output",
+		"Executor result artifact for the accepted plan.",
+		"--acceptance-criterion",
+		"Executor work stays within the accepted intake and latest validated plan context.",
+		"--stop-condition",
+		"Stop on stale context, authority boundary, safety boundary, or missing required input.",
+		"--review-required",
+		"--review-artifact-path",
+		review_ref,
+		"--root",
+		str(paths.repo_root),
+	]
+	for input_ref in inputs:
+		args.extend(["--input", input_ref])
+	try:
+		with contextlib.redirect_stdout(io.StringIO()):
+			dispatch_harness.emit_main(args)
+	except (OSError, SystemExit, ValueError) as exc:
+		_append_error(
+			model,
+			"Dispatch could not start",
+			f"Corgi could not create dispatch truth for this plan: {exc}",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return None
+
+	return {
+		"dispatch_ref": dispatch_ref,
+		"request_ref": repo_relative(dispatch_dir / "request.json", repo_root),
+		"state_ref": repo_relative(dispatch_dir / "state.json", repo_root),
+		"review_ref": review_ref,
+	}
+
+
+def _dispatch_artifacts(dispatch_refs: dict[str, Any]) -> list[dict[str, Any]]:
+	return [
+		_artifact(
+			dispatch_refs["request_ref"],
+			summary="Dispatch truth for the accepted plan.",
+			authoritative=True,
+			status="queued",
+		),
+		_artifact(
+			dispatch_refs["state_ref"],
+			summary="Dispatch lifecycle state.",
+			authoritative=True,
+			status="queued",
+		),
+	]
+
+
 def _set_plan_ready_request(
 	model: dict[str, Any],
 	now: str,
@@ -2063,6 +2183,7 @@ def _accept_pending_intake(
 	current_foreground_request_id = model.get("activeForegroundRequestId") or request_id
 	intake_ref = session["meta"].get("activeIntakeRef")
 	pending_permission = model["snapshot"].get("pendingPermissionRequest")
+	previous_permission_scope = model["snapshot"].get("permissionScope") or "unset"
 	if not intake_ref or not pending_permission:
 		_append_error(
 			model,
@@ -2119,15 +2240,41 @@ def _accept_pending_intake(
 	model["activeForegroundRequestId"] = (
 		current_foreground_request_id if permission_scope == "execute" else None
 	)
+	dispatch_refs = None
+	if permission_scope == "execute":
+		dispatch_refs = _emit_plan_execution_dispatch(
+			session,
+			now,
+			repo_root=repo_root,
+			request_id=request_id,
+		)
+		if dispatch_refs is None:
+			model["snapshot"]["pendingPermissionRequest"] = pending_permission
+			model["snapshot"]["permissionScope"] = previous_permission_scope
+			_refresh_snapshot(
+				model,
+				now,
+				currentActor="orchestration",
+				currentStage="permission_needed",
+				runState="idle",
+				transportState="connected",
+			)
+			return False
+		model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + artifacts
 	model["feed"].append(
 		_feed_item(
 			"system_status",
-			"Permission confirmed: Execute"
+			"Dispatch queued"
 			if permission_scope == "execute"
 			else "Accepted and ready",
-			summary,
+			f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}."
+			if permission_scope == "execute" and dispatch_refs
+			else summary,
 			authoritative=True,
 			now=now,
+			source_artifact_ref=dispatch_refs["request_ref"]
+			if permission_scope == "execute" and dispatch_refs
+			else None,
 			**_semantic_provenance(
 				turn_type=turn_type,
 				semantic_input_version=semantic_input_version,
@@ -2145,8 +2292,8 @@ def _accept_pending_intake(
 	_refresh_snapshot(
 		model,
 		now,
-		currentActor="governor" if permission_scope == "execute" else "orchestration",
-		currentStage="running" if permission_scope == "execute" else "intake_accepted",
+		currentActor="executor" if permission_scope == "execute" else "orchestration",
+		currentStage="dispatch_queued" if permission_scope == "execute" else "intake_accepted",
 		runState="running" if permission_scope == "execute" else "idle",
 		transportState="connected",
 	)
@@ -2963,24 +3110,35 @@ def handle_set_permission_scope(
 		)
 		return
 	if continuation_kind == "plan_execution":
+		dispatch_refs = _emit_plan_execution_dispatch(
+			session,
+			now,
+			repo_root=repo_root,
+			request_id=continuation_request_id,
+		)
+		if dispatch_refs is None:
+			return
+		existing_artifacts = list(model["snapshot"].get("recentArtifacts") or [])
 		model["snapshot"]["permissionScope"] = permission_scope
 		model["snapshot"]["pendingPermissionRequest"] = None
 		model["snapshot"]["pendingInterrupt"] = None
-		model["snapshot"]["currentActor"] = "governor"
-		model["snapshot"]["currentStage"] = "running"
+		model["snapshot"]["currentActor"] = "executor"
+		model["snapshot"]["currentStage"] = "dispatch_queued"
 		model["snapshot"]["runState"] = "running"
 		model["snapshot"]["transportState"] = "connected"
 		model["snapshot"]["snapshotFreshness"] = {"receivedAt": now}
+		model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + existing_artifacts
 		model["activeClarification"] = None
 		model["activeForegroundRequestId"] = continuation_request_id
 		model["planReadyRequest"] = None
 		model["feed"].append(
 			_feed_item(
 				"system_status",
-				"Permission confirmed: Execute",
-				"Execute permission is active for this accepted plan.",
+				"Dispatch queued",
+				f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}.",
 				authoritative=True,
 				now=now,
+				source_artifact_ref=dispatch_refs["request_ref"],
 				**_semantic_provenance(
 					turn_type="permission_action",
 					semantic_input_version=semantic_input_version,
@@ -3104,18 +3262,29 @@ def handle_execute_plan(
 			transportState="connected",
 		)
 		return
+	dispatch_refs = _emit_plan_execution_dispatch(
+		session,
+		now,
+		repo_root=repo_root,
+		request_id=request_id,
+	)
+	if dispatch_refs is None:
+		return
+	existing_artifacts = list(model["snapshot"].get("recentArtifacts") or [])
 	model["snapshot"]["pendingPermissionRequest"] = None
 	model["snapshot"]["pendingInterrupt"] = None
 	model["snapshot"]["permissionScope"] = "execute"
+	model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + existing_artifacts
 	model["activeForegroundRequestId"] = request_id or plan_ready.get("foregroundRequestId")
 	model["planReadyRequest"] = None
 	model["feed"].append(
 		_feed_item(
 			"system_status",
-			"Execution started",
-			"Corgi is starting execution for the accepted plan.",
+			"Dispatch queued",
+			f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}.",
 			authoritative=True,
 			now=now,
+			source_artifact_ref=dispatch_refs["request_ref"],
 			turn_type="permission_action",
 			in_response_to_request_id=request_id,
 		)
@@ -3123,8 +3292,8 @@ def handle_execute_plan(
 	_refresh_snapshot(
 		model,
 		now,
-		currentActor="governor",
-		currentStage="running",
+		currentActor="executor",
+		currentStage="dispatch_queued",
 		runState="running",
 		transportState="connected",
 	)

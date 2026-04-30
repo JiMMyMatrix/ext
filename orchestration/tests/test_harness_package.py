@@ -769,9 +769,21 @@ class HarnessPackageTests(unittest.TestCase):
 
             self.assertEqual(model["snapshot"]["permissionScope"], "execute")
             self.assertEqual(model["snapshot"]["runState"], "running")
-            self.assertEqual(model["snapshot"]["currentActor"], "governor")
+            self.assertEqual(model["snapshot"]["currentActor"], "executor")
+            self.assertEqual(model["snapshot"]["currentStage"], "dispatch_queued")
             self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
             self.assertIn("Execute permission", model["acceptedIntakeSummary"]["body"])
+            dispatch_requests = sorted(
+                (repo_root / ".agent" / "dispatches").glob("**/request.json")
+            )
+            self.assertEqual(len(dispatch_requests), 1)
+            request_payload = load_json(dispatch_requests[0])
+            self.assertEqual(request_payload["execution_mode"], "manual_artifact_report")
+            self.assertTrue(request_payload["review_required"])
+            self.assertEqual(
+                model["feed"][-1]["source_artifact_ref"],
+                str(dispatch_requests[0].relative_to(repo_root)),
+            )
 
     def test_session_plan_permission_returns_governor_planning_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -929,9 +941,46 @@ class HarnessPackageTests(unittest.TestCase):
             )
 
             self.assertEqual(model["snapshot"]["permissionScope"], "execute")
-            self.assertEqual(model["snapshot"]["currentStage"], "running")
+            self.assertEqual(model["snapshot"]["currentActor"], "executor")
+            self.assertEqual(model["snapshot"]["currentStage"], "dispatch_queued")
             self.assertEqual(model["snapshot"]["runState"], "running")
             self.assertIsNone(model["planReadyRequest"])
+            self.assertEqual(model["feed"][-1]["type"], "system_status")
+            self.assertEqual(model["feed"][-1]["title"], "Dispatch queued")
+            self.assertEqual(
+                model["feed"][-1]["in_response_to_request_id"],
+                "corgi-request:do-it",
+            )
+
+            dispatch_requests = sorted(
+                (repo_root / ".agent" / "dispatches").glob("**/request.json")
+            )
+            self.assertEqual(len(dispatch_requests), 1)
+            request_payload = load_json(dispatch_requests[0])
+            self.assertEqual(
+                request_payload["execution_mode"],
+                "manual_artifact_report",
+            )
+            self.assertTrue(request_payload["review_required"])
+            self.assertIn("review_artifact_path", request_payload)
+            self.assertEqual(
+                model["feed"][-1]["source_artifact_ref"],
+                str(dispatch_requests[0].relative_to(repo_root)),
+            )
+            self.assertTrue(
+                any(
+                    input_ref.endswith("/accepted_intake.json")
+                    for input_ref in request_payload["inputs"]
+                )
+            )
+            self.assertTrue(
+                any(
+                    input_ref.startswith("plan_context_ref:")
+                    for input_ref in request_payload["inputs"]
+                )
+            )
+            state_payload = load_json(dispatch_requests[0].parent / "state.json")
+            self.assertEqual(state_payload["status"], "queued")
 
     def test_session_execute_plan_stale_context_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
