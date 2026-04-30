@@ -24,7 +24,7 @@ from orchestration.harness import (
     start_guard,
     transition,
 )
-from orchestration.harness.paths import load_json
+from orchestration.harness.paths import load_json, script_ref, write_json
 from orchestration.harness.scenario_fixtures import (
     list_scenarios,
     materialize_scenario,
@@ -114,6 +114,51 @@ class HarnessPackageTests(unittest.TestCase):
         self.assertIn("# Governor Decision", decision_item["body"])
         return decision_path
 
+    def _write_artifact_only_finalize_fixture(
+        self,
+        repo_root: Path,
+        *,
+        command_ref: str | None = None,
+        output_ref: str | None = None,
+    ) -> Path:
+        (repo_root / ".git").mkdir(exist_ok=True)
+        dispatch_ref = "lane/test/dispatch-artifact"
+        run_ref = f"{dispatch_ref}/result/attempt-1"
+        output_ref = output_ref or f".agent/runs/{run_ref}/executor_readout.md"
+        command_ref = command_ref or script_ref("executor_write_readout.py", repo_root)
+        dispatch_dir = repo_root / ".agent" / "dispatches" / dispatch_ref
+        write_json(
+            dispatch_dir / "request.json",
+            {
+                "dispatch_ref": dispatch_ref,
+                "execution_mode": "command_chain",
+                "execution_payload": {
+                    "notes": ["artifact_only_executor_readout"],
+                    "commands": [{"argv": [sys.executable, command_ref]}],
+                },
+                "required_outputs": [output_ref],
+                "executor_run": {"run_ref": run_ref},
+                "review_required": False,
+            },
+        )
+        write_json(
+            dispatch_dir / "result.json",
+            {
+                "dispatch_ref": dispatch_ref,
+                "status": "completed",
+                "blocker": None,
+                "summary": "Executor artifact-only readout completed.",
+                "executor_run_refs": [run_ref],
+                "written_or_updated": [output_ref],
+                "runtime_behavior_changed": False,
+                "scope_respected": True,
+            },
+        )
+        write_json(dispatch_dir / "state.json", {"status": "completed", "run_ref": run_ref})
+        (repo_root / output_ref).parent.mkdir(parents=True, exist_ok=True)
+        (repo_root / output_ref).write_text("# Executor Readout\n", encoding="utf-8")
+        return dispatch_dir
+
     def test_post_execution_actor_stage_uses_structured_result(self) -> None:
         actor, stage = session._post_execution_actor_stage(
             {"ok": True, "actor": "executor", "stage": "executor_completed", "title": "Copy changed"},
@@ -128,6 +173,45 @@ class HarnessPackageTests(unittest.TestCase):
 
         self.assertEqual(actor, "governor")
         self.assertEqual(stage, "governor_decision_recorded")
+
+    def test_finalize_allows_verified_artifact_only_executor_readout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            dispatch_dir = self._write_artifact_only_finalize_fixture(repo_root)
+
+            with mock.patch.object(dispatch, "ensure_lane_worktree_tracked") as guard:
+                self.assertEqual(dispatch.finalize_main(["--dispatch-dir", str(dispatch_dir)]), 0)
+
+            guard.assert_not_called()
+            self.assertTrue((dispatch_dir / "governor_decision.json").exists())
+
+    def test_finalize_rejects_mistagged_artifact_only_executor_readout_bypass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            dispatch_dir = self._write_artifact_only_finalize_fixture(
+                repo_root,
+                command_ref="orchestration/scripts/not_the_readout_helper.py",
+            )
+
+            with mock.patch.object(dispatch, "ensure_lane_worktree_tracked") as guard:
+                self.assertEqual(dispatch.finalize_main(["--dispatch-dir", str(dispatch_dir)]), 0)
+
+            guard.assert_called_once()
+            self.assertTrue((dispatch_dir / "governor_decision.json").exists())
+
+    def test_finalize_rejects_artifact_only_readout_outputs_outside_run_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            dispatch_dir = self._write_artifact_only_finalize_fixture(
+                repo_root,
+                output_ref=".agent/dispatches/lane/test/dispatch-artifact/executor_readout.md",
+            )
+
+            with mock.patch.object(dispatch, "ensure_lane_worktree_tracked") as guard:
+                self.assertEqual(dispatch.finalize_main(["--dispatch-dir", str(dispatch_dir)]), 0)
+
+            guard.assert_called_once()
+            self.assertTrue((dispatch_dir / "governor_decision.json").exists())
 
     def test_configured_agent_root_is_used_by_runtime_path_helpers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

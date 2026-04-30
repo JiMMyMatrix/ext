@@ -507,15 +507,80 @@ def live_subagent_request(request: Dict[str, Any]) -> bool:
     return execution_mode in SUBAGENT_ONLY_MODES
 
 
-def artifact_only_executor_readout_request(request: Dict[str, Any]) -> bool:
+def _command_argv(spec: Any) -> List[str]:
+    if isinstance(spec, str):
+        return shlex.split(spec)
+    if not isinstance(spec, dict):
+        return []
+    argv = spec.get("argv")
+    if isinstance(argv, str):
+        return shlex.split(argv)
+    if isinstance(argv, list) and all(isinstance(item, str) and item for item in argv):
+        return argv
+    return []
+
+
+def _path_is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def artifact_only_executor_readout_request(
+    repo_root: Path,
+    request: Dict[str, Any],
+    result: Dict[str, Any],
+    state: Dict[str, Any],
+) -> bool:
     execution_mode = request.get("execution_mode") or "manual_artifact_report"
     if execution_mode != "command_chain":
+        return False
+    if result.get("status") != "completed" or result.get("blocker"):
+        return False
+    if result.get("scope_respected") is not True or result.get("runtime_behavior_changed") is not False:
         return False
     payload = request.get("execution_payload")
     if not isinstance(payload, dict):
         return False
     notes = payload.get("notes")
-    return isinstance(notes, list) and "artifact_only_executor_readout" in notes
+    if not isinstance(notes, list) or "artifact_only_executor_readout" not in notes:
+        return False
+    commands = payload.get("commands")
+    if not isinstance(commands, list) or len(commands) != 1:
+        return False
+    if script_ref("executor_write_readout.py", repo_root) not in _command_argv(commands[0]):
+        return False
+
+    executor_run = request.get("executor_run")
+    if not isinstance(executor_run, dict):
+        return False
+    run_ref = executor_run.get("run_ref")
+    if not isinstance(run_ref, str) or not run_ref.strip():
+        return False
+    if state.get("status") != "completed" or state.get("run_ref") != run_ref:
+        return False
+    executor_run_refs = result.get("executor_run_refs")
+    if not isinstance(executor_run_refs, list) or run_ref not in executor_run_refs:
+        return False
+
+    required_outputs = request.get("required_outputs")
+    written_or_updated = result.get("written_or_updated")
+    if not isinstance(required_outputs, list) or not required_outputs:
+        return False
+    if not isinstance(written_or_updated, list) or not written_or_updated:
+        return False
+    produced_refs = [
+        ref
+        for ref in [*written_or_updated, *required_outputs]
+        if isinstance(ref, str) and ref.strip()
+    ]
+    if not produced_refs:
+        return False
+
+    run_dir = resolve_agent_root(repo_root) / "runs" / Path(run_ref)
+    return all(_path_is_inside(repo_root / ref, run_dir) for ref in produced_refs)
 
 
 def decision_from_result_and_review(request: Dict[str, Any], result: Dict[str, Any], review: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -584,7 +649,9 @@ def finalize_main(argv: Optional[List[str]] = None) -> int:
     repo_root = repo_root_for_path(dispatch_dir)
     request = load_dispatch_json(dispatch_dir / "request.json")
     result = load_dispatch_json(dispatch_dir / "result.json")
-    if not artifact_only_executor_readout_request(request):
+    state_path = dispatch_dir / "state.json"
+    state = load_dispatch_json(state_path) if state_path.exists() else {}
+    if not artifact_only_executor_readout_request(repo_root, request, result, state):
         ensure_lane_worktree_tracked(repo_root, request)
 
     review_path = review_path_for_request(repo_root, request)
