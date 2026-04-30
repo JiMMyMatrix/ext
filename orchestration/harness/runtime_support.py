@@ -61,7 +61,7 @@ def ensure_approved_python_binary() -> Path:
 def ensure_running_with_approved_python(script_name: str) -> Path:
     approved = ensure_approved_python_binary()
     current = Path(sys.executable).absolute()
-    if current != approved:
+    if current.resolve() != approved.resolve():
         raise SystemExit(
             f"{FAILURE_INVALID_RUNTIME_ENVIRONMENT}: {script_name} must run under "
             f"{relative_path(approved)} (current={current})"

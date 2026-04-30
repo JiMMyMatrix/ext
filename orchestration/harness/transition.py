@@ -6,7 +6,13 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from orchestration.harness.paths import load_json, repo_relative, utc_now, write_json
+from orchestration.harness.paths import (
+    load_json,
+    repo_relative,
+    resolve_agent_root,
+    utc_now,
+    write_json,
+)
 from orchestration.harness.start_guard import (
     accepted_coverage_records,
     dependency_satisfied,
@@ -47,7 +53,7 @@ SUPPORTED_COMPLETION_MODES = {DEFAULT_COMPLETION_MODE}
 
 
 def governor_state_dir(repo_root: Path, lane: str) -> Path:
-    return repo_root / ".agent" / "governor" / lane
+    return resolve_agent_root(repo_root) / "governor" / lane
 
 
 def proposed_transition_path(repo_root: Path, lane: str) -> Path:
@@ -223,7 +229,7 @@ def uncovered_changed_files(changed_files: List[str], coverage_records: List[Dic
 
 
 def lane_unresolved_blockers(repo_root: Path, lane: str) -> List[str]:
-    queue_root = repo_root / ".agent" / "dispatches"
+    queue_root = resolve_agent_root(repo_root) / "dispatches"
     if not queue_root.exists():
         return []
 

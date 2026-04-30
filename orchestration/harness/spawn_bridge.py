@@ -9,6 +9,7 @@ from orchestration.harness.paths import (
     contract_ref,
     prompt_ref,
     repo_relative,
+    resolve_agent_root,
     script_ref,
     utc_now,
     write_json,
@@ -37,7 +38,7 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 
 def dispatch_dir_for_ref(repo_root: Path, dispatch_ref: str) -> Path:
-    return repo_root / ".agent" / "dispatches" / Path(dispatch_ref)
+    return resolve_agent_root(repo_root) / "dispatches" / Path(dispatch_ref)
 
 
 def spawn_bridge_path_for_ref(repo_root: Path, dispatch_ref: str) -> Path:
@@ -62,12 +63,15 @@ def resolve_execution_path(execution_mode: str) -> str:
     return HELPER_RUNTIME_PATH
 
 
-def review_artifact_rel_from_request(request: Dict[str, Any]) -> Optional[str]:
+def review_artifact_rel_from_request(request: Dict[str, Any], repo_root: Path) -> Optional[str]:
     configured = request.get("review_artifact_path")
     if isinstance(configured, str) and configured.strip():
         return configured
     if request.get("review_required"):
-        return str(Path(".agent") / "reviews" / Path(request["dispatch_ref"]) / "review.json")
+        return repo_relative(
+            resolve_agent_root(repo_root) / "reviews" / Path(request["dispatch_ref"]) / "review.json",
+            repo_root,
+        )
     return None
 
 
@@ -193,7 +197,7 @@ def build_reviewer_handoff(request: Dict[str, Any], result: Dict[str, Any], repo
     if isinstance(written, list) and written:
         lines.append("Touched or produced artifacts:")
         lines.extend(f"- {item}" for item in written)
-    review_ref = review_artifact_rel_from_request(request)
+    review_ref = review_artifact_rel_from_request(request, repo_root)
     if review_ref:
         lines.append(f"Write or copy review artifact to: {review_ref}")
     lines.append(

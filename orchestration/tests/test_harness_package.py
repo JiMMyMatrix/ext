@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -12,6 +13,8 @@ from orchestration.harness import (
     artifacts,
     cli,
     contracts,
+    dispatch,
+    dispatch_contracts,
     executor_runtime,
     intake,
     reviewer,
@@ -48,6 +51,239 @@ class HarnessPackageTests(unittest.TestCase):
             "semantic_route_type": route_type,
             "semantic_confidence": "high",
         }
+
+    def _assert_executor_readout(self, repo_root: Path, dispatch_dir: Path, model: dict) -> Path:
+        request_payload = load_json(dispatch_dir / "request.json")
+        state_payload = load_json(dispatch_dir / "state.json")
+        agent_root = next(parent.parent for parent in dispatch_dir.parents if parent.name == "dispatches")
+        run_dir = agent_root / "runs" / state_payload["run_ref"]
+        report_payload = load_json(run_dir / "report.json")
+        readout_refs = [
+            output
+            for output in report_payload["outputs"]
+            if isinstance(output, str) and output.endswith("executor_readout.md")
+        ]
+        self.assertEqual(len(readout_refs), 1)
+        readout_path = repo_root / readout_refs[0]
+        self.assertTrue(readout_path.exists())
+        self.assertIn("## Architecture Boundaries", readout_path.read_text(encoding="utf-8"))
+        self.assertEqual(request_payload["execution_mode"], "command_chain")
+        self.assertIn("artifact_only_executor_readout", request_payload["execution_payload"]["notes"])
+        executor_items = [
+            item for item in model["feed"] if item.get("title") == "Executor completed"
+        ]
+        self.assertTrue(executor_items)
+        executor_item = executor_items[-1]
+        self.assertEqual(executor_item["source_artifact_ref"], readout_refs[0])
+        self.assertIn("## Architecture Boundaries", executor_item["body"])
+        self.assertIn("## Execution Readiness", executor_item["body"])
+        return readout_path
+
+    def _assert_reviewer_readout(self, repo_root: Path, dispatch_dir: Path, model: dict) -> Path:
+        request_payload = load_json(dispatch_dir / "request.json")
+        review_ref = request_payload["review_artifact_path"]
+        review_path = repo_root / review_ref
+        self.assertTrue(review_path.exists())
+        review_payload = load_json(review_path)
+        self.assertEqual(review_payload["dispatch_ref"], request_payload["dispatch_ref"])
+        self.assertIn(review_payload["verdict"], {"pass", "request_changes", "inconclusive"})
+        reviewer_items = [
+            item for item in model["feed"] if item.get("title") == "Reviewer completed"
+        ]
+        self.assertTrue(reviewer_items)
+        reviewer_item = reviewer_items[-1]
+        self.assertEqual(reviewer_item["source_artifact_ref"], review_ref)
+        self.assertIn("# Reviewer Readout", reviewer_item["body"])
+        self.assertIn("Verdict:", reviewer_item["body"])
+        return review_path
+
+    def _assert_governor_decision(self, repo_root: Path, dispatch_dir: Path, model: dict) -> Path:
+        decision_path = dispatch_dir / "governor_decision.json"
+        self.assertTrue(decision_path.exists())
+        decision_payload = load_json(decision_path)
+        self.assertEqual(decision_payload["dispatch_ref"], load_json(dispatch_dir / "request.json")["dispatch_ref"])
+        self.assertIn(decision_payload["decision"], {"accept", "reject", "needs_review", "needs_verification"})
+        decision_ref = str(decision_path.relative_to(repo_root))
+        decision_items = [
+            item for item in model["feed"] if item.get("title") == "Governor decision recorded"
+        ]
+        self.assertTrue(decision_items)
+        decision_item = decision_items[-1]
+        self.assertEqual(decision_item["source_artifact_ref"], decision_ref)
+        self.assertEqual(decision_item["source_actor"], "governor")
+        self.assertIn("# Governor Decision", decision_item["body"])
+        return decision_path
+
+    def test_configured_agent_root_is_used_by_runtime_path_helpers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            runtime_agent_root = repo_root / ".agent-runtime"
+            with mock.patch.dict(
+                os.environ,
+                {"ORCHESTRATION_AGENT_ROOT": str(runtime_agent_root)},
+            ):
+                dispatch_ref = "lane/main/dispatch-test"
+                run_ref = "cycle/scope/ref/result/attempt"
+                self.assertEqual(
+                    dispatch.dispatch_dir_for_ref(repo_root, dispatch_ref),
+                    runtime_agent_root / "dispatches" / Path(dispatch_ref),
+                )
+                self.assertEqual(
+                    start_guard.dispatch_dir_for_ref(repo_root, dispatch_ref),
+                    runtime_agent_root / "dispatches" / Path(dispatch_ref),
+                )
+                self.assertEqual(
+                    spawn_bridge.dispatch_dir_for_ref(repo_root, dispatch_ref),
+                    runtime_agent_root / "dispatches" / Path(dispatch_ref),
+                )
+                self.assertEqual(
+                    executor_runtime.dispatch_dir_for_ref(repo_root, dispatch_ref),
+                    runtime_agent_root / "dispatches" / Path(dispatch_ref),
+                )
+                self.assertEqual(
+                    executor_runtime.run_dir_for_ref(repo_root, run_ref),
+                    runtime_agent_root / "runs" / Path(run_ref),
+                )
+                self.assertEqual(
+                    dispatch_contracts.run_dir_for_ref(repo_root, run_ref),
+                    runtime_agent_root / "runs" / Path(run_ref),
+                )
+                self.assertEqual(
+                    transition.governor_state_dir(repo_root, "lane/main"),
+                    runtime_agent_root / "governor" / "lane/main",
+                )
+                review_path = reviewer.resolve_review_artifact_path(
+                    repo_root,
+                    dispatch_ref,
+                    ".agent-runtime/reviews/lane/main/dispatch-test/review.json",
+                )
+                self.assertEqual(
+                    review_path,
+                    runtime_agent_root / "reviews" / Path(dispatch_ref) / "review.json",
+                )
+
+    def test_advisory_mcp_runtime_config_uses_repo_entrypoint(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        config_source = (repo_root / "orchestration" / "runtime" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("[mcp_servers.orchestration_advisory]", config_source)
+        self.assertIn('command = "python3"', config_source)
+        self.assertIn('args = ["mcp_server.py"]', config_source)
+        self.assertNotIn(
+            'args = ["orchestration/runtime/advisory/mcp_server.py"]',
+            config_source,
+        )
+
+    def test_advisory_mcp_entrypoints_handle_python_environment(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        root_entrypoint = (repo_root / "mcp_server.py").read_text(encoding="utf-8")
+        launcher_source = (
+            repo_root / "orchestration" / "scripts" / "serve_advisory_mcp.py"
+        ).read_text(encoding="utf-8")
+        setup_source = (
+            repo_root / "orchestration" / "scripts" / "setup_advisory_mcp_env.py"
+        ).read_text(encoding="utf-8")
+        requirements_source = (
+            repo_root / "orchestration" / "runtime" / "advisory" / "requirements.txt"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("serve_advisory_mcp.py", root_entrypoint)
+        for token in [
+            "ORCHESTRATION_APPROVED_PYTHON",
+            "CORGI_ADVISORY_MCP_PYTHON",
+            "CORGI_PYTHON",
+            "/opt/homebrew/bin/python3",
+            "PYTHONPATH",
+            "ORCHESTRATION_REPO_ROOT",
+            "requirements.txt",
+            "runtime\" / \"advisory\" / \"mcp_server.py",
+        ]:
+            self.assertIn(token, launcher_source)
+        self.assertIn("/opt/homebrew/bin/python3", setup_source)
+        self.assertIn(".venv", setup_source)
+        self.assertIn("requirements.txt", setup_source)
+        self.assertIn("anthropic", requirements_source)
+        self.assertIn("mcp", requirements_source)
+
+    def test_cli_advisory_serve_routes_through_launcher(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        cli_source = (repo_root / "orchestration" / "harness" / "cli.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("serve_advisory_mcp.py", cli_source)
+        self.assertIn("ORCHESTRATION_REPO_ROOT", cli_source)
+        self.assertIn("PYTHONPATH", cli_source)
+        self.assertNotIn('runtime_root / "advisory" / "mcp_server.py"', cli_source)
+
+    def test_advisory_mcp_tools_have_matching_governor_skills(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        server_source = (
+            repo_root / "orchestration" / "runtime" / "advisory" / "mcp_server.py"
+        ).read_text(encoding="utf-8")
+        skills_root = repo_root / "orchestration" / "skills"
+        tool_skill_map = {
+            "consult_claude_headless": "claude-headless",
+            "consult_architect": "consult-architect",
+            "routine_code_review": "routine-code-review",
+            "consult_minimax": "minimax-advisor",
+        }
+        routing_source = (skills_root / "routing" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        for tool_name, skill_name in tool_skill_map.items():
+            with self.subTest(tool_name=tool_name):
+                self.assertIn(f"async def {tool_name}(", server_source)
+                skill_source = (skills_root / skill_name / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("Use this only in Governor context.", skill_source)
+                self.assertIn(tool_name, skill_source)
+                self.assertIn(tool_name, routing_source)
+
+        self.assertIn("async def consult_grok_advisor(", server_source)
+        self.assertIn("consult_grok_advisor", routing_source)
+        self.assertIn("backward-compatible alias", routing_source)
+
+    def test_advisory_mcp_is_regular_but_cost_gated_governor_feature(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        governor_prompt = (repo_root / "orchestration" / "prompts" / "governor.txt").read_text(
+            encoding="utf-8"
+        )
+        advisory_doc = (repo_root / "orchestration" / "advisory.md").read_text(
+            encoding="utf-8"
+        )
+        workflow_doc = (repo_root / "orchestration" / "workflow.md").read_text(
+            encoding="utf-8"
+        )
+        routing_skill = (
+            repo_root / "orchestration" / "skills" / "routing" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        governor_skill = (
+            repo_root / "orchestration" / "skills" / "governor-workflow" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        normalized_governor_prompt = " ".join(governor_prompt.split())
+        normalized_workflow_doc = " ".join(workflow_doc.split())
+
+        for source in [governor_prompt, advisory_doc, workflow_doc, routing_skill, governor_skill]:
+            self.assertIn("cost-gated", source)
+
+        self.assertIn("do not consult for routine work", governor_prompt)
+        self.assertIn("default to no advisor", routing_skill.lower())
+        self.assertIn("prefer one advisor", routing_skill.lower())
+        self.assertIn(
+            "wrong decision would cost more than two consultations",
+            normalized_governor_prompt,
+        )
+        self.assertIn(
+            "wrong decision would cost more than two consultations",
+            normalized_workflow_doc,
+        )
+        self.assertIn("consult_minimax", governor_prompt)
+        self.assertIn("consult_claude_headless", governor_prompt)
 
     def _governor_first_submit(self, repo_root: Path, text: str = "hello!") -> dict:
         return session.dispatch_session_action(
@@ -742,7 +978,7 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["snapshot"]["currentStage"], "permission_needed")
             self.assertIsNotNone(model["snapshot"]["pendingPermissionRequest"])
 
-    def test_session_execute_permission_sets_session_mode_and_running_state(self) -> None:
+    def test_session_execute_permission_sets_session_mode_and_queued_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
             session.dispatch_session_action(
@@ -768,8 +1004,8 @@ class HarnessPackageTests(unittest.TestCase):
             )
 
             self.assertEqual(model["snapshot"]["permissionScope"], "execute")
-            self.assertEqual(model["snapshot"]["runState"], "running")
-            self.assertEqual(model["snapshot"]["currentActor"], "executor")
+            self.assertEqual(model["snapshot"]["runState"], "queued")
+            self.assertEqual(model["snapshot"]["currentActor"], "orchestration")
             self.assertEqual(model["snapshot"]["currentStage"], "dispatch_queued")
             self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
             self.assertIn("Execute permission", model["acceptedIntakeSummary"]["body"])
@@ -778,7 +1014,8 @@ class HarnessPackageTests(unittest.TestCase):
             )
             self.assertEqual(len(dispatch_requests), 1)
             request_payload = load_json(dispatch_requests[0])
-            self.assertEqual(request_payload["execution_mode"], "manual_artifact_report")
+            self.assertEqual(request_payload["execution_mode"], "command_chain")
+            self.assertIn("artifact_only_executor_readout", request_payload["execution_payload"]["notes"])
             self.assertTrue(request_payload["review_required"])
             self.assertEqual(
                 model["feed"][-1]["source_artifact_ref"],
@@ -941,9 +1178,9 @@ class HarnessPackageTests(unittest.TestCase):
             )
 
             self.assertEqual(model["snapshot"]["permissionScope"], "execute")
-            self.assertEqual(model["snapshot"]["currentActor"], "executor")
+            self.assertEqual(model["snapshot"]["currentActor"], "orchestration")
             self.assertEqual(model["snapshot"]["currentStage"], "dispatch_queued")
-            self.assertEqual(model["snapshot"]["runState"], "running")
+            self.assertEqual(model["snapshot"]["runState"], "queued")
             self.assertIsNone(model["planReadyRequest"])
             self.assertEqual(model["feed"][-1]["type"], "system_status")
             self.assertEqual(model["feed"][-1]["title"], "Dispatch queued")
@@ -957,10 +1194,8 @@ class HarnessPackageTests(unittest.TestCase):
             )
             self.assertEqual(len(dispatch_requests), 1)
             request_payload = load_json(dispatch_requests[0])
-            self.assertEqual(
-                request_payload["execution_mode"],
-                "manual_artifact_report",
-            )
+            self.assertEqual(request_payload["execution_mode"], "command_chain")
+            self.assertIn("artifact_only_executor_readout", request_payload["execution_payload"]["notes"])
             self.assertTrue(request_payload["review_required"])
             self.assertIn("review_artifact_path", request_payload)
             self.assertEqual(
@@ -1021,6 +1256,289 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["feed"][-1]["type"], "error")
             self.assertEqual(model["feed"][-1].get("presentation_key"), "error.stale_context")
 
+    def test_session_execute_plan_uses_configured_agent_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            runtime_agent_root = repo_root / ".agent-runtime"
+            with mock.patch.dict(
+                os.environ,
+                {"ORCHESTRATION_AGENT_ROOT": str(runtime_agent_root)},
+            ):
+                model = session.dispatch_session_action(
+                    "submit_prompt",
+                    text="Analyze the repo.",
+                    request_id="corgi-request:analyze",
+                    repo_root=repo_root,
+                    **self._semantic_submit(),
+                )
+                model = session.dispatch_session_action(
+                    "answer_clarification",
+                    text="Focus on architecture, structure, and subsystem boundaries.",
+                    request_id="corgi-request:clarify",
+                    context_ref=model["activeClarification"]["contextRef"],
+                    repo_root=repo_root,
+                )
+                with self._mock_governor_dialogue(body="Planning response."):
+                    model = session.dispatch_session_action(
+                        "set_permission_scope",
+                        permission_scope="plan",
+                        request_id="corgi-request:plan",
+                        context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                        repo_root=repo_root,
+                    )
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:do-it",
+                    context_ref=model["planReadyRequest"]["contextRef"],
+                    repo_root=repo_root,
+                )
+                model = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="execute",
+                    request_id="corgi-request:execute-click",
+                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                    repo_root=repo_root,
+                )
+
+            request_ref = model["feed"][-1]["source_artifact_ref"]
+            self.assertIsInstance(request_ref, str)
+            self.assertTrue(request_ref.startswith(".agent-runtime/dispatches/"))
+            self.assertTrue((repo_root / request_ref).exists())
+            self.assertFalse((repo_root / ".agent" / "dispatches").exists())
+
+    def test_session_execute_permission_can_auto_consume_executor(self) -> None:
+        repo_root = Path.cwd()
+        agent_parent = repo_root / ".agent"
+        agent_parent.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=agent_parent) as runtime_agent_root:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "ORCHESTRATION_AGENT_ROOT": runtime_agent_root,
+                        "ORCHESTRATION_APPROVED_PYTHON": str(Path(sys.executable).resolve()),
+                    },
+                ),
+                mock.patch.object(
+                    runtime_support,
+                    "APPROVED_PYTHON",
+                    Path(sys.executable).resolve(),
+                ),
+            ):
+                model = session.dispatch_session_action(
+                    "submit_prompt",
+                    text="Analyze the repo.",
+                    request_id="corgi-request:auto-analyze",
+                    repo_root=repo_root,
+                    **self._semantic_submit(),
+                )
+                model = session.dispatch_session_action(
+                    "answer_clarification",
+                    text="Focus on architecture, structure, and subsystem boundaries.",
+                    request_id="corgi-request:auto-clarify",
+                    context_ref=model["activeClarification"]["contextRef"],
+                    repo_root=repo_root,
+                )
+                prepared = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="plan",
+                    request_id="corgi-request:auto-plan",
+                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                    governor_runtime="external",
+                    repo_root=repo_root,
+                )
+                model = session.dispatch_session_action(
+                    "complete_governor_turn",
+                    runtime_request_id=prepared["request"]["runtimeRequestId"],
+                    runtime_body=(
+                        "Objective: analyze architecture. Proposed steps: inspect extension and "
+                        "orchestration boundaries. Likely areas: src/ and orchestration/. "
+                        "Risks or unknowns: scope may need narrowing. Execution readiness: ready."
+                    ),
+                    repo_root=repo_root,
+                )
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:auto-execute-plan",
+                    context_ref=model["planReadyRequest"]["contextRef"],
+                    repo_root=repo_root,
+                )
+                model = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="execute",
+                    request_id="corgi-request:auto-execute-permission",
+                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                    auto_consume_executor=True,
+                    repo_root=repo_root,
+                )
+
+            runtime_root = Path(runtime_agent_root)
+            dispatch_results = sorted(runtime_root.glob("dispatches/**/result.json"))
+            self.assertEqual(len(dispatch_results), 1)
+            dispatch_dir = dispatch_results[0].parent
+            request_payload = load_json(dispatch_dir / "request.json")
+            state_payload = load_json(dispatch_dir / "state.json")
+            readout_path = self._assert_executor_readout(repo_root, dispatch_dir, model)
+            review_path = self._assert_reviewer_readout(repo_root, dispatch_dir, model)
+            decision_path = self._assert_governor_decision(repo_root, dispatch_dir, model)
+
+            self.assertIn("executor_run", request_payload)
+            self.assertEqual(state_payload["status"], "completed")
+            self.assertEqual(model["snapshot"]["currentActor"], "governor")
+            self.assertEqual(model["snapshot"]["currentStage"], "governor_decision_recorded")
+            self.assertEqual(model["snapshot"]["runState"], "idle")
+            self.assertIsNone(model["activeForegroundRequestId"])
+            self.assertEqual(model["feed"][-1]["title"], "Governor decision recorded")
+            self.assertEqual(
+                model["snapshot"]["recentArtifacts"][0]["path"],
+                str(decision_path.relative_to(repo_root)),
+            )
+            self.assertEqual(
+                model["snapshot"]["recentArtifacts"][1]["path"],
+                str(review_path.relative_to(repo_root)),
+            )
+            self.assertEqual(
+                model["snapshot"]["recentArtifacts"][2]["path"],
+                str(readout_path.relative_to(repo_root)),
+            )
+
+    def test_session_execute_plan_auto_consume_flag_runs_executor(self) -> None:
+        repo_root = Path.cwd()
+        agent_parent = repo_root / ".agent"
+        agent_parent.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=agent_parent) as runtime_agent_root:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "ORCHESTRATION_AGENT_ROOT": runtime_agent_root,
+                        "ORCHESTRATION_APPROVED_PYTHON": str(Path(sys.executable).resolve()),
+                    },
+                ),
+                mock.patch.object(
+                    runtime_support,
+                    "APPROVED_PYTHON",
+                    Path(sys.executable).resolve(),
+                ),
+            ):
+                model = session.dispatch_session_action(
+                    "submit_prompt",
+                    text="Analyze the repo.",
+                    request_id="corgi-request:plan-auto-analyze",
+                    repo_root=repo_root,
+                    **self._semantic_submit(),
+                )
+                model = session.dispatch_session_action(
+                    "answer_clarification",
+                    text="Focus on architecture, structure, and subsystem boundaries.",
+                    request_id="corgi-request:plan-auto-clarify",
+                    context_ref=model["activeClarification"]["contextRef"],
+                    repo_root=repo_root,
+                )
+                prepared = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="plan",
+                    request_id="corgi-request:plan-auto-plan",
+                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                    governor_runtime="external",
+                    repo_root=repo_root,
+                )
+                model = session.dispatch_session_action(
+                    "complete_governor_turn",
+                    runtime_request_id=prepared["request"]["runtimeRequestId"],
+                    runtime_body=(
+                        "Objective: analyze architecture. Proposed steps: inspect extension and "
+                        "orchestration boundaries. Likely areas: src/ and orchestration/. "
+                        "Risks or unknowns: scope may need narrowing. Execution readiness: ready."
+                    ),
+                    repo_root=repo_root,
+                )
+                saved = session.load_session(repo_root)
+                saved["model"]["snapshot"]["permissionScope"] = "execute"
+                session.save_session(saved, repo_root=repo_root)
+
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:plan-auto-execute-plan",
+                    context_ref=model["planReadyRequest"]["contextRef"],
+                    auto_consume_executor=True,
+                    repo_root=repo_root,
+                )
+
+            runtime_root = Path(runtime_agent_root)
+            dispatch_results = sorted(runtime_root.glob("dispatches/**/result.json"))
+            self.assertEqual(len(dispatch_results), 1)
+            dispatch_dir = dispatch_results[0].parent
+            self._assert_executor_readout(repo_root, dispatch_dir, model)
+            self._assert_reviewer_readout(repo_root, dispatch_dir, model)
+            self._assert_governor_decision(repo_root, dispatch_dir, model)
+            self.assertEqual(model["snapshot"]["currentActor"], "governor")
+            self.assertEqual(model["snapshot"]["currentStage"], "governor_decision_recorded")
+            self.assertEqual(model["snapshot"]["runState"], "idle")
+            self.assertIsNone(model["activeForegroundRequestId"])
+            self.assertEqual(model["feed"][-1]["title"], "Governor decision recorded")
+
+    def test_executor_test_fixture_starts_at_execute_permission(self) -> None:
+        repo_root = Path.cwd()
+        agent_parent = repo_root / ".agent"
+        agent_parent.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=agent_parent) as runtime_agent_root:
+            env = {
+                **os.environ,
+                "ORCHESTRATION_AGENT_ROOT": runtime_agent_root,
+                "ORCHESTRATION_APPROVED_PYTHON": str(Path(sys.executable).resolve()),
+            }
+            subprocess.run(
+                [
+                    sys.executable,
+                    "orchestration/scripts/seed_executor_test_session.py",
+                    "--root",
+                    str(repo_root),
+                    "--scenario",
+                    "execute-permission",
+                ],
+                check=True,
+                cwd=repo_root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            with (
+                mock.patch.dict(os.environ, env),
+                mock.patch.object(
+                    runtime_support,
+                    "APPROVED_PYTHON",
+                    Path(sys.executable).resolve(),
+                ),
+            ):
+                seeded = session.load_session(repo_root)["model"]
+                pending_permission = seeded["snapshot"]["pendingPermissionRequest"]
+                self.assertIsNotNone(pending_permission)
+                self.assertEqual(pending_permission["recommendedScope"], "execute")
+                self.assertEqual(seeded["snapshot"]["currentStage"], "permission_needed")
+                self.assertEqual(seeded["snapshot"]["permissionScope"], "plan")
+                self.assertIsNone(seeded["activeClarification"])
+
+                model = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="execute",
+                    request_id="corgi-request:fixture-execute",
+                    session_ref=seeded["snapshot"]["sessionRef"],
+                    context_ref=pending_permission["contextRef"],
+                    auto_consume_executor=True,
+                    repo_root=repo_root,
+                )
+
+            runtime_root = Path(runtime_agent_root)
+            dispatch_results = sorted(runtime_root.glob("dispatches/**/result.json"))
+            self.assertEqual(len(dispatch_results), 1)
+            dispatch_dir = dispatch_results[0].parent
+            self._assert_executor_readout(repo_root, dispatch_dir, model)
+            self._assert_reviewer_readout(repo_root, dispatch_dir, model)
+            self._assert_governor_decision(repo_root, dispatch_dir, model)
+            self.assertEqual(model["snapshot"]["currentStage"], "governor_decision_recorded")
+            self.assertEqual(model["snapshot"]["runState"], "idle")
+
     def test_session_plan_revision_keeps_plan_ready_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
@@ -1068,40 +1586,55 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["feed"][-1]["source_actor"], "governor")
             self.assertEqual(model["feed"][-1]["body"], "Revised planning response.")
 
-    def test_session_auto_accepts_later_requests_after_execute_permission(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            repo_root = Path(tmp_dir)
-            session.dispatch_session_action(
-                "submit_prompt",
-                text="Build a compact execution window.",
-                repo_root=repo_root,
-                **self._semantic_submit(),
-            )
-            session.dispatch_session_action(
-                "answer_clarification",
-                text="Keep inline artifact actions visible.",
-                context_ref=session.load_session(repo_root)["model"]["activeClarification"]["contextRef"],
-                repo_root=repo_root,
-            )
-            approval_model = session.load_session(repo_root)["model"]
-            session.dispatch_session_action(
-                "set_permission_scope",
-                permission_scope="execute",
-                context_ref=approval_model["snapshot"]["pendingPermissionRequest"]["contextRef"],
-                repo_root=repo_root,
-            )
+    def test_session_auto_accepted_execute_prompt_can_auto_consume_executor(self) -> None:
+        repo_root = Path.cwd()
+        agent_parent = repo_root / ".agent"
+        agent_parent.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=agent_parent) as runtime_agent_root:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "ORCHESTRATION_AGENT_ROOT": runtime_agent_root,
+                        "ORCHESTRATION_APPROVED_PYTHON": str(Path(sys.executable).resolve()),
+                    },
+                ),
+                mock.patch.object(
+                    runtime_support,
+                    "APPROVED_PYTHON",
+                    Path(sys.executable).resolve(),
+                ),
+            ):
+                saved = session.load_session(repo_root)
+                saved["model"]["snapshot"]["permissionScope"] = "execute"
+                session.save_session(saved, repo_root=repo_root)
 
-            model = session.dispatch_session_action(
-                "submit_prompt",
-                text="Implement a quieter Chat transcript while keeping the VS Code Chat host, preserving inline artifact actions, and replacing visible hold and reconnect controls with cleaner approval affordances.",
-                repo_root=repo_root,
-                **self._semantic_submit(),
-            )
+                model = session.dispatch_session_action(
+                    "submit_prompt",
+                    text=(
+                        "Implement a quieter Chat transcript while keeping the VS Code Chat host, "
+                        "preserving inline artifact actions, and replacing visible hold and reconnect "
+                        "controls with cleaner approval affordances."
+                    ),
+                    request_id="corgi-request:auto-accepted-execute",
+                    auto_consume_executor=True,
+                    repo_root=repo_root,
+                    **self._semantic_submit(),
+                )
 
+            runtime_root = Path(runtime_agent_root)
+            dispatch_results = sorted(runtime_root.glob("dispatches/**/result.json"))
+            self.assertEqual(len(dispatch_results), 1)
+            dispatch_dir = dispatch_results[0].parent
+            self._assert_executor_readout(repo_root, dispatch_dir, model)
+            self._assert_reviewer_readout(repo_root, dispatch_dir, model)
+            self._assert_governor_decision(repo_root, dispatch_dir, model)
             self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
             self.assertEqual(model["snapshot"]["permissionScope"], "execute")
-            self.assertEqual(model["snapshot"]["runState"], "running")
-            self.assertTrue((repo_root / ".agent" / "intakes").exists())
+            self.assertEqual(model["snapshot"]["currentActor"], "governor")
+            self.assertEqual(model["snapshot"]["currentStage"], "governor_decision_recorded")
+            self.assertEqual(model["snapshot"]["runState"], "idle")
+            self.assertIsNone(model["activeForegroundRequestId"])
 
     def test_cli_routes_session_commands_through_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1387,6 +1920,12 @@ class HarnessPackageTests(unittest.TestCase):
                 context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
                 repo_root=repo_root,
             )
+            self.assertEqual(model["snapshot"]["runState"], "queued")
+            payload = session.load_session(repo_root)
+            model["snapshot"]["runState"] = "running"
+            model["snapshot"]["currentActor"] = "executor"
+            payload["model"] = model
+            session.save_session(payload, repo_root=repo_root)
             model = session.dispatch_session_action(
                 "interrupt_run",
                 request_id="corgi-request:interrupt-stale",
@@ -1539,7 +2078,7 @@ class HarnessPackageTests(unittest.TestCase):
 
     def test_reviewer_module_resolves_default_artifact_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            repo_root = Path(tmp_dir)
+            repo_root = Path(tmp_dir).resolve()
             path = reviewer.resolve_review_artifact_path(
                 repo_root,
                 "cycle/test/scope/task/dispatch-005",

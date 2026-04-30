@@ -77,6 +77,14 @@ function resolvePythonExecutable(): string {
 	return 'python3';
 }
 
+function approvedPythonExecutable(pythonExecutable: string): string {
+	try {
+		return fs.realpathSync(pythonExecutable);
+	} catch {
+		return pythonExecutable;
+	}
+}
+
 function orchestrationTarget(
 	rootPath: string,
 	source: 'workspace' | 'extension_dev'
@@ -310,6 +318,16 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		}
 		if (action?.type === 'set_permission_scope') {
 			args.push('--permission-scope', action.permission_scope);
+			if (action.permission_scope === 'execute') {
+				args.push('--auto-consume-executor');
+			}
+		}
+		if (
+			action?.type === 'submit_prompt' ||
+			action?.type === 'answer_clarification' ||
+			action?.type === 'execute_plan'
+		) {
+			args.push('--auto-consume-executor');
 		}
 		if (action && 'semantic_mode' in action && action.semantic_mode) {
 			args.push('--semantic-mode', action.semantic_mode);
@@ -370,6 +388,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 					env: {
 						...process.env,
 						ORCHESTRATION_REPO_ROOT: this.cwd,
+						ORCHESTRATION_APPROVED_PYTHON: approvedPythonExecutable(this.pythonExecutable),
 					},
 					maxBuffer: 1024 * 1024,
 				},

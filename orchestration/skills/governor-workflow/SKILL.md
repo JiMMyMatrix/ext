@@ -11,8 +11,10 @@ Read:
 - `orchestration/principles.md`
 - `orchestration/authority.md`
 - `orchestration/workflow.md`
+- `orchestration/advisory.md`
 - `orchestration/contracts/dispatch.md`
 - `orchestration/contracts/transition.md`
+- `orchestration/skills/routing/SKILL.md`
 
 ## Core rules
 - continue quietly through routine internal workflow loops
@@ -22,5 +24,9 @@ Read:
   a real blocker prevents finalization
 - use legal human interrupt reasons only
 - only the Governor may use advisor tools
+- advisor MCP consultation is standard but cost-gated: use it only for truly
+  difficult, high-risk, ambiguous, or repeatedly failing problems
+- prefer one advisor first; use both MiniMax and Claude Headless only when a
+  wrong decision would cost more than two consultations
 - orchestration launches actors technically but does not invent work-plane
   decisions

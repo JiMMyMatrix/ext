@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from typing import Callable
@@ -44,9 +45,18 @@ def _advisory_command(command: str, argv: list[str]) -> int:
 	if command != "serve":
 		raise ValueError(f"unsupported advisory command: {command}")
 	paths = resolve_paths()
+	env = os.environ.copy()
+	existing_pythonpath = env.get("PYTHONPATH")
+	env["PYTHONPATH"] = (
+		str(paths.repo_root)
+		if not existing_pythonpath
+		else str(paths.repo_root) + os.pathsep + existing_pythonpath
+	)
+	env["ORCHESTRATION_REPO_ROOT"] = str(paths.repo_root)
 	completed = subprocess.run(
-		[sys.executable, str(paths.runtime_root / "advisory" / "mcp_server.py"), *argv],
+		[sys.executable, str(paths.scripts_root / "serve_advisory_mcp.py"), *argv],
 		cwd=paths.repo_root,
+		env=env,
 	)
 	return completed.returncode
 

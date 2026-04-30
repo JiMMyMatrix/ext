@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
+from orchestration.harness.paths import resolve_agent_root
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -17,22 +19,30 @@ def relative_path(path: Path, repo_root: Path) -> str:
 
 
 def resolve_review_artifact_path(repo_root: Path, dispatch_ref: str, configured: Optional[str]) -> Path:
+    repo_root = repo_root.resolve()
     if isinstance(configured, str) and configured.strip():
         rel_path = Path(configured.strip())
     else:
-        rel_path = Path(".agent") / "reviews" / Path(dispatch_ref) / "review.json"
+        rel_path = (
+            resolve_agent_root(repo_root)
+            / "reviews"
+            / Path(dispatch_ref)
+            / "review.json"
+        ).relative_to(repo_root)
     if rel_path.is_absolute():
         raise ReviewerContractViolation("reviewer_contract_violation:review_artifact_path must be repo-local")
     normalized = Path(str(rel_path))
-    if normalized.parts[:2] != (".agent", "reviews"):
+    review_path = (repo_root / normalized).resolve()
+    review_root = (resolve_agent_root(repo_root) / "reviews").resolve()
+    if review_root not in [review_path, *review_path.parents]:
         raise ReviewerContractViolation(
-            "reviewer_contract_violation:review_artifact_path must stay under .agent/reviews/"
+            "reviewer_contract_violation:review_artifact_path must stay under the configured agent reviews root"
         )
     if normalized.name != "review.json":
         raise ReviewerContractViolation(
             "reviewer_contract_violation:review_artifact_path must end with review.json"
         )
-    return repo_root / normalized
+    return review_path
 
 
 def _read_file_bytes(path: Path) -> Optional[bytes]:

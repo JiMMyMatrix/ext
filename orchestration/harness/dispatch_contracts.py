@@ -10,6 +10,7 @@ from orchestration.harness.transition import (
     ALLOWED_HUMAN_STOP_REASONS,
     TRANSITION_TYPES,
 )
+from orchestration.harness.paths import resolve_agent_root
 from orchestration.harness.spawn_bridge import (
     BRIDGE_STAGES,
     HELPER_RUNTIME_PATH,
@@ -864,7 +865,7 @@ def validate_state(payload: Dict, failures: List[str]) -> None:
 
 
 def run_dir_for_ref(repo_root: Path, run_ref: str) -> Path:
-    return repo_root / ".agent" / "runs" / Path(run_ref)
+    return resolve_agent_root(repo_root) / "runs" / Path(run_ref)
 
 
 def repo_root_for_path(path: Path) -> Path:
@@ -876,10 +877,14 @@ def repo_root_for_path(path: Path) -> Path:
 
 
 def expected_dispatch_ref_for_dir(dispatch_dir: Path) -> Optional[str]:
-    parts = dispatch_dir.parts
-    if len(parts) < 5:
-        return None
-    return "/".join(parts[-5:])
+	parts = dispatch_dir.parts
+	if "dispatches" in parts:
+		index = len(parts) - 1 - list(reversed(parts)).index("dispatches")
+		if index + 1 < len(parts):
+			return "/".join(parts[index + 1 :])
+	if len(parts) < 3:
+		return None
+	return "/".join(parts[-3:])
 
 
 def main(argv: Optional[List[str]] = None) -> int:

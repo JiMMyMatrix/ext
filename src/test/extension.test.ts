@@ -45,6 +45,10 @@ const EXECUTION_TRANSPORT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionTransport.ts'
 );
+const TEST_WINDOW_SCRIPT_PATH = path.resolve(
+	__dirname,
+	'../../scripts/launch-corgi-test-window.sh'
+);
 const CODEX_APP_SERVER_CLIENT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/codexAppServerClient.ts'
@@ -56,6 +60,19 @@ const GOVERNOR_RUNTIME_TS_PATH = path.resolve(
 const GOVERNOR_RUNTIME_CONFIG_PATH = path.resolve(
 	__dirname,
 	'../../orchestration/runtime/config.toml'
+);
+const MCP_SERVER_ENTRYPOINT_PATH = path.resolve(__dirname, '../../mcp_server.py');
+const ADVISORY_MCP_LAUNCHER_PATH = path.resolve(
+	__dirname,
+	'../../orchestration/scripts/serve_advisory_mcp.py'
+);
+const ADVISORY_MCP_SETUP_PATH = path.resolve(
+	__dirname,
+	'../../orchestration/scripts/setup_advisory_mcp_env.py'
+);
+const ADVISORY_MCP_REQUIREMENTS_PATH = path.resolve(
+	__dirname,
+	'../../orchestration/runtime/advisory/requirements.txt'
 );
 const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
 	__dirname,
@@ -209,12 +226,16 @@ suite('Corgi Webview UX', () => {
 			'utf8'
 		);
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const launchScriptSource = fs.readFileSync(TEST_WINDOW_SCRIPT_PATH, 'utf8');
+		const packageJson = loadPackageJson();
+		const scripts = packageJson.scripts as Record<string, string>;
 
 		assert.ok(
 			developmentSessionSource.includes(
 				'context.extensionMode === vscode.ExtensionMode.Development'
 			)
 		);
+		assert.ok(developmentSessionSource.includes('CORGI_TEST_WINDOW_SCENARIO'));
 		assert.ok(developmentSessionSource.includes('ui_session.json'));
 		assert.ok(developmentSessionSource.includes('resolveExecutionTransportTarget'));
 		assert.ok(extensionSource.includes('scheduleDevelopmentExecutionWindowOpen'));
@@ -222,6 +243,16 @@ suite('Corgi Webview UX', () => {
 		assert.ok(extensionSource.includes('resetDevelopmentSessionState(context);'));
 		assert.ok(webviewSource.includes('resetDevelopmentSessionState(this.context);'));
 		assert.ok(webviewSource.includes('return context.extensionMode === vscode.ExtensionMode.Development;'));
+		assert.ok(launchScriptSource.includes('seed_executor_test_session.py'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCENARIO'));
+		assert.strictEqual(
+			scripts['test:window:executor'],
+			'CORGI_TEST_WINDOW_SCENARIO=execute-permission bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:plan-ready'],
+			'CORGI_TEST_WINDOW_SCENARIO=plan-ready bash scripts/launch-corgi-test-window.sh'
+		);
 		assert.ok(!extensionSource.includes('CORGI_RESET_DEV_SESSION'));
 		assert.ok(!developmentSessionSource.includes('CORGI_RESET_DEV_SESSION'));
 		assert.ok(!extensionSource.includes('CORGI_RESET_WEBVIEW_STATE'));
@@ -426,6 +457,33 @@ suite('Corgi Webview UX', () => {
 		assert.ok(sessionSource.includes('reasoning = "xhigh"'));
 	});
 
+	test('registers advisory MCP server through repo entrypoint with Python env handling', () => {
+		const configSource = fs.readFileSync(GOVERNOR_RUNTIME_CONFIG_PATH, 'utf8');
+		const entrypointSource = fs.readFileSync(MCP_SERVER_ENTRYPOINT_PATH, 'utf8');
+		const launcherSource = fs.readFileSync(ADVISORY_MCP_LAUNCHER_PATH, 'utf8');
+		const setupSource = fs.readFileSync(ADVISORY_MCP_SETUP_PATH, 'utf8');
+		const requirementsSource = fs.readFileSync(ADVISORY_MCP_REQUIREMENTS_PATH, 'utf8');
+
+		assert.ok(configSource.includes('[mcp_servers.orchestration_advisory]'));
+		assert.ok(configSource.includes('command = "python3"'));
+		assert.ok(configSource.includes('args = ["mcp_server.py"]'));
+		assert.ok(!configSource.includes('args = ["orchestration/runtime/advisory/mcp_server.py"]'));
+		assert.ok(entrypointSource.includes('serve_advisory_mcp.py'));
+		assert.ok(launcherSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
+		assert.ok(launcherSource.includes('CORGI_ADVISORY_MCP_PYTHON'));
+		assert.ok(launcherSource.includes('CORGI_PYTHON'));
+		assert.ok(launcherSource.includes('/opt/homebrew/bin/python3'));
+		assert.ok(launcherSource.includes('ORCHESTRATION_REPO_ROOT'));
+		assert.ok(launcherSource.includes('PYTHONPATH'));
+		assert.ok(launcherSource.includes('requirements.txt'));
+		assert.ok(launcherSource.includes('"runtime" / "advisory" / "mcp_server.py"'));
+		assert.ok(setupSource.includes('/opt/homebrew/bin/python3'));
+		assert.ok(setupSource.includes('.venv'));
+		assert.ok(setupSource.includes('requirements.txt'));
+		assert.ok(requirementsSource.includes('anthropic'));
+		assert.ok(requirementsSource.includes('mcp'));
+	});
+
 	test('permission continuation collapses progress into a specific wait state', () => {
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 
@@ -448,7 +506,14 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('pendingPermissionHiddenAt'));
 		assert.ok(webviewSource.includes('function retainOptimisticHidesUntilAuthoritativeChange()'));
 		assert.ok(!webviewSource.includes('const maxHideMs'));
-		assert.ok(webviewSource.includes('Permission choice sent. Waiting for a reply from the Governor...'));
+		assert.ok(webviewSource.includes('const composerActions = document.getElementById'));
+		assert.ok(webviewSource.includes("actions: collectTextRows(composerActions, 'button')"));
+		assert.ok(
+			webviewSource.includes(
+				'buttons.push(\'<button type="button" class="secondary" data-action="refresh_state">Refresh state</button>\');'
+			)
+		);
+		assert.ok(!webviewSource.includes('Permission choice sent. Waiting for a reply from the Governor...'));
 		assert.ok(webviewSource.includes('data-action="refresh_state"'));
 		assert.ok(webviewSource.includes('authoritativePermissionContextRef() !== ui.pendingPermissionContextRef'));
 		assert.ok(webviewSource.includes('authoritativePlanContextRef() !== ui.pendingPlanContextRef'));
@@ -482,7 +547,8 @@ suite('Corgi Webview UX', () => {
 			)
 		);
 		assert.ok(webviewSource.includes('const copy = displayCopy(item);'));
-		assert.ok(webviewSource.includes('renderGovernorMessageBody(body)'));
+		assert.ok(webviewSource.includes('renderStructuredAssistantBody(body)'));
+		assert.ok(webviewSource.includes("item.title === 'Executor completed'"));
 		assert.ok(webviewSource.includes('escapeHtml(body)'));
 
 		const permissionModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
@@ -545,6 +611,8 @@ suite('Corgi Webview UX', () => {
 			assert.ok(source.includes('/usr/local/bin/python3'));
 		}
 		assert.ok(transportSource.includes('this.pythonExecutable'));
+		assert.ok(transportSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
+		assert.ok(transportSource.includes('--auto-consume-executor'));
 	});
 
 	test('transport selection falls back to the development extension repo when no workspace is open', async () => {
@@ -812,11 +880,13 @@ suite('Corgi Webview UX', () => {
 
 	test('webview transcript treats requests as assistant replies and separates new turns', () => {
 		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 
 		assert.ok(html.includes('feed-divider'));
 		assert.ok(html.includes('Current turn'));
 		assert.ok(html.includes('initialFeedCount'));
 		assert.ok(html.includes('composerContext'));
+		assert.ok(html.includes('composerActions'));
 		assert.ok(html.includes("renderRevealPill('Current work', railTask, 'is-primary')"));
 		assert.ok(html.includes('View source'));
 		assert.ok(html.includes('foregroundRequest'));
@@ -841,6 +911,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('Waiting for clarification'));
 		assert.ok(html.includes('Waiting for permission: '));
 		assert.ok(html.includes('Dispatch queued'));
+		assert.ok(html.includes('latestDispatchQueuedStatus'));
+		assert.ok(html.includes("snapshot.runState === 'queued'"));
+		assert.ok(webviewSource.includes('Risks?\\\\s+or\\\\s+unknowns'));
+		assert.ok(webviewSource.includes("replace(/(^|[.!?])\\\\s+(Unknowns[:]?)/gi"));
 		assert.ok(html.includes('Permission needed'));
 		assert.ok(html.includes('set_permission_scope'));
 		assert.ok(html.includes('data-permission-scope'));
@@ -858,6 +932,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!html.includes('<h1 class="header-title">Corgi</h1>'));
 		assert.ok(!html.includes('<div class="brand-mark">C</div>'));
 		assert.ok(!html.includes('<div class="message-label">Corgi</div>'));
+		assert.ok(!html.includes('action-card'));
+		assert.ok(!html.includes('Run controls'));
 		assert.ok(html.includes("transportState === 'disconnected'"));
 		assert.ok(
 			html.includes(
@@ -889,7 +965,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('function cloneForSnapshot(value)'));
 		assert.ok(html.includes("type: 'webview_snapshot'"));
 		assert.ok(html.includes('messages: collectTextRows(feed'));
-		assert.ok(html.includes('actions: collectTextRows(actionBand'));
+		assert.ok(html.includes("actions: collectTextRows(composerActions, 'button')"));
 		assert.ok(html.includes('model: {'));
 		assert.ok(html.includes('feed: cloneForSnapshot(feedItems)'));
 		assert.ok(html.includes('activeClarification: cloneForSnapshot(model?.activeClarification)'));
@@ -1183,6 +1259,9 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(lastItem.source_actor, 'governor');
 		assert.strictEqual(lastItem.in_response_to_request_id, 'req-plan');
 		assert.match(lastItem.body ?? '', /Plan scope/);
+		assert.match(lastItem.body ?? '', /Risks or unknowns/);
+		assert.match(lastItem.body ?? '', /src\/executionWindowPanel\.ts/);
+		assert.match(lastItem.body ?? '', /orchestration\/harness\/session\.py/);
 	});
 
 	test('execute plan action requests execute permission instead of restarting intake', () => {
@@ -1234,9 +1313,9 @@ suite('Corgi Webview UX', () => {
 		});
 
 		assert.strictEqual(dispatchedModel.snapshot.permissionScope, 'execute');
-		assert.strictEqual(dispatchedModel.snapshot.currentActor, 'executor');
+		assert.strictEqual(dispatchedModel.snapshot.currentActor, 'orchestration');
 		assert.strictEqual(dispatchedModel.snapshot.currentStage, 'dispatch_queued');
-		assert.strictEqual(dispatchedModel.snapshot.runState, 'running');
+		assert.strictEqual(dispatchedModel.snapshot.runState, 'queued');
 		assert.strictEqual(dispatchedModel.planReadyRequest, undefined);
 		const dispatchItem = dispatchedModel.feed[dispatchedModel.feed.length - 1];
 		assert.strictEqual(dispatchItem.type, 'system_status');
@@ -1330,7 +1409,7 @@ suite('Corgi Webview UX', () => {
 		assert.match(lastItem.body ?? '', /revise the current plan/i);
 	});
 
-	test('execute permission accepts the draft and marks the session as running', () => {
+	test('execute permission accepts the draft and queues dispatch truth', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Build a compact execution window for phase 1.',
@@ -1351,8 +1430,8 @@ suite('Corgi Webview UX', () => {
 		});
 
 		assert.strictEqual(runningModel.snapshot.permissionScope, 'execute');
-		assert.strictEqual(runningModel.snapshot.runState, 'running');
-		assert.strictEqual(runningModel.snapshot.currentActor, 'executor');
+		assert.strictEqual(runningModel.snapshot.runState, 'queued');
+		assert.strictEqual(runningModel.snapshot.currentActor, 'orchestration');
 		assert.strictEqual(runningModel.snapshot.currentStage, 'dispatch_queued');
 		assert.ok(runningModel.acceptedIntakeSummary?.body.includes('Execute permission'));
 	});

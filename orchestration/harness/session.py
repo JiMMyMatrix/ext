@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 import uuid
@@ -32,6 +33,7 @@ from orchestration.harness.paths import (
 	prompt_path,
 	repo_relative,
 	resolve_paths,
+	script_ref,
 	summarize,
 	trim_text,
 	utc_now,
@@ -323,6 +325,10 @@ def _governor_dialogue_context(
 		orchestration_summary = (
 			f"The current request is blocked on a permission choice. Recommended scope: {recommended_scope}."
 		)
+	elif snapshot.get("currentStage") == "dispatch_queued" or snapshot.get("runState") == "queued":
+		orchestration_summary = (
+			f"Dispatch truth is queued{f' for {task}' if task else ''}. Executor has not started yet."
+		)
 	elif dispatch_summary:
 		orchestration_summary = (
 			f"The latest dispatch is {dispatch_summary.get('dispatch_ref')} with state "
@@ -583,7 +589,9 @@ def _initial_governor_plan_prompt(context_prompt: str) -> str:
 			"- Do not create dispatch truth, start execution, or imply Execute permission.\n"
 			"- Do not perform the analysis or deeply inspect the repo unless the provided context is insufficient.\n"
 			"- Return only final user-facing plan text; no JSON, hidden ids, or runtime metadata.",
-			"Output requirements: concise readable prose, normally under 180 words, covering objective, proposed steps, likely files/areas, risks or unknowns, and execution readiness.",
+			"Output requirements: concise readable prose, normally under 180 words, covering objective, proposed steps, likely files/areas, risks or unknowns, and execution readiness. "
+			"Use the exact heading 'Risks or unknowns:' as one combined heading. "
+			"For likely files/areas, name concrete entry files when they are known from context, such as src/executionWindowPanel.ts, src/executionTransport.ts, src/phase1Model.ts, orchestration/harness/session.py, orchestration/contracts/ux.md, or the relevant accepted intake artifact.",
 			context_prompt,
 		]
 	)
@@ -1829,6 +1837,7 @@ def _append_error(
 	in_response_to_request_id: str | None = None,
 	presentation_key: str = "error.generic",
 	presentation_args: dict[str, Any] | None = None,
+	source_artifact_ref: str | None = None,
 ) -> None:
 	model["feed"].append(
 		_feed_item(
@@ -1837,6 +1846,7 @@ def _append_error(
 			body,
 			authoritative=True,
 			now=now,
+			source_artifact_ref=source_artifact_ref,
 			in_response_to_request_id=in_response_to_request_id,
 			presentation_key=presentation_key,
 			presentation_args=presentation_args or {"title": title, "body": body},
@@ -2015,6 +2025,21 @@ def _plan_execution_objective(model: dict[str, Any]) -> str:
 	return "Execute the accepted Corgi plan."
 
 
+def _executor_run_ref(dispatch_ref: str) -> str:
+	return f"{dispatch_ref}/result/attempt-1"
+
+
+def _plan_execution_summary(model: dict[str, Any], dispatch_ref: str) -> str:
+	objective = _plan_execution_objective(model)
+	return (
+		f"Executor generated a bounded readout for dispatch {dispatch_ref}: {objective}."
+	)
+
+
+def _command_arg(value: str) -> str:
+	return shlex.quote(str(value))
+
+
 def _emit_plan_execution_dispatch(
 	session: dict[str, Any],
 	now: str,
@@ -2028,6 +2053,9 @@ def _emit_plan_execution_dispatch(
 	lane = model["snapshot"].get("lane") or default_lane(branch)
 	dispatch_ref = f"{lane}/{_next_id('dispatch')}"
 	dispatch_dir = paths.agent_root / "dispatches" / Path(dispatch_ref)
+	executor_run_ref = _executor_run_ref(dispatch_ref)
+	run_dir = paths.agent_root / "runs" / Path(executor_run_ref)
+	readout_ref = repo_relative(run_dir / "executor_readout.md", repo_root)
 	review_ref = repo_relative(
 		paths.agent_root / "reviews" / Path(dispatch_ref) / "review.json",
 		repo_root,
@@ -2052,9 +2080,45 @@ def _emit_plan_execution_dispatch(
 		"--lane",
 		lane,
 		"--execution-mode",
-		"manual_artifact_report",
+		"command_chain",
+		"--executor-run-ref",
+		executor_run_ref,
+		"--run-objective",
+		objective,
+		"--run-scope",
+		objective,
+		"--run-produce",
+		readout_ref,
 		"--required-output",
-		"Executor result artifact for the accepted plan.",
+		readout_ref,
+		"--command",
+		" ".join(
+			[
+				_command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+				_command_arg(script_ref("executor_write_readout.py", paths.repo_root)),
+				"--repo-root",
+				_command_arg(str(paths.repo_root)),
+				"--dispatch-ref",
+				_command_arg(dispatch_ref),
+				"--objective",
+				_command_arg(objective),
+				"--output",
+				_command_arg(readout_ref),
+				*(["--accepted-intake", _command_arg(accepted_ref)] if accepted_ref else []),
+			]
+		),
+		"--execution-summary",
+		_plan_execution_summary(model, dispatch_ref),
+		"--execution-claim",
+		"Executor generated a bounded readout artifact for the accepted plan.",
+		"--execution-claim",
+		"This helper-backed Executor path produced analysis artifacts but did not mutate product code.",
+		"--execution-evidence",
+		readout_ref,
+		"--execution-note",
+		"artifact_only_executor_readout",
+		"--execution-next-action",
+		"Governor should review the Executor result and decide the next bounded step.",
 		"--acceptance-criterion",
 		"Executor work stays within the accepted intake and latest validated plan context.",
 		"--stop-condition",
@@ -2067,6 +2131,7 @@ def _emit_plan_execution_dispatch(
 	]
 	for input_ref in inputs:
 		args.extend(["--input", input_ref])
+		args.extend(["--run-read", input_ref])
 	try:
 		with contextlib.redirect_stdout(io.StringIO()):
 			dispatch_harness.emit_main(args)
@@ -2085,24 +2150,433 @@ def _emit_plan_execution_dispatch(
 		"request_ref": repo_relative(dispatch_dir / "request.json", repo_root),
 		"state_ref": repo_relative(dispatch_dir / "state.json", repo_root),
 		"review_ref": review_ref,
+		"dispatch_dir": str(dispatch_dir),
 	}
 
 
-def _dispatch_artifacts(dispatch_refs: dict[str, Any]) -> list[dict[str, Any]]:
+def _dispatch_artifacts(dispatch_refs: dict[str, Any], *, status: str = "queued") -> list[dict[str, Any]]:
 	return [
 		_artifact(
 			dispatch_refs["request_ref"],
 			summary="Dispatch truth for the accepted plan.",
 			authoritative=True,
-			status="queued",
+			status=status,
 		),
 		_artifact(
 			dispatch_refs["state_ref"],
 			summary="Dispatch lifecycle state.",
 			authoritative=True,
-			status="queued",
+			status=status,
 		),
 	]
+
+
+def _executor_result_artifacts(
+	dispatch_refs: dict[str, Any],
+	state: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
+	artifacts: list[dict[str, Any]] = []
+	status = trim_text(state.get("status")) or "completed"
+	run_ref = state.get("run_ref")
+	if isinstance(run_ref, str) and run_ref.strip():
+		run_dir = resolve_paths(repo_root).agent_root / "runs" / Path(run_ref)
+		report_payload = load_json(run_dir / "report.json") if (run_dir / "report.json").exists() else {}
+		raw_outputs = report_payload.get("outputs", []) if isinstance(report_payload, dict) else []
+		outputs = [output for output in raw_outputs if isinstance(output, str) and output.strip()]
+		primary_output_ref = _executor_primary_output_ref(report_payload)
+		ordered_outputs = [
+			output
+			for output in [primary_output_ref, *outputs]
+			if isinstance(output, str)
+			and output.strip()
+			and "/command_logs/" not in output
+		]
+		for output_ref in dict.fromkeys(ordered_outputs):
+			if isinstance(output_ref, str) and output_ref.strip():
+				artifacts.append(
+					_artifact(
+						output_ref,
+						summary="Executor produced output artifact.",
+						authoritative=True,
+						status=status,
+					)
+				)
+		for name, summary in [
+			("report.json", "Executor run report."),
+			("status.json", "Executor run status."),
+		]:
+			path = run_dir / name
+			if path.exists():
+				artifacts.append(
+					_artifact(
+						repo_relative(path, repo_root),
+						summary=summary,
+						authoritative=True,
+						status=status,
+					)
+				)
+	result_ref = state.get("result_ref")
+	if isinstance(result_ref, str) and result_ref.strip():
+		artifacts.append(
+			_artifact(
+				result_ref,
+				summary="Executor result for the accepted dispatch.",
+				authoritative=True,
+				status=status,
+			)
+		)
+	return artifacts + _dispatch_artifacts(dispatch_refs, status=status)
+
+
+def _executor_report_payload(
+	state: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+) -> dict[str, Any]:
+	run_ref = state.get("run_ref") if isinstance(state, dict) else None
+	if not isinstance(run_ref, str) or not run_ref.strip():
+		return {}
+	report_path = resolve_paths(repo_root).agent_root / "runs" / Path(run_ref) / "report.json"
+	return load_json(report_path) if report_path.exists() else {}
+
+
+def _executor_primary_output_ref(report: dict[str, Any]) -> str | None:
+	outputs = report.get("outputs") if isinstance(report, dict) else None
+	if not isinstance(outputs, list):
+		return None
+	for suffix in (".md", ".json"):
+		for output in outputs:
+			if isinstance(output, str) and output.strip() and output.endswith(suffix):
+				return output
+	for output in outputs:
+		if isinstance(output, str) and output.strip():
+			return output
+	return None
+
+
+def _executor_output_body(
+	output_ref: str | None,
+	*,
+	repo_root: str | Path | None = None,
+) -> str | None:
+	if not isinstance(output_ref, str) or not output_ref.strip() or not output_ref.endswith(".md"):
+		return None
+	path = resolve_paths(repo_root).repo_root / output_ref
+	if not path.exists():
+		return None
+	body = trim_text(path.read_text(encoding="utf-8"))
+	if not body:
+		return None
+	max_chars = 12000
+	if len(body) > max_chars:
+		return body[:max_chars].rstrip() + "\n\n_Output truncated. View source for the full Executor readout._"
+	return body
+
+
+def _executor_completion_body(report: dict[str, Any], output_body: str | None = None) -> str:
+	summary = trim_text(report.get("summary") if isinstance(report, dict) else "")
+	next_action = trim_text(report.get("next_action") if isinstance(report, dict) else "")
+	claims = report.get("claims") if isinstance(report, dict) else None
+	claim_lines = [
+		f"- {trim_text(claim)}"
+		for claim in claims[:3]
+		if isinstance(claim, str) and trim_text(claim)
+	] if isinstance(claims, list) else []
+	parts = [
+		output_body or summary or "Executor completed the dispatch and wrote the bounded result artifact.",
+	]
+	if claim_lines and not output_body:
+		parts.append("What changed:\n" + "\n".join(claim_lines))
+	if next_action:
+		parts.append(f"Next: {next_action}")
+	return "\n\n".join(parts)
+
+
+def _reviewer_completion_body(review: dict[str, Any]) -> str:
+	verdict = trim_text(review.get("verdict")) or "inconclusive"
+	recommendation = trim_text(review.get("recommendation")) or "No recommendation provided."
+	findings = review.get("findings")
+	residual_risks = review.get("residual_risks")
+	validator_assessment = review.get("validator_assessment")
+
+	parts = [
+		"# Reviewer Readout",
+		f"Verdict: {verdict}",
+		f"Recommendation: {recommendation}",
+	]
+	if isinstance(findings, list) and findings:
+		parts.append(
+			"Findings:\n"
+			+ "\n".join(
+				f"- {trim_text(item)}"
+				for item in findings
+				if isinstance(item, str) and trim_text(item)
+			)
+		)
+	if isinstance(residual_risks, list) and residual_risks:
+		parts.append(
+			"Residual risks:\n"
+			+ "\n".join(
+				f"- {trim_text(item)}"
+				for item in residual_risks
+				if isinstance(item, str) and trim_text(item)
+			)
+		)
+	if isinstance(validator_assessment, list) and validator_assessment:
+		parts.append(
+			"Validation checked:\n"
+			+ "\n".join(
+				f"- {trim_text(item)}"
+				for item in validator_assessment[:5]
+				if isinstance(item, str) and trim_text(item)
+			)
+		)
+	return "\n\n".join(part for part in parts if trim_text(part))
+
+
+def _governor_decision_body(decision: dict[str, Any]) -> str:
+	decision_value = trim_text(decision.get("decision")) or "unknown"
+	reason = trim_text(decision.get("reason")) or "No reason recorded."
+	next_action = trim_text(decision.get("recommended_next_action"))
+	parts = [
+		"# Governor Decision",
+		f"Decision: {decision_value}",
+		f"Reason: {reason}",
+	]
+	if next_action:
+		parts.append(f"Next: {next_action}")
+	return "\n\n".join(parts)
+
+
+def _consume_executor_dispatch(
+	session: dict[str, Any],
+	dispatch_refs: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+) -> dict[str, Any]:
+	model = session["model"]
+	paths = resolve_paths(repo_root)
+	dispatch_dir = Path(dispatch_refs["dispatch_dir"])
+	try:
+		with contextlib.redirect_stdout(io.StringIO()):
+			exit_code = dispatch_harness.run(
+				"consume-executor",
+				[
+					"--dispatch-dir",
+					str(dispatch_dir),
+					"--root",
+					str(paths.repo_root),
+				],
+			)
+	except (OSError, SystemExit, ValueError) as exc:
+		_append_error(
+			model,
+			"Executor could not start",
+			f"Corgi created dispatch truth, but Executor launch failed: {exc}",
+			now,
+			in_response_to_request_id=request_id,
+			source_artifact_ref=dispatch_refs["request_ref"],
+		)
+		return {"ok": False, "artifacts": _dispatch_artifacts(dispatch_refs, status="queued")}
+
+	state_path = dispatch_dir / "state.json"
+	state = load_json(state_path) if state_path.exists() else {}
+	status = trim_text(state.get("status")) or "queued"
+	artifacts = _executor_result_artifacts(dispatch_refs, state, repo_root=repo_root)
+	if exit_code != 0 or status not in {"completed", "validated"}:
+		source_ref = dispatch_refs["state_ref"]
+		escalation_path = dispatch_dir / "escalation.json"
+		if escalation_path.exists():
+			source_ref = repo_relative(escalation_path, repo_root)
+			artifacts = [
+				_artifact(
+					source_ref,
+					summary="Executor blocker artifact.",
+					authoritative=True,
+					status="blocked",
+				)
+			] + artifacts
+		_append_error(
+			model,
+			"Executor blocked",
+			"Executor could not complete this dispatch. View the source artifact for the blocker details.",
+			now,
+			in_response_to_request_id=request_id,
+			source_artifact_ref=source_ref,
+		)
+		return {"ok": False, "artifacts": artifacts}
+
+	report = _executor_report_payload(state, repo_root=repo_root)
+	primary_output_ref = _executor_primary_output_ref(report)
+	primary_output_body = _executor_output_body(primary_output_ref, repo_root=repo_root)
+	result_ref = state.get("result_ref") if isinstance(state, dict) else None
+	model["feed"].append(
+		_feed_item(
+			"system_status",
+			"Executor completed",
+			_executor_completion_body(report, primary_output_body),
+			authoritative=True,
+			now=now,
+			source_artifact_ref=primary_output_ref
+			or (result_ref if isinstance(result_ref, str) else dispatch_refs["state_ref"]),
+			turn_type="permission_action",
+			in_response_to_request_id=request_id,
+		)
+	)
+	return {"ok": True, "artifacts": artifacts}
+
+
+def _consume_reviewer_dispatch(
+	session: dict[str, Any],
+	dispatch_refs: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+) -> dict[str, Any]:
+	model = session["model"]
+	dispatch_dir = Path(dispatch_refs["dispatch_dir"])
+	review_ref = trim_text(dispatch_refs.get("review_ref"))
+	if not review_ref:
+		return {"ok": True, "artifacts": []}
+	try:
+		with contextlib.redirect_stdout(io.StringIO()):
+			exit_code = dispatch_harness.run(
+				"consume-reviewer",
+				[
+					"--dispatch-dir",
+					str(dispatch_dir),
+				],
+			)
+	except (OSError, SystemExit, ValueError) as exc:
+		_append_error(
+			model,
+			"Reviewer could not start",
+			f"Corgi could not complete the advisory review for this dispatch: {exc}",
+			now,
+			in_response_to_request_id=request_id,
+			source_artifact_ref=dispatch_refs.get("request_ref"),
+		)
+		return {"ok": False, "artifacts": []}
+
+	review_path = resolve_paths(repo_root).repo_root / review_ref
+	if exit_code != 0 or not review_path.exists():
+		_append_error(
+			model,
+			"Reviewer blocked",
+			"Reviewer did not produce the expected advisory review artifact.",
+			now,
+			in_response_to_request_id=request_id,
+			source_artifact_ref=dispatch_refs.get("request_ref"),
+		)
+		return {"ok": False, "artifacts": []}
+
+	review_payload = load_json(review_path)
+	review_artifact = _artifact(
+		review_ref,
+		summary="Reviewer advisory artifact for the completed dispatch.",
+		authoritative=True,
+		status=trim_text(review_payload.get("verdict")) or "completed",
+	)
+	model["feed"].append(
+		_feed_item(
+			"system_status",
+			"Reviewer completed",
+			_reviewer_completion_body(review_payload),
+			authoritative=True,
+			now=now,
+			source_artifact_ref=review_ref,
+			turn_type="permission_action",
+			in_response_to_request_id=request_id,
+		)
+	)
+	return {"ok": True, "artifacts": [review_artifact]}
+
+
+def _finalize_dispatch(
+	session: dict[str, Any],
+	dispatch_refs: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+) -> dict[str, Any]:
+	model = session["model"]
+	dispatch_dir = Path(dispatch_refs["dispatch_dir"])
+	try:
+		with contextlib.redirect_stdout(io.StringIO()):
+			exit_code = dispatch_harness.run(
+				"finalize",
+				[
+					"--dispatch-dir",
+					str(dispatch_dir),
+				],
+			)
+	except (OSError, SystemExit, ValueError) as exc:
+		_append_error(
+			model,
+			"Governor finalization blocked",
+			f"Corgi completed Executor and Reviewer steps, but Governor finalization could not complete: {exc}",
+			now,
+			in_response_to_request_id=request_id,
+			source_artifact_ref=dispatch_refs.get("review_ref") or dispatch_refs.get("request_ref"),
+		)
+		return {"ok": False, "artifacts": []}
+
+	decision_path = dispatch_dir / "governor_decision.json"
+	if exit_code != 0 or not decision_path.exists():
+		_append_error(
+			model,
+			"Governor finalization blocked",
+			"Governor finalization did not produce the expected decision artifact.",
+			now,
+			in_response_to_request_id=request_id,
+			source_artifact_ref=dispatch_refs.get("review_ref") or dispatch_refs.get("request_ref"),
+		)
+		return {"ok": False, "artifacts": []}
+
+	decision_ref = repo_relative(decision_path, repo_root)
+	decision_payload = load_json(decision_path)
+	decision_artifact = _artifact(
+		decision_ref,
+		summary="Governor decision artifact for the completed dispatch.",
+		authoritative=True,
+		status=trim_text(decision_payload.get("decision")) or "recorded",
+	)
+	model["feed"].append(
+		_feed_item(
+			"system_status",
+			"Governor decision recorded",
+			_governor_decision_body(decision_payload),
+			authoritative=True,
+			now=now,
+			source_layer="orchestration",
+			source_actor="governor",
+			source_artifact_ref=decision_ref,
+			turn_type="permission_action",
+			in_response_to_request_id=request_id,
+		)
+	)
+	return {"ok": True, "artifacts": [decision_artifact]}
+
+
+def _post_execution_actor_stage(latest: dict[str, Any]) -> tuple[str, str]:
+	title = trim_text(latest.get("title"))
+	if latest.get("type") == "error":
+		if title.startswith("Governor finalization"):
+			return ("governor", "governor_finalization_blocked")
+		if title.startswith("Reviewer"):
+			return ("reviewer", "reviewer_blocked")
+		return ("executor", "executor_blocked")
+	if title == "Governor decision recorded":
+		return ("governor", "governor_decision_recorded")
+	if title == "Reviewer completed":
+		return ("reviewer", "reviewer_completed")
+	return ("executor", "executor_completed")
 
 
 def _set_plan_ready_request(
@@ -2178,6 +2652,7 @@ def _accept_pending_intake(
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
 	governor_runtime: str = "exec",
+	auto_consume_executor: bool = False,
 ) -> bool:
 	model = session["model"]
 	current_foreground_request_id = model.get("activeForegroundRequestId") or request_id
@@ -2260,43 +2735,91 @@ def _accept_pending_intake(
 				transportState="connected",
 			)
 			return False
-		model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + artifacts
-	model["feed"].append(
-		_feed_item(
-			"system_status",
-			"Dispatch queued"
-			if permission_scope == "execute"
-			else "Accepted and ready",
-			f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}."
-			if permission_scope == "execute" and dispatch_refs
-			else summary,
-			authoritative=True,
-			now=now,
-			source_artifact_ref=dispatch_refs["request_ref"]
-			if permission_scope == "execute" and dispatch_refs
-			else None,
-			**_semantic_provenance(
-				turn_type=turn_type,
-				semantic_input_version=semantic_input_version,
-				semantic_summary_ref=semantic_summary_ref,
-				semantic_context_flags=semantic_context_flags,
-				semantic_route_type=semantic_route_type,
-				semantic_confidence=semantic_confidence,
-				semantic_block_reason=semantic_block_reason,
-				semantic_paraphrase=semantic_paraphrase,
-				semantic_normalized_text=semantic_normalized_text,
-				in_response_to_request_id=request_id,
-			),
+		if auto_consume_executor:
+			execution = _consume_executor_dispatch(
+				session,
+				dispatch_refs,
+				now,
+				repo_root=repo_root,
+				request_id=request_id,
+			)
+			review = (
+				_consume_reviewer_dispatch(
+					session,
+					dispatch_refs,
+					now,
+					repo_root=repo_root,
+					request_id=request_id,
+				)
+				if execution.get("ok")
+				else {"ok": False, "artifacts": []}
+			)
+			decision = (
+				_finalize_dispatch(
+					session,
+					dispatch_refs,
+					now,
+					repo_root=repo_root,
+					request_id=request_id,
+				)
+				if review.get("ok")
+				else {"ok": False, "artifacts": []}
+			)
+			model["snapshot"]["recentArtifacts"] = (
+				decision["artifacts"] + review["artifacts"] + execution["artifacts"] + artifacts
+			)
+		else:
+			model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + artifacts
+	if permission_scope != "execute" or not auto_consume_executor:
+		model["feed"].append(
+			_feed_item(
+				"system_status",
+				"Dispatch queued"
+				if permission_scope == "execute"
+				else "Accepted and ready",
+				f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}."
+				if permission_scope == "execute" and dispatch_refs
+				else summary,
+				authoritative=True,
+				now=now,
+				source_artifact_ref=dispatch_refs["request_ref"]
+				if permission_scope == "execute" and dispatch_refs
+				else None,
+				**_semantic_provenance(
+					turn_type=turn_type,
+					semantic_input_version=semantic_input_version,
+					semantic_summary_ref=semantic_summary_ref,
+					semantic_context_flags=semantic_context_flags,
+					semantic_route_type=semantic_route_type,
+					semantic_confidence=semantic_confidence,
+					semantic_block_reason=semantic_block_reason,
+					semantic_paraphrase=semantic_paraphrase,
+					semantic_normalized_text=semantic_normalized_text,
+					in_response_to_request_id=request_id,
+				),
+			)
 		)
-	)
 	_refresh_snapshot(
 		model,
 		now,
-		currentActor="executor" if permission_scope == "execute" else "orchestration",
+		currentActor="orchestration",
 		currentStage="dispatch_queued" if permission_scope == "execute" else "intake_accepted",
-		runState="running" if permission_scope == "execute" else "idle",
+		runState="queued" if permission_scope == "execute" else "idle",
 		transportState="connected",
 	)
+	if permission_scope == "execute" and auto_consume_executor:
+		latest = model["feed"][-1] if model["feed"] else {}
+		current_actor, current_stage = _post_execution_actor_stage(latest)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor=current_actor,
+			currentStage=current_stage,
+			runState="idle",
+			transportState="connected",
+		)
+		if latest.get("type") != "error":
+			model["activeForegroundRequestId"] = None
 	if permission_scope == "plan":
 		return _append_governor_dialogue_response(
 			session,
@@ -2414,6 +2937,7 @@ def handle_submit_prompt(
 	semantic_confidence: str | None = None,
 	semantic_block_reason: str | None = None,
 	governor_runtime: str = "exec",
+	auto_consume_executor: bool = False,
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -2760,6 +3284,7 @@ def handle_submit_prompt(
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=semantic_prompt,
 			governor_runtime=governor_runtime,
+			auto_consume_executor=auto_consume_executor,
 		)
 		return
 
@@ -2821,6 +3346,7 @@ def handle_answer_clarification(
 	semantic_confidence: str | None = None,
 	semantic_block_reason: str | None = None,
 	governor_runtime: str = "exec",
+	auto_consume_executor: bool = False,
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -2943,6 +3469,7 @@ def handle_answer_clarification(
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=semantic_answer,
 			governor_runtime=governor_runtime,
+			auto_consume_executor=auto_consume_executor,
 		)
 		return
 	model["snapshot"]["pendingPermissionRequest"] = _permission_request(
@@ -3004,6 +3531,7 @@ def handle_set_permission_scope(
 	semantic_paraphrase: str | None = None,
 	semantic_normalized_text: str | None = None,
 	governor_runtime: str = "exec",
+	auto_consume_executor: bool = False,
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -3122,37 +3650,83 @@ def handle_set_permission_scope(
 		model["snapshot"]["permissionScope"] = permission_scope
 		model["snapshot"]["pendingPermissionRequest"] = None
 		model["snapshot"]["pendingInterrupt"] = None
-		model["snapshot"]["currentActor"] = "executor"
+		model["snapshot"]["currentActor"] = "orchestration"
 		model["snapshot"]["currentStage"] = "dispatch_queued"
-		model["snapshot"]["runState"] = "running"
+		model["snapshot"]["runState"] = "queued"
 		model["snapshot"]["transportState"] = "connected"
 		model["snapshot"]["snapshotFreshness"] = {"receivedAt": now}
-		model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + existing_artifacts
 		model["activeClarification"] = None
 		model["activeForegroundRequestId"] = continuation_request_id
 		model["planReadyRequest"] = None
-		model["feed"].append(
-			_feed_item(
-				"system_status",
-				"Dispatch queued",
-				f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}.",
-				authoritative=True,
-				now=now,
-				source_artifact_ref=dispatch_refs["request_ref"],
-				**_semantic_provenance(
-					turn_type="permission_action",
-					semantic_input_version=semantic_input_version,
-					semantic_summary_ref=semantic_summary_ref,
-					semantic_context_flags=semantic_context_flags,
-					semantic_route_type=semantic_route_type,
-					semantic_confidence=semantic_confidence,
-					semantic_block_reason=semantic_block_reason,
-					semantic_paraphrase=semantic_paraphrase,
-					semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
-					in_response_to_request_id=continuation_request_id,
-				),
+		if auto_consume_executor:
+			execution = _consume_executor_dispatch(
+				session,
+				dispatch_refs,
+				now,
+				repo_root=repo_root,
+				request_id=continuation_request_id,
 			)
-		)
+			review = (
+				_consume_reviewer_dispatch(
+					session,
+					dispatch_refs,
+					now,
+					repo_root=repo_root,
+					request_id=continuation_request_id,
+				)
+				if execution.get("ok")
+				else {"ok": False, "artifacts": []}
+			)
+			decision = (
+				_finalize_dispatch(
+					session,
+					dispatch_refs,
+					now,
+					repo_root=repo_root,
+					request_id=continuation_request_id,
+				)
+				if review.get("ok")
+				else {"ok": False, "artifacts": []}
+			)
+			model["snapshot"]["recentArtifacts"] = (
+				decision["artifacts"] + review["artifacts"] + execution["artifacts"] + existing_artifacts
+			)
+			latest = model["feed"][-1] if model["feed"] else {}
+			current_actor, current_stage = _post_execution_actor_stage(latest)
+			_refresh_snapshot(
+				model,
+				now,
+				currentActor=current_actor,
+				currentStage=current_stage,
+				runState="idle",
+				transportState="connected",
+			)
+			if latest.get("type") != "error":
+				model["activeForegroundRequestId"] = None
+		else:
+			model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + existing_artifacts
+			model["feed"].append(
+				_feed_item(
+					"system_status",
+					"Dispatch queued",
+					f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}.",
+					authoritative=True,
+					now=now,
+					source_artifact_ref=dispatch_refs["request_ref"],
+					**_semantic_provenance(
+						turn_type="permission_action",
+						semantic_input_version=semantic_input_version,
+						semantic_summary_ref=semantic_summary_ref,
+						semantic_context_flags=semantic_context_flags,
+						semantic_route_type=semantic_route_type,
+						semantic_confidence=semantic_confidence,
+						semantic_block_reason=semantic_block_reason,
+						semantic_paraphrase=semantic_paraphrase,
+						semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
+						in_response_to_request_id=continuation_request_id,
+					),
+				)
+			)
 		return
 	_accept_pending_intake(
 		session,
@@ -3170,6 +3744,7 @@ def handle_set_permission_scope(
 		semantic_paraphrase=semantic_paraphrase,
 		semantic_normalized_text=trim_text(semantic_normalized_text) or raw_text or None,
 		governor_runtime=governor_runtime,
+		auto_consume_executor=auto_consume_executor,
 	)
 
 
@@ -3180,6 +3755,7 @@ def handle_execute_plan(
 	session_ref: str | None = None,
 	request_id: str | None = None,
 	context_ref: str | None = None,
+	auto_consume_executor: bool = False,
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -3274,29 +3850,75 @@ def handle_execute_plan(
 	model["snapshot"]["pendingPermissionRequest"] = None
 	model["snapshot"]["pendingInterrupt"] = None
 	model["snapshot"]["permissionScope"] = "execute"
-	model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + existing_artifacts
 	model["activeForegroundRequestId"] = request_id or plan_ready.get("foregroundRequestId")
 	model["planReadyRequest"] = None
-	model["feed"].append(
-		_feed_item(
-			"system_status",
-			"Dispatch queued",
-			f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}.",
-			authoritative=True,
-			now=now,
-			source_artifact_ref=dispatch_refs["request_ref"],
-			turn_type="permission_action",
-			in_response_to_request_id=request_id,
+	if auto_consume_executor:
+		execution = _consume_executor_dispatch(
+			session,
+			dispatch_refs,
+			now,
+			repo_root=repo_root,
+			request_id=request_id,
 		)
-	)
-	_refresh_snapshot(
-		model,
-		now,
-		currentActor="executor",
-		currentStage="dispatch_queued",
-		runState="running",
-		transportState="connected",
-	)
+		review = (
+			_consume_reviewer_dispatch(
+				session,
+				dispatch_refs,
+				now,
+				repo_root=repo_root,
+				request_id=request_id,
+			)
+			if execution.get("ok")
+			else {"ok": False, "artifacts": []}
+		)
+		decision = (
+			_finalize_dispatch(
+				session,
+				dispatch_refs,
+				now,
+				repo_root=repo_root,
+				request_id=request_id,
+			)
+			if review.get("ok")
+			else {"ok": False, "artifacts": []}
+		)
+		model["snapshot"]["recentArtifacts"] = (
+			decision["artifacts"] + review["artifacts"] + execution["artifacts"] + existing_artifacts
+		)
+		latest = model["feed"][-1] if model["feed"] else {}
+		current_actor, current_stage = _post_execution_actor_stage(latest)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor=current_actor,
+			currentStage=current_stage,
+			runState="idle",
+			transportState="connected",
+		)
+		if latest.get("type") != "error":
+			model["activeForegroundRequestId"] = None
+	else:
+		model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + existing_artifacts
+		model["feed"].append(
+			_feed_item(
+				"system_status",
+				"Dispatch queued",
+				f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}.",
+				authoritative=True,
+				now=now,
+				source_artifact_ref=dispatch_refs["request_ref"],
+				turn_type="permission_action",
+				in_response_to_request_id=request_id,
+			)
+		)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="orchestration",
+			currentStage="dispatch_queued",
+			runState="queued",
+			transportState="connected",
+		)
 
 
 def handle_revise_plan(
@@ -3869,6 +4491,7 @@ def dispatch_session_action(
 	runtime_item_id: str | None = None,
 	runtime_source: str = "app-server",
 	fallback_reason: str | None = None,
+	auto_consume_executor: bool = False,
 ) -> dict[str, Any]:
 	session = load_session(repo_root)
 	now = utc_now()
@@ -3901,6 +4524,7 @@ def dispatch_session_action(
 			semantic_confidence=semantic_confidence,
 			semantic_block_reason=semantic_block_reason,
 			governor_runtime=governor_runtime,
+			auto_consume_executor=auto_consume_executor,
 		)
 	elif command == "answer_clarification":
 		handle_answer_clarification(
@@ -3919,6 +4543,7 @@ def dispatch_session_action(
 			semantic_confidence=semantic_confidence,
 			semantic_block_reason=semantic_block_reason,
 			governor_runtime=governor_runtime,
+			auto_consume_executor=auto_consume_executor,
 		)
 	elif command == "set_permission_scope":
 		handle_set_permission_scope(
@@ -3938,6 +4563,7 @@ def dispatch_session_action(
 			semantic_paraphrase=paraphrase,
 			semantic_normalized_text=normalized_text,
 			governor_runtime=governor_runtime,
+			auto_consume_executor=auto_consume_executor,
 		)
 	elif command == "decline_permission":
 		handle_decline_permission(
@@ -3954,6 +4580,7 @@ def dispatch_session_action(
 			session_ref=session_ref,
 			request_id=request_id,
 			context_ref=context_ref,
+			auto_consume_executor=auto_consume_executor,
 		)
 	elif command == "revise_plan":
 		handle_revise_plan(
@@ -4053,6 +4680,7 @@ def build_parser() -> argparse.ArgumentParser:
 	submit.add_argument("--semantic-route-type")
 	submit.add_argument("--semantic-confidence")
 	submit.add_argument("--semantic-block-reason")
+	submit.add_argument("--auto-consume-executor", action="store_true")
 	add_governor_runtime(submit)
 
 	answer = subparsers.add_parser("answer_clarification")
@@ -4069,6 +4697,7 @@ def build_parser() -> argparse.ArgumentParser:
 	answer.add_argument("--semantic-route-type")
 	answer.add_argument("--semantic-confidence")
 	answer.add_argument("--semantic-block-reason")
+	answer.add_argument("--auto-consume-executor", action="store_true")
 	add_governor_runtime(answer)
 
 	set_scope = subparsers.add_parser("set_permission_scope")
@@ -4086,6 +4715,7 @@ def build_parser() -> argparse.ArgumentParser:
 	set_scope.add_argument("--semantic-route-type")
 	set_scope.add_argument("--semantic-confidence")
 	set_scope.add_argument("--semantic-block-reason")
+	set_scope.add_argument("--auto-consume-executor", action="store_true")
 	add_governor_runtime(set_scope)
 	decline = subparsers.add_parser("decline_permission")
 	decline.add_argument("--request-id")
@@ -4095,6 +4725,7 @@ def build_parser() -> argparse.ArgumentParser:
 	execute_plan.add_argument("--request-id")
 	execute_plan.add_argument("--session-ref")
 	execute_plan.add_argument("--context-ref")
+	execute_plan.add_argument("--auto-consume-executor", action="store_true")
 	revise_plan = subparsers.add_parser("revise_plan")
 	revise_plan.add_argument("--text", required=True)
 	revise_plan.add_argument("--request-id")
@@ -4166,6 +4797,7 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
 			runtime_item_id=getattr(args, "item_id", None),
 			runtime_source=getattr(args, "runtime_source", "app-server"),
 			fallback_reason=getattr(args, "reason", None),
+			auto_consume_executor=bool(getattr(args, "auto_consume_executor", False)),
 		)
 	except (ValueError, json.JSONDecodeError) as exc:
 		raise SystemExit(str(exc))

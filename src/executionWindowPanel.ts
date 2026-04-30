@@ -1208,8 +1208,7 @@ export function getExecutionWindowHtml(
 			font-size: 12px;
 		}
 
-		.inline-actions,
-		.card-actions {
+		.inline-actions {
 			display: flex;
 			flex-wrap: wrap;
 			gap: 6px;
@@ -1349,41 +1348,6 @@ export function getExecutionWindowHtml(
 			background: var(--line);
 		}
 
-		.action-band {
-			flex: 0 0 auto;
-			padding: 8px 10px 0;
-			display: grid;
-			gap: 8px;
-		}
-
-		.action-card {
-			padding: 10px;
-			border: 1px solid var(--line);
-			border-radius: 13px;
-			background: var(--panel-raised);
-			display: grid;
-			gap: 6px;
-		}
-
-		.action-card-waiting {
-			background: transparent;
-			border-color: transparent;
-			padding-left: 0;
-			padding-right: 0;
-		}
-
-		.action-card h2 {
-			margin: 0;
-			font-size: 12px;
-			font-weight: 600;
-		}
-
-		.action-card p {
-			margin: 0;
-			color: var(--muted);
-			line-height: 1.45;
-		}
-
 		.footer {
 			flex: 0 0 auto;
 			padding: 10px;
@@ -1404,6 +1368,13 @@ export function getExecutionWindowHtml(
 			display: flex;
 			flex-wrap: wrap;
 			gap: 6px;
+		}
+
+		.composer-actions {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+			align-items: center;
 		}
 
 		textarea {
@@ -1484,10 +1455,10 @@ export function getExecutionWindowHtml(
 			<div id="headerContent"></div>
 		</header>
 		<main class="feed" id="feed"></main>
-		<section class="action-band" id="actionBand" hidden></section>
 		<footer class="footer">
 			<form class="composer" id="composerForm">
 				<div class="composer-context" id="composerContext" hidden></div>
+				<div class="composer-actions" id="composerActions" hidden></div>
 				<textarea
 					id="composerInput"
 					placeholder="Ask Corgi to work on this repo..."
@@ -1548,9 +1519,9 @@ export function getExecutionWindowHtml(
 		const loadingState = document.getElementById('loadingState');
 		const headerContent = document.getElementById('headerContent');
 		const feed = document.getElementById('feed');
-		const actionBand = document.getElementById('actionBand');
 		const composerForm = document.getElementById('composerForm');
 		const composerContext = document.getElementById('composerContext');
+		const composerActions = document.getElementById('composerActions');
 		const composerInput = document.getElementById('composerInput');
 		const composerHint = document.getElementById('composerHint');
 		const composerSubmitButton = document.getElementById('composerSubmitButton');
@@ -1620,7 +1591,7 @@ export function getExecutionWindowHtml(
 					pendingPermissionContextRef: ui.pendingPermissionContextRef || null,
 					pendingPlanContextRef: ui.pendingPlanContextRef || null,
 				},
-				actions: collectTextRows(actionBand, '.action-card'),
+				actions: collectTextRows(composerActions, 'button'),
 				messages: collectTextRows(feed, '.message, .activity-row, .turn-divider, .feed-empty'),
 				progress: collectTextRows(feed, '.progress-bullet, .activity-summary'),
 				runtimeTimings: cloneForSnapshot(
@@ -1755,6 +1726,22 @@ export function getExecutionWindowHtml(
 			return snapshot.runState === 'running';
 		}
 
+		function isDispatchQueued(snapshot) {
+			return Boolean(snapshot.currentStage === 'dispatch_queued' || snapshot.runState === 'queued');
+		}
+
+		function isExecutorCompleted(snapshot) {
+			return snapshot.currentStage === 'executor_completed';
+		}
+
+		function isReviewerCompleted(snapshot) {
+			return snapshot.currentStage === 'reviewer_completed';
+		}
+
+		function isGovernorDecisionRecorded(snapshot) {
+			return snapshot.currentStage === 'governor_decision_recorded';
+		}
+
 		function retainOptimisticHidesUntilAuthoritativeChange() {
 			// Same-context action surfaces should not reappear on a timer after
 			// the user clicks them. They clear only when authoritative state
@@ -1782,6 +1769,18 @@ export function getExecutionWindowHtml(
 			}
 			if (model?.activeClarification) {
 				return 'Needs input';
+			}
+			if (isDispatchQueued(snapshot)) {
+				return 'Queued';
+			}
+			if (isGovernorDecisionRecorded(snapshot)) {
+				return 'Finalized';
+			}
+			if (isReviewerCompleted(snapshot)) {
+				return 'Reviewed';
+			}
+			if (isExecutorCompleted(snapshot)) {
+				return 'Completed';
 			}
 			if (snapshot.runState === 'running') {
 				return 'Running';
@@ -1956,17 +1955,15 @@ export function getExecutionWindowHtml(
 			return milestoneArtifact(milestone) ?? fallbackAcceptedArtifact();
 		}
 
-		function renderArtifactQuickAction(artifact) {
+		function renderArtifactQuickButton(artifact) {
 			if (!artifact) {
 				return '';
 			}
 
 			return (
-				'<div class="card-actions">' +
-					'<button type="button" class="secondary" data-action="open_artifact" data-artifact-id="' +
-					escapeHtml(artifact.id || artifact.path) +
-					'">View source</button>' +
-				'</div>'
+				'<button type="button" class="secondary" data-action="open_artifact" data-artifact-id="' +
+				escapeHtml(artifact.id || artifact.path) +
+				'">View source</button>'
 			);
 		}
 
@@ -1987,6 +1984,8 @@ export function getExecutionWindowHtml(
 			}
 			if (snapshot.pendingInterrupt) {
 				chips.push('<span class="pill is-danger">Stop pending</span>');
+			} else if (isDispatchQueued(snapshot)) {
+				chips.push('<span class="pill is-status">Dispatch queued</span>');
 			} else if (snapshot.runState === 'running') {
 				chips.push('<span class="pill is-primary">Running</span>');
 			}
@@ -2558,6 +2557,23 @@ export function getExecutionWindowHtml(
 			return undefined;
 		}
 
+		function latestDispatchQueuedStatus(requestKey) {
+			if (!model || !isAuthoritativeForegroundRequestKey(requestKey)) {
+				return undefined;
+			}
+			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
+				const item = model.feed[index];
+				if (
+					item.type === 'system_status' &&
+					item.title === 'Dispatch queued' &&
+					item.in_response_to_request_id === requestKey
+				) {
+					return item;
+				}
+			}
+			return undefined;
+		}
+
 		function latestGovernorReplyForRequest(requestKey) {
 			const actorEvent = latestRequestActorEvent(requestKey);
 			if (actorEvent?.source_actor === 'governor') {
@@ -2606,6 +2622,7 @@ export function getExecutionWindowHtml(
 					snapshot.pendingPermissionRequest?.foregroundRequestId === requestKey ||
 					snapshot.pendingInterrupt ||
 					model.planReadyRequest?.foregroundRequestId === requestKey ||
+					latestDispatchQueuedStatus(requestKey) ||
 					(snapshot.currentActor === 'governor' && snapshot.runState === 'running') ||
 					latestRequestActorEvent(requestKey) ||
 					latestRequestError(requestKey) ||
@@ -2710,6 +2727,42 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
+			if (isDispatchQueued(snapshot) || latestDispatchQueuedStatus(requestKey)) {
+				freezeForegroundRequest(
+					'Dispatch queued',
+					'done',
+					'Corgi created dispatch truth for the accepted plan.'
+				);
+				return;
+			}
+
+			if (isReviewerCompleted(snapshot)) {
+				freezeForegroundRequest(
+					'Reviewer completed',
+					'done',
+					'Reviewer checked the Executor result artifact.'
+				);
+				return;
+			}
+
+			if (isGovernorDecisionRecorded(snapshot)) {
+				freezeForegroundRequest(
+					'Governor decision recorded',
+					'done',
+					'Governor recorded the final dispatch decision.'
+				);
+				return;
+			}
+
+			if (isExecutorCompleted(snapshot)) {
+				freezeForegroundRequest(
+					'Executor completed',
+					'done',
+					'Executor wrote the bounded result artifact.'
+				);
+				return;
+			}
+
 			const latestActorEvent = latestRequestActorEvent(requestKey);
 			if (latestActorEvent) {
 				freezeForegroundRequest('Governor responded', 'done', 'Corgi is ready for the next step.');
@@ -2805,43 +2858,30 @@ export function getExecutionWindowHtml(
 				'</div>';
 		}
 
-		function renderActionBand() {
+		function renderComposerActions() {
 			if (!model) {
 				return;
 			}
 			retainOptimisticHidesUntilAuthoritativeChange();
 
 			const snapshot = model.snapshot;
-			const cards = [];
+			const buttons = [];
 
 			if (model.activeClarification) {
 				const clarificationOptions = Array.isArray(model.activeClarification.options)
 					? model.activeClarification.options
 					: [];
-				const optionButtons =
-					clarificationOptions.length > 0
-						? '<div class="card-actions">' +
-							clarificationOptions
-								.map(
-									(option) =>
-										'<button type="button" class="secondary" data-clarification-answer="' +
-										escapeHtml(option.answer) +
-										'" title="' +
-										escapeHtml(option.description || option.answer) +
-										'">' +
-										escapeHtml(option.label) +
-										'</button>'
-								)
-								.join('') +
-						  '</div>'
-						: '';
-				cards.push(
-					'<section class="action-card">' +
-						'<h2>Choose a focus</h2>' +
-						'<p>Pick one option, or type a short answer below.</p>' +
-						optionButtons +
-						renderArtifactQuickAction(currentQuickArtifact()) +
-					'</section>'
+				buttons.push(
+					...clarificationOptions.map(
+						(option) =>
+							'<button type="button" class="secondary" data-clarification-answer="' +
+							escapeHtml(option.answer) +
+							'" title="' +
+							escapeHtml(option.description || option.answer) +
+							'">' +
+							escapeHtml(option.label) +
+							'</button>'
+					)
 				);
 			}
 
@@ -2852,42 +2892,22 @@ export function getExecutionWindowHtml(
 				const scopes = Array.isArray(snapshot.pendingPermissionRequest.allowedScopes)
 					? snapshot.pendingPermissionRequest.allowedScopes
 					: ['observe', 'plan', 'execute'];
-				cards.push(
-					'<section class="action-card">' +
-						'<h2>' + escapeHtml(snapshot.pendingPermissionRequest.title) + '</h2>' +
-						'<p>' + escapeHtml(snapshot.pendingPermissionRequest.body) + '</p>' +
-						'<div class="card-actions">' +
-							scopes.map((scope) =>
-								'<button type="button" ' +
-									(scope === snapshot.pendingPermissionRequest.recommendedScope ? '' : 'class="secondary" ') +
-									'data-action="set_permission_scope" data-permission-scope="' + escapeHtml(scope) + '">' +
-									escapeHtml(scope.charAt(0).toUpperCase() + scope.slice(1)) +
-								'</button>'
-							).join('') +
-							'<button type="button" class="secondary" data-action="decline_permission">Decline</button>' +
-						'</div>' +
-						renderArtifactQuickAction(currentQuickArtifact()) +
-					'</section>'
+				buttons.push(
+					...scopes.map((scope) =>
+						'<button type="button" ' +
+							(scope === snapshot.pendingPermissionRequest.recommendedScope ? '' : 'class="secondary" ') +
+							'data-action="set_permission_scope" data-permission-scope="' + escapeHtml(scope) + '">' +
+							escapeHtml(scope.charAt(0).toUpperCase() + scope.slice(1)) +
+						'</button>'
+					),
+					'<button type="button" class="secondary" data-action="decline_permission">Decline</button>'
 				);
 			}
 			if (
 				snapshot.pendingPermissionRequest &&
 				snapshot.pendingPermissionRequest.contextRef === ui.pendingPermissionContextRef
 			) {
-				const requestedScope = snapshot.pendingPermissionRequest.recommendedScope || 'permission';
-				const waitingCopy =
-					requestedScope === 'execute'
-						? 'Execute permission choice sent. Waiting for Corgi to continue...'
-						: 'Permission choice sent. Waiting for a reply from the Governor...';
-				cards.push(
-					'<section class="action-card action-card-waiting">' +
-						'<h2>Waiting for Corgi</h2>' +
-						'<p>' + escapeHtml(waitingCopy) + '</p>' +
-						'<div class="card-actions">' +
-							'<button type="button" class="secondary" data-action="refresh_state">Refresh state</button>' +
-						'</div>' +
-					'</section>'
-				);
+				buttons.push('<button type="button" class="secondary" data-action="refresh_state">Refresh state</button>');
 			}
 
 			if (
@@ -2898,60 +2918,39 @@ export function getExecutionWindowHtml(
 				const actions = Array.isArray(planReady.allowedActions)
 					? planReady.allowedActions
 					: ['execute_plan', 'revise_plan'];
-				cards.push(
-					'<section class="action-card">' +
-						'<h2>' + escapeHtml(planReady.title || 'Plan ready') + '</h2>' +
-						'<p>' + escapeHtml(planReady.body || 'Review the Governor plan, then execute it or add details for a revision.') + '</p>' +
-						'<div class="card-actions">' +
-							(actions.includes('execute_plan')
-								? '<button type="button" data-action="execute_plan" data-context-ref="' + escapeHtml(planReady.contextRef) + '">Execute this plan</button>'
-								: '') +
-							(actions.includes('revise_plan')
-								? '<button type="button" class="secondary" data-action="revise_plan" data-context-ref="' + escapeHtml(planReady.contextRef) + '">Add details or revise plan</button>'
-								: '') +
-						'</div>' +
-						renderArtifactQuickAction(currentQuickArtifact()) +
-					'</section>'
-				);
+				if (actions.includes('execute_plan')) {
+					buttons.push(
+						'<button type="button" data-action="execute_plan" data-context-ref="' +
+						escapeHtml(planReady.contextRef) +
+						'">Execute this plan</button>'
+					);
+				}
+				if (actions.includes('revise_plan')) {
+					buttons.push(
+						'<button type="button" class="secondary" data-action="revise_plan" data-context-ref="' +
+						escapeHtml(planReady.contextRef) +
+						'">Add details or revise plan</button>'
+					);
+				}
 			}
 			if (
 				isPlanReady(snapshot) &&
 				model.planReadyRequest.contextRef === ui.pendingPlanContextRef
 			) {
-				cards.push(
-					'<section class="action-card action-card-waiting">' +
-						'<h2>Waiting for Governor</h2>' +
-						'<p>Plan action sent. Waiting for a reply from the Governor...</p>' +
-						'<div class="card-actions">' +
-							'<button type="button" class="secondary" data-action="refresh_state">Refresh state</button>' +
-						'</div>' +
-					'</section>'
-				);
+				buttons.push('<button type="button" class="secondary" data-action="refresh_state">Refresh state</button>');
 			}
 
-			if (snapshot.pendingInterrupt) {
-				cards.push(
-					'<section class="action-card">' +
-						'<h2>' + escapeHtml(snapshot.pendingInterrupt.title) + '</h2>' +
-						'<p>' + escapeHtml(snapshot.pendingInterrupt.body) + '</p>' +
-						renderArtifactQuickAction(currentQuickArtifact()) +
-					'</section>'
-				);
-			} else if (canStop(snapshot)) {
-				cards.push(
-					'<section class="action-card">' +
-						'<h2>Run controls</h2>' +
-						'<p>Corgi is handling the current request. Stop only if you need to interrupt it.</p>' +
-						'<div class="card-actions">' +
-							'<button type="button" class="secondary" data-action="interrupt_run">Stop</button>' +
-						'</div>' +
-						renderArtifactQuickAction(currentQuickArtifact()) +
-					'</section>'
-				);
+			if (!snapshot.pendingInterrupt && canStop(snapshot)) {
+				buttons.push('<button type="button" class="secondary" data-action="interrupt_run">Stop</button>');
 			}
 
-			actionBand.innerHTML = cards.join('');
-			actionBand.hidden = cards.length === 0;
+			const sourceButton = renderArtifactQuickButton(currentQuickArtifact());
+			if (sourceButton) {
+				buttons.push(sourceButton);
+			}
+
+			composerActions.innerHTML = buttons.join('');
+			composerActions.hidden = buttons.length === 0;
 		}
 
 		function formatElapsed(ms) {
@@ -3068,8 +3067,9 @@ export function getExecutionWindowHtml(
 				return text
 					.replace(/\\s+(Proposed steps:)/gi, '\\n$1')
 					.replace(/\\s+(Likely (?:files\\/areas|files|areas)(?: include| involved)?[:]?)/gi, '\\n$1')
-					.replace(/\\s+(Risks?(?: or unknowns)?[:]?)/gi, '\\n$1')
-					.replace(/\\s+(Unknowns[:]?)/gi, '\\n$1')
+					.replace(/\\s+(Risks?\\s+or\\s+unknowns[:]?)/gi, '\\n$1')
+					.replace(/\\s+(Risks?[:]?)/gi, '\\n$1')
+					.replace(/(^|[.!?])\\s+(Unknowns[:]?)/gi, '$1\\n$2')
 					.replace(/\\s+(Execution readiness[:]?)/gi, '\\n$1')
 					.replace(/\\s+(Readiness[:]?)/gi, '\\n$1')
 					.replace(/\\s+(Main risk(?: is)?)/gi, '\\n$1')
@@ -3128,6 +3128,45 @@ export function getExecutionWindowHtml(
 					return '';
 				}
 				return paragraphs.map(renderGovernorParagraph).join('');
+			}
+
+			function renderStructuredAssistantBody(value) {
+				const text = String(value || '').trim();
+				if (!text.includes('\\n')) {
+					return renderGovernorMessageBody(text);
+				}
+				const lines = text.split('\\n');
+				let html = '';
+				let listItems = [];
+				const flushList = () => {
+					if (listItems.length === 0) {
+						return;
+					}
+					html += '<ul>' + listItems.map((item) => '<li>' + renderInlineGovernorText(item) + '</li>').join('') + '</ul>';
+					listItems = [];
+				};
+				for (const rawLine of lines) {
+					const line = rawLine.trim();
+					if (!line) {
+						flushList();
+						continue;
+					}
+					const heading = line.match(/^#{1,3}\\s+(.+)$/);
+					if (heading) {
+						flushList();
+						html += '<p><strong>' + renderInlineGovernorText(heading[1]) + '</strong></p>';
+						continue;
+					}
+					const bullet = line.match(/^-\\s+(.+)$/);
+					if (bullet) {
+						listItems.push(bullet[1]);
+						continue;
+					}
+					flushList();
+					html += renderGovernorParagraph(line);
+				}
+				flushList();
+				return html;
 			}
 
 			function displayScope(value) {
@@ -3268,9 +3307,15 @@ export function getExecutionWindowHtml(
 			function renderMessage(item) {
 				const copy = displayCopy(item);
 				const governorMessage = isGovernorMessage(item);
+					const structuredAssistantMessage =
+						governorMessage ||
+						(item.type === 'system_status' &&
+							(item.title === 'Executor completed' ||
+								item.title === 'Reviewer completed' ||
+								item.title === 'Governor decision recorded'));
 				const body = copy.body || copy.title;
-				const renderedBody = governorMessage
-					? renderGovernorMessageBody(body)
+				const renderedBody = structuredAssistantMessage
+					? renderStructuredAssistantBody(body)
 					: escapeHtml(body);
 				if (item.type === 'error') {
 					return (
@@ -3278,7 +3323,6 @@ export function getExecutionWindowHtml(
 						'<div class="message-label">Error</div>' +
 						'<div class="message-body">' + escapeHtml(copy.title) + '</div>' +
 						(copy.body ? '<div class="activity-summary">' + escapeHtml(copy.body) + '</div>' : '') +
-						renderArtifactQuickAction(milestoneArtifact(item)) +
 						renderDetails(item) +
 					'</article>'
 				);
@@ -3297,13 +3341,10 @@ export function getExecutionWindowHtml(
 						(item.authoritative ? '' : 'is-informational') +
 					'">' +
 						'<div class="message-body' +
-						(governorMessage ? ' is-governor-copy' : '') +
+						(structuredAssistantMessage ? ' is-governor-copy' : '') +
 						'">' +
 						renderedBody +
 						'</div>' +
-						(isMeaningfulMilestone(item)
-							? renderArtifactQuickAction(milestoneArtifact(item))
-							: '') +
 					renderDetails(item) +
 				'</article>'
 			);
@@ -3513,7 +3554,7 @@ export function getExecutionWindowHtml(
 			loadingState.hidden = true;
 			app.hidden = false;
 			renderHeader();
-			renderActionBand();
+			renderComposerActions();
 			renderFeed();
 			renderComposer();
 			scheduleWebviewSnapshot('render');
@@ -3550,7 +3591,7 @@ export function getExecutionWindowHtml(
 
 			ui.draft = '';
 			persistUiState();
-			renderActionBand();
+			renderComposerActions();
 			renderFeed();
 			renderComposer();
 			scheduleWebviewSnapshot('submit');
@@ -3646,7 +3687,7 @@ export function getExecutionWindowHtml(
 				ui.planRevisionMode = false;
 				ui.pendingPlanContextRef = model?.planReadyRequest?.contextRef;
 				ui.pendingPlanHiddenAt = Date.now();
-				renderActionBand();
+				renderComposerActions();
 				renderFeed();
 				renderComposer();
 				scheduleWebviewSnapshot('execute_plan_click');
@@ -3658,7 +3699,7 @@ export function getExecutionWindowHtml(
 				ui.draft = '';
 				resetPromptHistoryNavigation();
 				persistUiState();
-				renderActionBand();
+				renderComposerActions();
 				renderComposer();
 				scheduleWebviewSnapshot('revise_plan_click');
 				composerInput.focus();
@@ -3716,7 +3757,7 @@ export function getExecutionWindowHtml(
 							: 'Waiting for a reply from the Governor...'
 					);
 					scheduleActivityTrace(requestKey);
-					renderActionBand();
+					renderComposerActions();
 					renderFeed();
 					renderComposer();
 					scheduleWebviewSnapshot('permission_click');
@@ -3773,7 +3814,7 @@ export function getExecutionWindowHtml(
 		setInterval(() => {
 			if (model) {
 				renderHeader();
-				renderActionBand();
+				renderComposerActions();
 				renderComposer();
 				scheduleWebviewSnapshot('heartbeat');
 			}

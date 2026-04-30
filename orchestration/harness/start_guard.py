@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from orchestration.harness.paths import unique_strings
+from orchestration.harness.paths import resolve_agent_root, unique_strings
 from orchestration.scripts.overlap_worktree import OVERLAP_ISOLATION_MODE, requested_overlap_isolation
 
 MAX_ACTIVE_PARALLEL_DISPATCHES = 2
@@ -28,7 +28,7 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 
 def dispatch_dir_for_ref(repo_root: Path, dispatch_ref: str) -> Path:
-    return repo_root / ".agent" / "dispatches" / Path(dispatch_ref)
+    return resolve_agent_root(repo_root) / "dispatches" / Path(dispatch_ref)
 
 
 def execution_mode_for_request(request: Dict[str, Any]) -> str:
@@ -197,7 +197,7 @@ def collect_active_dispatches(
     exclude_dispatch_ref: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     active: List[Dict[str, Any]] = []
-    queue_root = repo_root / ".agent" / "dispatches"
+    queue_root = resolve_agent_root(repo_root) / "dispatches"
     if not queue_root.exists():
         return active
 
@@ -236,7 +236,7 @@ def accepted_coverage_records(
     exclude_dispatch_ref: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
-    queue_root = repo_root / ".agent" / "dispatches"
+    queue_root = resolve_agent_root(repo_root) / "dispatches"
     if not queue_root.exists():
         return records
 

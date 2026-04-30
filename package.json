@@ -70,6 +70,8 @@
     "lint": "eslint src",
     "test": "mocha --ui tdd --require ./scripts/vscode-node-shim.cjs \"out/test/**/*.test.js\"",
     "test:window": "bash scripts/launch-corgi-test-window.sh",
+    "test:window:executor": "CORGI_TEST_WINDOW_SCENARIO=execute-permission bash scripts/launch-corgi-test-window.sh",
+    "test:window:plan-ready": "CORGI_TEST_WINDOW_SCENARIO=plan-ready bash scripts/launch-corgi-test-window.sh",
     "test:vscode": "vscode-test",
     "test:orchestration": "node scripts/run-orchestration-tests.cjs"
   },

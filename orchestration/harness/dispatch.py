@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from orchestration.harness.paths import repo_relative, script_ref, utc_now, write_json
+from orchestration.harness.paths import repo_relative, resolve_agent_root, script_ref, utc_now, write_json
 from orchestration.harness.start_guard import ensure_lane_worktree_tracked
 from orchestration.harness.transition import build_transition_payload, liveness_blocker, record_transition
 from orchestration.harness.artifacts import (
@@ -108,7 +108,7 @@ def validate_executor_run_ref_format(run_ref: str) -> None:
 
 
 def dispatch_dir_for_ref(repo_root: Path, dispatch_ref: str) -> Path:
-    return repo_root / ".agent" / "dispatches" / Path(dispatch_ref)
+    return resolve_agent_root(repo_root) / "dispatches" / Path(dispatch_ref)
 
 
 def build_execution_payload(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
@@ -507,6 +507,17 @@ def live_subagent_request(request: Dict[str, Any]) -> bool:
     return execution_mode in SUBAGENT_ONLY_MODES
 
 
+def artifact_only_executor_readout_request(request: Dict[str, Any]) -> bool:
+    execution_mode = request.get("execution_mode") or "manual_artifact_report"
+    if execution_mode != "command_chain":
+        return False
+    payload = request.get("execution_payload")
+    if not isinstance(payload, dict):
+        return False
+    notes = payload.get("notes")
+    return isinstance(notes, list) and "artifact_only_executor_readout" in notes
+
+
 def decision_from_result_and_review(request: Dict[str, Any], result: Dict[str, Any], review: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if result.get("status") != "completed" or result.get("blocker"):
         return {
@@ -573,7 +584,8 @@ def finalize_main(argv: Optional[List[str]] = None) -> int:
     repo_root = repo_root_for_path(dispatch_dir)
     request = load_dispatch_json(dispatch_dir / "request.json")
     result = load_dispatch_json(dispatch_dir / "result.json")
-    ensure_lane_worktree_tracked(repo_root, request)
+    if not artifact_only_executor_readout_request(request):
+        ensure_lane_worktree_tracked(repo_root, request)
 
     review_path = review_path_for_request(repo_root, request)
     review = None

@@ -21,7 +21,7 @@ export type TransportState =
 
 export type PermissionScope = 'unset' | 'observe' | 'plan' | 'execute';
 
-export type RunState = 'idle' | 'running';
+export type RunState = 'idle' | 'queued' | 'running';
 
 export type TurnType =
 	| 'governed_work_intent'
@@ -780,6 +780,17 @@ function buildGovernorDialogueReply(
 		};
 	}
 
+	if (snapshot.currentStage === 'dispatch_queued' || snapshot.runState === 'queued') {
+		return {
+			body: `Current progress: dispatch truth is queued${task ? ` for ${task}` : ''}. Executor has not started yet.`,
+			details: [
+				`Prompt: ${summarizePrompt(prompt)}`,
+				`Current actor: ${actor}`,
+				`Current stage: ${stage}`,
+			],
+		};
+	}
+
 	if (snapshot.runState === 'running') {
 		return {
 			body: `Current progress: Corgi is actively working${task ? ` on ${task}` : ''}. Stop is available if you need it.`,
@@ -882,7 +893,8 @@ function buildGovernorPlanReply(summary: AcceptedIntakeSummary): {
 		body: [
 			`Objective: ${summary.body}`,
 			'Proposed steps: inspect the relevant structure, identify the likely files or subsystems, call out risks or unknowns, and prepare the smallest safe execution path.',
-			'Likely areas: start from the accepted intake artifacts and current repo surfaces before touching implementation.',
+			'Likely files/areas: start from accepted intake artifacts, src/executionWindowPanel.ts, src/executionTransport.ts, src/phase1Model.ts, orchestration/harness/session.py, and orchestration/contracts/ux.md before touching implementation.',
+			'Risks or unknowns: verify actual authority boundaries from runtime code and contracts rather than directory names alone.',
 			'Execution readiness: Plan scope is active. Executor remains disabled until Execute permission is granted.',
 		].join('\n\n'),
 		details: [
@@ -1053,12 +1065,7 @@ function acceptIntake(
 
 	return {
 		snapshot: refreshSnapshot(model.snapshot, now, {
-			currentActor:
-				permissionScope === 'plan'
-					? 'governor'
-					: permissionScope === 'execute'
-						? 'executor'
-						: 'orchestration',
+			currentActor: permissionScope === 'plan' ? 'governor' : 'orchestration',
 			currentStage:
 				permissionScope === 'execute'
 					? 'dispatch_queued'
@@ -1066,7 +1073,7 @@ function acceptIntake(
 						? 'plan_ready'
 						: 'intake_accepted',
 			permissionScope,
-			runState: permissionScope === 'execute' ? 'running' : 'idle',
+			runState: permissionScope === 'execute' ? 'queued' : 'idle',
 			pendingPermissionRequest: undefined,
 			pendingInterrupt: undefined,
 			recentArtifacts: artifacts,
@@ -1655,9 +1662,9 @@ export function applyModelAction(
 						permissionScope: action.permission_scope,
 						pendingPermissionRequest: undefined,
 						pendingInterrupt: undefined,
-						currentActor: 'executor',
+						currentActor: 'orchestration',
 						currentStage: 'dispatch_queued',
-						runState: 'running',
+						runState: 'queued',
 						transportState: 'connected',
 					}),
 					feed: [
@@ -1764,9 +1771,9 @@ export function applyModelAction(
 			return {
 				...model,
 				snapshot: refreshSnapshot(model.snapshot, now, {
-					currentActor: 'executor',
+					currentActor: 'orchestration',
 					currentStage: 'dispatch_queued',
-					runState: 'running',
+					runState: 'queued',
 					pendingPermissionRequest: undefined,
 					pendingInterrupt: undefined,
 					transportState: 'connected',

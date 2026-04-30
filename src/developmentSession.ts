@@ -7,6 +7,9 @@ import { resolveExecutionTransportTarget } from './executionTransport';
 export function shouldResetDevelopmentSessionState(
 	context: vscode.ExtensionContext
 ): boolean {
+	if (process.env.CORGI_TEST_WINDOW_SCENARIO?.trim()) {
+		return false;
+	}
 	return context.extensionMode === vscode.ExtensionMode.Development;
 }
 

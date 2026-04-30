@@ -123,7 +123,11 @@ preconditions must fail closed and must not trigger route guessing.
   - requests Execute permission when the current session scope is below Execute
   - must not silently start execution without Execute permission
   - after Execute permission is confirmed, must create dispatch truth before
-    surfacing running/Executor state
+    surfacing a dispatch-queued handoff state
+  - in the extension-backed path, should immediately hand startable
+    helper-runtime dispatches to Executor after dispatch truth is written
+  - must not surface running/Executor state until Executor work has actually
+    started
   - keeps Executor as the only substantive writer and Reviewer as read-only
     advisory
 - `revise-plan`

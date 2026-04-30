@@ -12,6 +12,7 @@ STDOUT_LOG="$LOG_DIR/vscode.stdout.log"
 STDERR_LOG="$LOG_DIR/vscode.stderr.log"
 LEGACY_USER_DATA_DIR="$ROOT_DIR/.agent/vscode-governor-first-test-user-data"
 APP_NAME="${CORGI_VSCODE_APP_NAME:-Visual Studio Code}"
+TEST_SCENARIO="${CORGI_TEST_WINDOW_SCENARIO:-}"
 
 mkdir -p "$TEST_ROOT" "$LOG_DIR"
 
@@ -41,6 +42,22 @@ cat > "$USER_DATA_DIR/User/settings.json" <<'JSON'
 }
 JSON
 
+if [[ -n "$TEST_SCENARIO" ]]; then
+	PYTHON_BIN="${CORGI_PYTHON:-${ORCHESTRATION_APPROVED_PYTHON:-}}"
+	if [[ -z "$PYTHON_BIN" ]]; then
+		if [[ -x /opt/homebrew/bin/python3 ]]; then
+			PYTHON_BIN="/opt/homebrew/bin/python3"
+		else
+			PYTHON_BIN="$(command -v python3)"
+		fi
+	fi
+	ORCHESTRATION_AGENT_ROOT="$RUNTIME_AGENT_ROOT" \
+	ORCHESTRATION_APPROVED_PYTHON="$PYTHON_BIN" \
+	"$PYTHON_BIN" "$ROOT_DIR/orchestration/scripts/seed_executor_test_session.py" \
+		--root "$ROOT_DIR" \
+		--scenario "$TEST_SCENARIO"
+fi
+
 # Codex often runs inside a VS Code extension-host environment. If those
 # variables leak into the launched app, VS Code can start in Node mode and the
 # test window silently disappears.
@@ -56,7 +73,9 @@ open -n -a "$APP_NAME" \
 	--env CORGI_SEMANTIC_MODE="${CORGI_SEMANTIC_MODE:-governor-first}" \
 	--env CORGI_GOVERNOR_RUNTIME="${CORGI_GOVERNOR_RUNTIME:-app-server}" \
 	--env CORGI_APP_SERVER_EPHEMERAL="${CORGI_APP_SERVER_EPHEMERAL:-1}" \
+	--env CORGI_TEST_WINDOW_SCENARIO="$TEST_SCENARIO" \
 	--env ORCHESTRATION_AGENT_ROOT="$RUNTIME_AGENT_ROOT" \
+	--env ORCHESTRATION_APPROVED_PYTHON="${PYTHON_BIN:-}" \
 	--stdout "$STDOUT_LOG" \
 	--stderr "$STDERR_LOG" \
 	--args \
@@ -72,3 +91,6 @@ echo "  runtime:    $RUNTIME_AGENT_ROOT"
 echo "  snapshot:   $RUNTIME_AGENT_ROOT/orchestration/corgi_webview_snapshot.json"
 echo "  stdout:     $STDOUT_LOG"
 echo "  stderr:     $STDERR_LOG"
+if [[ -n "$TEST_SCENARIO" ]]; then
+	echo "  scenario:   $TEST_SCENARIO"
+fi

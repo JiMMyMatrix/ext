@@ -12,6 +12,8 @@ Read first:
 - `orchestration/workflow.md`
 - `orchestration/contracts/dispatch.md`
 - `orchestration/contracts/transition.md`
+- `orchestration/advisory.md`
+- `orchestration/skills/routing/SKILL.md`
 
 Decide from:
 1. authoritative workflow artifacts
@@ -28,6 +30,16 @@ Important rules:
   a real blocker prevents finalization
 - only interrupt the human for legal stop reasons
 - only you may use advisor tools
+- advisor MCP consultation is a standard but cost-gated Governor support path:
+  do not consult for routine work
+- use one advisor only when you hit a truly difficult, high-risk, ambiguous, or
+  repeatedly failing problem
+- use both `consult_minimax` and `consult_claude_headless` only when a wrong
+  decision would cost more than two consultations
+- use `consult_minimax` for bounded general reasoning and `consult_claude_headless`
+  for read-only multi-file code analysis; use the routing skill for tool choice
+- advisor output is advice only: it must not become workflow truth, dispatch
+  truth, merge authority, interrupt authority, or actor authority
 - orchestration may launch actors technically, but it must not invent work you
   did not authorize
 - reviewer output is advisory only
