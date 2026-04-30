@@ -2381,7 +2381,12 @@ def _consume_executor_dispatch(
 			in_response_to_request_id=request_id,
 			source_artifact_ref=dispatch_refs["request_ref"],
 		)
-		return {"ok": False, "artifacts": _dispatch_artifacts(dispatch_refs, status="queued")}
+		return {
+			"ok": False,
+			"actor": "executor",
+			"stage": "executor_blocked",
+			"artifacts": _dispatch_artifacts(dispatch_refs, status="queued"),
+		}
 
 	state_path = dispatch_dir / "state.json"
 	state = load_json(state_path) if state_path.exists() else {}
@@ -2408,7 +2413,7 @@ def _consume_executor_dispatch(
 			in_response_to_request_id=request_id,
 			source_artifact_ref=source_ref,
 		)
-		return {"ok": False, "artifacts": artifacts}
+		return {"ok": False, "actor": "executor", "stage": "executor_blocked", "artifacts": artifacts}
 
 	report = _executor_report_payload(state, repo_root=repo_root)
 	primary_output_ref = _executor_primary_output_ref(report)
@@ -2427,7 +2432,7 @@ def _consume_executor_dispatch(
 			in_response_to_request_id=request_id,
 		)
 	)
-	return {"ok": True, "artifacts": artifacts}
+	return {"ok": True, "actor": "executor", "stage": "executor_completed", "artifacts": artifacts}
 
 
 def _consume_reviewer_dispatch(
@@ -2461,7 +2466,7 @@ def _consume_reviewer_dispatch(
 			in_response_to_request_id=request_id,
 			source_artifact_ref=dispatch_refs.get("request_ref"),
 		)
-		return {"ok": False, "artifacts": []}
+		return {"ok": False, "actor": "reviewer", "stage": "reviewer_blocked", "artifacts": []}
 
 	review_path = resolve_paths(repo_root).repo_root / review_ref
 	if exit_code != 0 or not review_path.exists():
@@ -2473,7 +2478,7 @@ def _consume_reviewer_dispatch(
 			in_response_to_request_id=request_id,
 			source_artifact_ref=dispatch_refs.get("request_ref"),
 		)
-		return {"ok": False, "artifacts": []}
+		return {"ok": False, "actor": "reviewer", "stage": "reviewer_blocked", "artifacts": []}
 
 	review_payload = load_json(review_path)
 	review_artifact = _artifact(
@@ -2494,7 +2499,7 @@ def _consume_reviewer_dispatch(
 			in_response_to_request_id=request_id,
 		)
 	)
-	return {"ok": True, "artifacts": [review_artifact]}
+	return {"ok": True, "actor": "reviewer", "stage": "reviewer_completed", "artifacts": [review_artifact]}
 
 
 def _finalize_dispatch(
@@ -2525,7 +2530,7 @@ def _finalize_dispatch(
 			in_response_to_request_id=request_id,
 			source_artifact_ref=dispatch_refs.get("review_ref") or dispatch_refs.get("request_ref"),
 		)
-		return {"ok": False, "artifacts": []}
+		return {"ok": False, "actor": "governor", "stage": "governor_finalization_blocked", "artifacts": []}
 
 	decision_path = dispatch_dir / "governor_decision.json"
 	if exit_code != 0 or not decision_path.exists():
@@ -2537,7 +2542,7 @@ def _finalize_dispatch(
 			in_response_to_request_id=request_id,
 			source_artifact_ref=dispatch_refs.get("review_ref") or dispatch_refs.get("request_ref"),
 		)
-		return {"ok": False, "artifacts": []}
+		return {"ok": False, "actor": "governor", "stage": "governor_finalization_blocked", "artifacts": []}
 
 	decision_ref = repo_relative(decision_path, repo_root)
 	decision_payload = load_json(decision_path)
@@ -2561,21 +2566,20 @@ def _finalize_dispatch(
 			in_response_to_request_id=request_id,
 		)
 	)
-	return {"ok": True, "artifacts": [decision_artifact]}
+	return {
+		"ok": True,
+		"actor": "governor",
+		"stage": "governor_decision_recorded",
+		"artifacts": [decision_artifact],
+	}
 
 
-def _post_execution_actor_stage(latest: dict[str, Any]) -> tuple[str, str]:
-	title = trim_text(latest.get("title"))
-	if latest.get("type") == "error":
-		if title.startswith("Governor finalization"):
-			return ("governor", "governor_finalization_blocked")
-		if title.startswith("Reviewer"):
-			return ("reviewer", "reviewer_blocked")
-		return ("executor", "executor_blocked")
-	if title == "Governor decision recorded":
-		return ("governor", "governor_decision_recorded")
-	if title == "Reviewer completed":
-		return ("reviewer", "reviewer_completed")
+def _post_execution_actor_stage(*results: dict[str, Any]) -> tuple[str, str]:
+	for result in reversed(results):
+		actor = result.get("actor") if isinstance(result, dict) else None
+		stage = result.get("stage") if isinstance(result, dict) else None
+		if isinstance(actor, str) and actor and isinstance(stage, str) and stage:
+			return (actor, stage)
 	return ("executor", "executor_completed")
 
 
@@ -2809,7 +2813,7 @@ def _accept_pending_intake(
 	)
 	if permission_scope == "execute" and auto_consume_executor:
 		latest = model["feed"][-1] if model["feed"] else {}
-		current_actor, current_stage = _post_execution_actor_stage(latest)
+		current_actor, current_stage = _post_execution_actor_stage(execution, review, decision)
 		_refresh_snapshot(
 			model,
 			now,
@@ -3692,7 +3696,7 @@ def handle_set_permission_scope(
 				decision["artifacts"] + review["artifacts"] + execution["artifacts"] + existing_artifacts
 			)
 			latest = model["feed"][-1] if model["feed"] else {}
-			current_actor, current_stage = _post_execution_actor_stage(latest)
+			current_actor, current_stage = _post_execution_actor_stage(execution, review, decision)
 			_refresh_snapshot(
 				model,
 				now,
@@ -3886,7 +3890,7 @@ def handle_execute_plan(
 			decision["artifacts"] + review["artifacts"] + execution["artifacts"] + existing_artifacts
 		)
 		latest = model["feed"][-1] if model["feed"] else {}
-		current_actor, current_stage = _post_execution_actor_stage(latest)
+		current_actor, current_stage = _post_execution_actor_stage(execution, review, decision)
 		_refresh_snapshot(
 			model,
 			now,

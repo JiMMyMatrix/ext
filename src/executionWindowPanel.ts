@@ -2574,6 +2574,28 @@ export function getExecutionWindowHtml(
 			return undefined;
 		}
 
+		function latestPostExecutionStatus(requestKey) {
+			if (!model || !isAuthoritativeForegroundRequestKey(requestKey)) {
+				return undefined;
+			}
+			const terminalTitles = new Set([
+				'Executor completed',
+				'Reviewer completed',
+				'Governor decision recorded',
+			]);
+			for (let index = model.feed.length - 1; index >= 0; index -= 1) {
+				const item = model.feed[index];
+				if (
+					item.type === 'system_status' &&
+					terminalTitles.has(item.title) &&
+					item.in_response_to_request_id === requestKey
+				) {
+					return item;
+				}
+			}
+			return undefined;
+		}
+
 		function latestGovernorReplyForRequest(requestKey) {
 			const actorEvent = latestRequestActorEvent(requestKey);
 			if (actorEvent?.source_actor === 'governor') {
@@ -2622,6 +2644,7 @@ export function getExecutionWindowHtml(
 					snapshot.pendingPermissionRequest?.foregroundRequestId === requestKey ||
 					snapshot.pendingInterrupt ||
 					model.planReadyRequest?.foregroundRequestId === requestKey ||
+					latestPostExecutionStatus(requestKey) ||
 					latestDispatchQueuedStatus(requestKey) ||
 					(snapshot.currentActor === 'governor' && snapshot.runState === 'running') ||
 					latestRequestActorEvent(requestKey) ||
@@ -2727,25 +2750,12 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
-			if (isDispatchQueued(snapshot) || latestDispatchQueuedStatus(requestKey)) {
-				freezeForegroundRequest(
-					'Dispatch queued',
-					'done',
-					'Corgi created dispatch truth for the accepted plan.'
-				);
-				return;
-			}
+			const latestTerminalStatus = latestPostExecutionStatus(requestKey);
 
-			if (isReviewerCompleted(snapshot)) {
-				freezeForegroundRequest(
-					'Reviewer completed',
-					'done',
-					'Reviewer checked the Executor result artifact.'
-				);
-				return;
-			}
-
-			if (isGovernorDecisionRecorded(snapshot)) {
+			if (
+				isGovernorDecisionRecorded(snapshot) ||
+				latestTerminalStatus?.title === 'Governor decision recorded'
+			) {
 				freezeForegroundRequest(
 					'Governor decision recorded',
 					'done',
@@ -2754,11 +2764,35 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
-			if (isExecutorCompleted(snapshot)) {
+			if (
+				isReviewerCompleted(snapshot) ||
+				latestTerminalStatus?.title === 'Reviewer completed'
+			) {
+				freezeForegroundRequest(
+					'Reviewer completed',
+					'done',
+					'Reviewer checked the Executor result artifact.'
+				);
+				return;
+			}
+
+			if (
+				isExecutorCompleted(snapshot) ||
+				latestTerminalStatus?.title === 'Executor completed'
+			) {
 				freezeForegroundRequest(
 					'Executor completed',
 					'done',
 					'Executor wrote the bounded result artifact.'
+				);
+				return;
+			}
+
+			if (isDispatchQueued(snapshot) || latestDispatchQueuedStatus(requestKey)) {
+				freezeForegroundRequest(
+					'Dispatch queued',
+					'done',
+					'Corgi created dispatch truth for the accepted plan.'
 				);
 				return;
 			}

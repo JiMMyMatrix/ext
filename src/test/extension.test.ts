@@ -912,6 +912,11 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('Waiting for permission: '));
 		assert.ok(html.includes('Dispatch queued'));
 		assert.ok(html.includes('latestDispatchQueuedStatus'));
+		assert.ok(html.includes('latestPostExecutionStatus'));
+		assert.ok(
+			webviewSource.indexOf('const latestTerminalStatus = latestPostExecutionStatus(requestKey);') <
+				webviewSource.indexOf('if (isDispatchQueued(snapshot) || latestDispatchQueuedStatus(requestKey))')
+		);
 		assert.ok(html.includes("snapshot.runState === 'queued'"));
 		assert.ok(webviewSource.includes('Risks?\\\\s+or\\\\s+unknowns'));
 		assert.ok(webviewSource.includes("replace(/(^|[.!?])\\\\s+(Unknowns[:]?)/gi"));

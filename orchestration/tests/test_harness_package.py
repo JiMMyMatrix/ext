@@ -114,6 +114,21 @@ class HarnessPackageTests(unittest.TestCase):
         self.assertIn("# Governor Decision", decision_item["body"])
         return decision_path
 
+    def test_post_execution_actor_stage_uses_structured_result(self) -> None:
+        actor, stage = session._post_execution_actor_stage(
+            {"ok": True, "actor": "executor", "stage": "executor_completed", "title": "Copy changed"},
+            {"ok": True, "actor": "reviewer", "stage": "reviewer_completed", "title": "Copy changed again"},
+            {
+                "ok": True,
+                "actor": "governor",
+                "stage": "governor_decision_recorded",
+                "title": "Localized title",
+            },
+        )
+
+        self.assertEqual(actor, "governor")
+        self.assertEqual(stage, "governor_decision_recorded")
+
     def test_configured_agent_root_is_used_by_runtime_path_helpers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()
