@@ -58,6 +58,11 @@ Prepare the repo-local advisory environment with:
 python3 orchestration/scripts/setup_advisory_mcp_env.py
 ```
 
+For MiniMax consultations, set `MINIMAX_API_KEY` in the Governor/advisory
+process environment. The server uses MiniMax's OpenAI-compatible endpoint by
+default (`https://api.minimax.io/v1`) and keeps `consult_grok_advisor` only as
+a backward-compatible alias.
+
 The canonical manual command is:
 
 ```bash

@@ -4,6 +4,8 @@ import os
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Deque, Dict, Set, Tuple
@@ -31,6 +33,8 @@ REPO_ROOT = Path(os.environ.get("ORCHESTRATION_REPO_ROOT") or os.getcwd()).resol
 STATE_DUMP_PATH = str(
     REPO_ROOT / ".agent" / "orchestration" / "advisory" / "mcp_state.json"
 )
+MINIMAX_DEFAULT_OPENAI_BASE_URL = "https://api.minimax.io/v1"
+MINIMAX_DEFAULT_MODEL = "MiniMax-M2.7"
 
 # ---------------------------------------------------------------------------
 # Runtime state trackers
@@ -314,8 +318,105 @@ def _run_claude_code_sync(prompt: str, work_dir: str | None = None) -> str:
         return f"Unexpected Error executing Claude Code: {exc}"
 
 
+def _minimax_openai_endpoint() -> str:
+    raw_base = (
+        os.environ.get("MINIMAX_OPENAI_BASE_URL")
+        or os.environ.get("MINIMAX_BASE_URL")
+        or MINIMAX_DEFAULT_OPENAI_BASE_URL
+    ).rstrip("/")
+    if raw_base.endswith("/chat/completions"):
+        return raw_base
+    return f"{raw_base}/chat/completions"
 
-def _run_minimax_sync(prompt: str, system_hint: str | None = None) -> str:
+
+def _strip_minimax_thinking(text: str) -> str:
+    return re.sub(r"(?is)<think>.*?</think>\s*", "", text).strip()
+
+
+def _redact_secret(text: str, secret: str | None) -> str:
+    if not secret:
+        return text
+    return text.replace(secret, "[redacted]")
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+def _minimax_message_content(payload: dict) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return _strip_minimax_thinking(content)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return _strip_minimax_thinking("\n".join(parts))
+    return ""
+
+
+def _run_minimax_openai_sync(prompt: str, system_hint: str | None = None) -> str | None:
+    api_key = get_api_key("MINIMAX_API_KEY", os.environ.get("MINIMAX_API_KEY_FILE"))
+    if not api_key:
+        return None
+
+    messages: list[dict[str, str]] = []
+    if system_hint:
+        messages.append({"role": "system", "content": system_hint})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": os.environ.get("MINIMAX_MODEL") or MINIMAX_DEFAULT_MODEL,
+        "messages": messages,
+        "temperature": _env_float("MINIMAX_TEMPERATURE", 0.2),
+        "max_tokens": _env_int("MINIMAX_MAX_TOKENS", 2048),
+        "reasoning_split": True,
+    }
+    request = urllib.request.Request(
+        _minimax_openai_endpoint(),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = _redact_secret(exc.read().decode("utf-8", errors="replace"), api_key)[:1000]
+        return f"MiniMax API error {exc.code}: {body}"
+    except urllib.error.URLError as exc:
+        return f"MiniMax API connection error: {exc.reason}"
+    except TimeoutError:
+        return "MiniMax API exceeded 300s timeout."
+    except Exception as exc:
+        return f"Unexpected MiniMax API error: {exc}"
+
+    content = _minimax_message_content(response_payload)
+    return content if content else "Warning: Empty response from MiniMax API."
+
+
+def _run_minimax_grok_sync(prompt: str, system_hint: str | None = None) -> str:
     cmd = ["grok", "--model", "MiniMax-M2.7"]
     final_prompt = prompt
     if system_hint:
@@ -340,7 +441,8 @@ def _run_minimax_sync(prompt: str, system_hint: str | None = None) -> str:
         if result.returncode != 0:
             return (
                 f"Error: Grok CLI exited with code {result.returncode}\n"
-                f"Stderr: {result.stderr}"
+                f"Stderr: {result.stderr}\n"
+                "Set MINIMAX_API_KEY to use the direct MiniMax API path."
             )
 
         return result.stdout.strip() if result.stdout else "Warning: Empty response."
@@ -348,6 +450,14 @@ def _run_minimax_sync(prompt: str, system_hint: str | None = None) -> str:
         return "Error: Grok CLI exceeded 300s timeout."
     except Exception as exc:
         return f"Unexpected Error: {exc}"
+
+
+
+def _run_minimax_sync(prompt: str, system_hint: str | None = None) -> str:
+    response = _run_minimax_openai_sync(prompt, system_hint)
+    if response is not None:
+        return response
+    return _run_minimax_grok_sync(prompt, system_hint)
 
 
 # ---------------------------------------------------------------------------

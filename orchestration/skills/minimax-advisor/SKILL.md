@@ -28,6 +28,13 @@ Use this only in Governor context.
 MiniMax has no project filesystem access. Do not ask it to inspect files or
 verify repo contents.
 
+## Runtime Configuration
+`consult_minimax` prefers the direct MiniMax OpenAI-compatible API when
+`MINIMAX_API_KEY` is set. Optional overrides:
+- `MINIMAX_OPENAI_BASE_URL` or `MINIMAX_BASE_URL`
+- `MINIMAX_MODEL`
+- `MINIMAX_MAX_TOKENS`
+
 ## Invocation Guidance
 Keep the prompt focused. Use `system_hint` for panel mode or role steering. Use
 `cycle_id` when the advice belongs to a dispatch or Governor action-test cycle.

@@ -347,6 +347,26 @@ class HarnessPackageTests(unittest.TestCase):
         self.assertIn("consult_grok_advisor", routing_source)
         self.assertIn("backward-compatible alias", routing_source)
 
+    def test_minimax_advisor_prefers_direct_openai_compatible_api(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        server_source = (
+            repo_root / "orchestration" / "runtime" / "advisory" / "mcp_server.py"
+        ).read_text(encoding="utf-8")
+        skill_source = (
+            repo_root / "orchestration" / "skills" / "minimax-advisor" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        advisory_doc = (repo_root / "orchestration" / "advisory.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("MINIMAX_API_KEY", server_source)
+        self.assertIn("https://api.minimax.io/v1", server_source)
+        self.assertIn("urllib.request", server_source)
+        self.assertIn("reasoning_split", server_source)
+        self.assertIn("Set MINIMAX_API_KEY", server_source)
+        self.assertIn("MINIMAX_API_KEY", skill_source)
+        self.assertIn("MINIMAX_API_KEY", advisory_doc)
+
     def test_advisory_mcp_is_regular_but_cost_gated_governor_feature(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         governor_prompt = (repo_root / "orchestration" / "prompts" / "governor.txt").read_text(
