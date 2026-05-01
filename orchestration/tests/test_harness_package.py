@@ -15,11 +15,13 @@ from orchestration.harness import (
     contracts,
     dispatch,
     dispatch_contracts,
+    dispatch_guards,
     executor_runtime,
     intake,
     reviewer,
     runtime_support,
     session,
+    session_state,
     spawn_bridge,
     start_guard,
     transition,
@@ -33,6 +35,23 @@ from orchestration.harness.scenario_fixtures import (
 
 
 class HarnessPackageTests(unittest.TestCase):
+    def test_session_state_helpers_are_pure_policy_predicates(self) -> None:
+        self.assertEqual(session_state.allowed_permission_scopes("plan"), ["plan", "execute"])
+        self.assertTrue(session_state.scope_satisfies("execute", "plan"))
+        self.assertFalse(session_state.scope_satisfies("observe", "plan"))
+        self.assertTrue(
+            session_state.is_snapshot_stale(
+                {"snapshotFreshness": {"receivedAt": "2026-04-30T00:00:00Z"}},
+                "2026-04-30T00:00:46Z",
+            )
+        )
+        self.assertFalse(
+            session_state.is_snapshot_stale(
+                {"snapshotFreshness": {"receivedAt": "2026-04-30T00:00:00Z"}},
+                "2026-04-30T00:00:45Z",
+            )
+        )
+
     def _mock_governor_dialogue(
         self,
         *,
@@ -184,6 +203,32 @@ class HarnessPackageTests(unittest.TestCase):
 
             guard.assert_not_called()
             self.assertTrue((dispatch_dir / "governor_decision.json").exists())
+
+    def test_artifact_only_readout_guard_is_shared_by_finalizer_and_executor_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            dispatch_dir = self._write_artifact_only_finalize_fixture(repo_root)
+            request_payload = load_json(dispatch_dir / "request.json")
+            result_payload = load_json(dispatch_dir / "result.json")
+            state_payload = load_json(dispatch_dir / "state.json")
+            run_dir = repo_root / ".agent" / "runs" / state_payload["run_ref"]
+
+            self.assertTrue(
+                dispatch_guards.artifact_only_executor_readout_request(
+                    repo_root,
+                    request_payload,
+                    result=result_payload,
+                    state=state_payload,
+                )
+            )
+            self.assertTrue(
+                executor_runtime.is_artifact_only_executor_readout(
+                    repo_root,
+                    request_payload,
+                    run_dir,
+                    result_payload["written_or_updated"],
+                )
+            )
 
     def test_finalize_rejects_mistagged_artifact_only_executor_readout_bypass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
 import json
 import os
-import shlex
 import subprocess
 import tempfile
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,13 +29,13 @@ from orchestration.harness.paths import (
 	prompt_path,
 	repo_relative,
 	resolve_paths,
-	script_ref,
 	summarize,
 	trim_text,
 	utc_now,
 	write_json,
 )
-from orchestration.harness import dispatch as dispatch_harness
+from orchestration.harness import session_execution
+from orchestration.harness import session_state
 from orchestration.harness.transition import load_transition
 
 
@@ -1876,24 +1872,12 @@ def _remember_request(session: dict[str, Any], request_id: str | None, command: 
 	_processed_request_ids(session)[request_id] = {"command": command, "handledAt": now}
 
 
-def _parse_received_at(value: str | None) -> datetime | None:
-	if not value:
-		return None
-	try:
-		return datetime.fromisoformat(value.replace("Z", "+00:00"))
-	except ValueError:
-		return None
+def _parse_received_at(value: str | None) -> Any:
+	return session_state.parse_received_at(value)
 
 
 def _is_snapshot_stale(snapshot: dict[str, Any], now: str) -> bool:
-	freshness = snapshot.get("snapshotFreshness") or {}
-	if freshness.get("stale") is True:
-		return True
-	received_at = _parse_received_at(freshness.get("receivedAt"))
-	current = _parse_received_at(now)
-	if received_at is None or current is None:
-		return False
-	return (current - received_at).total_seconds() > 45
+	return session_state.is_snapshot_stale(snapshot, now)
 
 
 def _current_interrupt_context_ref(model: dict[str, Any]) -> str:
@@ -1901,42 +1885,27 @@ def _current_interrupt_context_ref(model: dict[str, Any]) -> str:
 
 
 def _context_matches(expected_context_ref: str | None, provided_context_ref: str | None) -> bool:
-	if expected_context_ref is None:
-		return True
-	return provided_context_ref == expected_context_ref
+	return session_state.context_matches(expected_context_ref, provided_context_ref)
 
 
 def _session_ref_matches(model: dict[str, Any], provided_session_ref: str | None) -> bool:
-	expected = model["snapshot"].get("sessionRef")
-	if not expected:
-		return True
-	return provided_session_ref == expected
+	return session_state.session_ref_matches(model, provided_session_ref)
 
 
 def _permission_rank(scope: str | None) -> int:
-	if scope == "observe":
-		return 1
-	if scope == "plan":
-		return 2
-	if scope == "execute":
-		return 3
-	return 0
+	return session_state.permission_rank(scope)
 
 
 def _scope_satisfies(current_scope: str | None, required_scope: str | None) -> bool:
-	return _permission_rank(current_scope) >= _permission_rank(required_scope)
+	return session_state.scope_satisfies(current_scope, required_scope)
 
 
 def _allowed_permission_scopes(required_scope: str | None) -> list[str]:
-	return [
-		scope
-		for scope in ("observe", "plan", "execute")
-		if _scope_satisfies(scope, required_scope)
-	]
+	return session_state.allowed_permission_scopes(required_scope)
 
 
 def _format_permission_scope(scope: str | None) -> str:
-	return (scope or "unset").capitalize()
+	return session_state.format_permission_scope(scope)
 
 
 def _should_request_execute_for_accepted_continuation(
@@ -1999,45 +1968,23 @@ def _build_plan_ready_request(
 
 
 def _accepted_intake_ref(session: dict[str, Any], repo_root: str | Path | None = None) -> str | None:
-	intake_ref = session["meta"].get("activeIntakeRef")
-	if not isinstance(intake_ref, str) or not intake_ref:
-		return None
-	path = accepted_intake_path(intake_ref, repo_root=repo_root)
-	if not path.exists():
-		return None
-	return repo_relative(path, repo_root)
+	return session_execution.accepted_intake_ref(session, repo_root)
 
 
 def _plan_execution_objective(model: dict[str, Any]) -> str:
-	plan_ready = model.get("planReadyRequest")
-	summary: Any = None
-	if isinstance(plan_ready, dict):
-		summary = plan_ready.get("acceptedIntakeSummary")
-	if not isinstance(summary, dict):
-		summary = model.get("acceptedIntakeSummary")
-	if isinstance(summary, dict):
-		body = trim_text(summary.get("body"))
-		if body:
-			return body
-	task = trim_text(model["snapshot"].get("task"))
-	if task:
-		return task
-	return "Execute the accepted Corgi plan."
+	return session_execution.plan_execution_objective(model)
 
 
 def _executor_run_ref(dispatch_ref: str) -> str:
-	return f"{dispatch_ref}/result/attempt-1"
+	return session_execution.executor_run_ref(dispatch_ref)
 
 
 def _plan_execution_summary(model: dict[str, Any], dispatch_ref: str) -> str:
-	objective = _plan_execution_objective(model)
-	return (
-		f"Executor generated a bounded readout for dispatch {dispatch_ref}: {objective}."
-	)
+	return session_execution.plan_execution_summary(model, dispatch_ref)
 
 
 def _command_arg(value: str) -> str:
-	return shlex.quote(str(value))
+	return session_execution.command_arg(value)
 
 
 def _emit_plan_execution_dispatch(
@@ -2047,128 +1994,18 @@ def _emit_plan_execution_dispatch(
 	repo_root: str | Path | None = None,
 	request_id: str | None = None,
 ) -> dict[str, Any] | None:
-	model = session["model"]
-	paths = resolve_paths(repo_root)
-	branch = model["snapshot"].get("branch") or git_branch_name(repo_root)
-	lane = model["snapshot"].get("lane") or default_lane(branch)
-	dispatch_ref = f"{lane}/{_next_id('dispatch')}"
-	dispatch_dir = paths.agent_root / "dispatches" / Path(dispatch_ref)
-	executor_run_ref = _executor_run_ref(dispatch_ref)
-	run_dir = paths.agent_root / "runs" / Path(executor_run_ref)
-	readout_ref = repo_relative(run_dir / "executor_readout.md", repo_root)
-	review_ref = repo_relative(
-		paths.agent_root / "reviews" / Path(dispatch_ref) / "review.json",
-		repo_root,
+	return session_execution.emit_plan_execution_dispatch(
+		session,
+		now,
+		repo_root=repo_root,
+		request_id=request_id,
+		next_id=_next_id,
+		append_error=_append_error,
 	)
-	objective = _plan_execution_objective(model)
-	accepted_ref = _accepted_intake_ref(session, repo_root)
-	plan_ready = model.get("planReadyRequest") if isinstance(model.get("planReadyRequest"), dict) else {}
-	inputs = [
-		ref
-		for ref in [
-			accepted_ref,
-			f"plan_context_ref:{plan_ready.get('planContextRef')}" if plan_ready else None,
-			f"plan_version:{plan_ready.get('planVersion')}" if plan_ready else None,
-		]
-		if isinstance(ref, str) and ref.strip()
-	]
-	args = [
-		"--dispatch-ref",
-		dispatch_ref,
-		"--objective",
-		objective,
-		"--lane",
-		lane,
-		"--execution-mode",
-		"command_chain",
-		"--executor-run-ref",
-		executor_run_ref,
-		"--run-objective",
-		objective,
-		"--run-scope",
-		objective,
-		"--run-produce",
-		readout_ref,
-		"--required-output",
-		readout_ref,
-		"--command",
-		" ".join(
-			[
-				_command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
-				_command_arg(script_ref("executor_write_readout.py", paths.repo_root)),
-				"--repo-root",
-				_command_arg(str(paths.repo_root)),
-				"--dispatch-ref",
-				_command_arg(dispatch_ref),
-				"--objective",
-				_command_arg(objective),
-				"--output",
-				_command_arg(readout_ref),
-				*(["--accepted-intake", _command_arg(accepted_ref)] if accepted_ref else []),
-			]
-		),
-		"--execution-summary",
-		_plan_execution_summary(model, dispatch_ref),
-		"--execution-claim",
-		"Executor generated a bounded readout artifact for the accepted plan.",
-		"--execution-claim",
-		"This helper-backed Executor path produced analysis artifacts but did not mutate product code.",
-		"--execution-evidence",
-		readout_ref,
-		"--execution-note",
-		"artifact_only_executor_readout",
-		"--execution-next-action",
-		"Governor should review the Executor result and decide the next bounded step.",
-		"--acceptance-criterion",
-		"Executor work stays within the accepted intake and latest validated plan context.",
-		"--stop-condition",
-		"Stop on stale context, authority boundary, safety boundary, or missing required input.",
-		"--review-required",
-		"--review-artifact-path",
-		review_ref,
-		"--root",
-		str(paths.repo_root),
-	]
-	for input_ref in inputs:
-		args.extend(["--input", input_ref])
-		args.extend(["--run-read", input_ref])
-	try:
-		with contextlib.redirect_stdout(io.StringIO()):
-			dispatch_harness.emit_main(args)
-	except (OSError, SystemExit, ValueError) as exc:
-		_append_error(
-			model,
-			"Dispatch could not start",
-			f"Corgi could not create dispatch truth for this plan: {exc}",
-			now,
-			in_response_to_request_id=request_id,
-		)
-		return None
-
-	return {
-		"dispatch_ref": dispatch_ref,
-		"request_ref": repo_relative(dispatch_dir / "request.json", repo_root),
-		"state_ref": repo_relative(dispatch_dir / "state.json", repo_root),
-		"review_ref": review_ref,
-		"dispatch_dir": str(dispatch_dir),
-	}
 
 
 def _dispatch_artifacts(dispatch_refs: dict[str, Any], *, status: str = "queued") -> list[dict[str, Any]]:
-	return [
-		_artifact(
-			dispatch_refs["request_ref"],
-			summary="Dispatch truth for the accepted plan.",
-			authoritative=True,
-			status=status,
-		),
-		_artifact(
-			dispatch_refs["state_ref"],
-			summary="Dispatch lifecycle state.",
-			authoritative=True,
-			status=status,
-		),
-	]
+	return session_execution.dispatch_artifacts(dispatch_refs, artifact=_artifact, status=status)
 
 
 def _executor_result_artifacts(
@@ -2177,57 +2014,12 @@ def _executor_result_artifacts(
 	*,
 	repo_root: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-	artifacts: list[dict[str, Any]] = []
-	status = trim_text(state.get("status")) or "completed"
-	run_ref = state.get("run_ref")
-	if isinstance(run_ref, str) and run_ref.strip():
-		run_dir = resolve_paths(repo_root).agent_root / "runs" / Path(run_ref)
-		report_payload = load_json(run_dir / "report.json") if (run_dir / "report.json").exists() else {}
-		raw_outputs = report_payload.get("outputs", []) if isinstance(report_payload, dict) else []
-		outputs = [output for output in raw_outputs if isinstance(output, str) and output.strip()]
-		primary_output_ref = _executor_primary_output_ref(report_payload)
-		ordered_outputs = [
-			output
-			for output in [primary_output_ref, *outputs]
-			if isinstance(output, str)
-			and output.strip()
-			and "/command_logs/" not in output
-		]
-		for output_ref in dict.fromkeys(ordered_outputs):
-			if isinstance(output_ref, str) and output_ref.strip():
-				artifacts.append(
-					_artifact(
-						output_ref,
-						summary="Executor produced output artifact.",
-						authoritative=True,
-						status=status,
-					)
-				)
-		for name, summary in [
-			("report.json", "Executor run report."),
-			("status.json", "Executor run status."),
-		]:
-			path = run_dir / name
-			if path.exists():
-				artifacts.append(
-					_artifact(
-						repo_relative(path, repo_root),
-						summary=summary,
-						authoritative=True,
-						status=status,
-					)
-				)
-	result_ref = state.get("result_ref")
-	if isinstance(result_ref, str) and result_ref.strip():
-		artifacts.append(
-			_artifact(
-				result_ref,
-				summary="Executor result for the accepted dispatch.",
-				authoritative=True,
-				status=status,
-			)
-		)
-	return artifacts + _dispatch_artifacts(dispatch_refs, status=status)
+	return session_execution.executor_result_artifacts(
+		dispatch_refs,
+		state,
+		artifact=_artifact,
+		repo_root=repo_root,
+	)
 
 
 def _executor_report_payload(
@@ -2235,25 +2027,11 @@ def _executor_report_payload(
 	*,
 	repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
-	run_ref = state.get("run_ref") if isinstance(state, dict) else None
-	if not isinstance(run_ref, str) or not run_ref.strip():
-		return {}
-	report_path = resolve_paths(repo_root).agent_root / "runs" / Path(run_ref) / "report.json"
-	return load_json(report_path) if report_path.exists() else {}
+	return session_execution.executor_report_payload(state, repo_root=repo_root)
 
 
 def _executor_primary_output_ref(report: dict[str, Any]) -> str | None:
-	outputs = report.get("outputs") if isinstance(report, dict) else None
-	if not isinstance(outputs, list):
-		return None
-	for suffix in (".md", ".json"):
-		for output in outputs:
-			if isinstance(output, str) and output.strip() and output.endswith(suffix):
-				return output
-	for output in outputs:
-		if isinstance(output, str) and output.strip():
-			return output
-	return None
+	return session_execution.executor_primary_output_ref(report)
 
 
 def _executor_output_body(
@@ -2261,93 +2039,19 @@ def _executor_output_body(
 	*,
 	repo_root: str | Path | None = None,
 ) -> str | None:
-	if not isinstance(output_ref, str) or not output_ref.strip() or not output_ref.endswith(".md"):
-		return None
-	path = resolve_paths(repo_root).repo_root / output_ref
-	if not path.exists():
-		return None
-	body = trim_text(path.read_text(encoding="utf-8"))
-	if not body:
-		return None
-	max_chars = 12000
-	if len(body) > max_chars:
-		return body[:max_chars].rstrip() + "\n\n_Output truncated. View source for the full Executor readout._"
-	return body
+	return session_execution.executor_output_body(output_ref, repo_root=repo_root)
 
 
 def _executor_completion_body(report: dict[str, Any], output_body: str | None = None) -> str:
-	summary = trim_text(report.get("summary") if isinstance(report, dict) else "")
-	next_action = trim_text(report.get("next_action") if isinstance(report, dict) else "")
-	claims = report.get("claims") if isinstance(report, dict) else None
-	claim_lines = [
-		f"- {trim_text(claim)}"
-		for claim in claims[:3]
-		if isinstance(claim, str) and trim_text(claim)
-	] if isinstance(claims, list) else []
-	parts = [
-		output_body or summary or "Executor completed the dispatch and wrote the bounded result artifact.",
-	]
-	if claim_lines and not output_body:
-		parts.append("What changed:\n" + "\n".join(claim_lines))
-	if next_action:
-		parts.append(f"Next: {next_action}")
-	return "\n\n".join(parts)
+	return session_execution.executor_completion_body(report, output_body)
 
 
 def _reviewer_completion_body(review: dict[str, Any]) -> str:
-	verdict = trim_text(review.get("verdict")) or "inconclusive"
-	recommendation = trim_text(review.get("recommendation")) or "No recommendation provided."
-	findings = review.get("findings")
-	residual_risks = review.get("residual_risks")
-	validator_assessment = review.get("validator_assessment")
-
-	parts = [
-		"# Reviewer Readout",
-		f"Verdict: {verdict}",
-		f"Recommendation: {recommendation}",
-	]
-	if isinstance(findings, list) and findings:
-		parts.append(
-			"Findings:\n"
-			+ "\n".join(
-				f"- {trim_text(item)}"
-				for item in findings
-				if isinstance(item, str) and trim_text(item)
-			)
-		)
-	if isinstance(residual_risks, list) and residual_risks:
-		parts.append(
-			"Residual risks:\n"
-			+ "\n".join(
-				f"- {trim_text(item)}"
-				for item in residual_risks
-				if isinstance(item, str) and trim_text(item)
-			)
-		)
-	if isinstance(validator_assessment, list) and validator_assessment:
-		parts.append(
-			"Validation checked:\n"
-			+ "\n".join(
-				f"- {trim_text(item)}"
-				for item in validator_assessment[:5]
-				if isinstance(item, str) and trim_text(item)
-			)
-		)
-	return "\n\n".join(part for part in parts if trim_text(part))
+	return session_execution.reviewer_completion_body(review)
 
 
 def _governor_decision_body(decision: dict[str, Any]) -> str:
-	decision_value = trim_text(decision.get("decision")) or "unknown"
-	reason = trim_text(decision.get("reason")) or "No reason recorded."
-	next_action = trim_text(decision.get("recommended_next_action"))
-	parts = [
-		"# Governor Decision",
-		f"Decision: {decision_value}",
-		f"Reason: {reason}",
-	]
-	if next_action:
-		parts.append(f"Next: {next_action}")
-	return "\n\n".join(parts)
+	return session_execution.governor_decision_body(decision)
 
 
 def _consume_executor_dispatch(
@@ -2358,81 +2062,16 @@ def _consume_executor_dispatch(
 	repo_root: str | Path | None = None,
 	request_id: str | None = None,
 ) -> dict[str, Any]:
-	model = session["model"]
-	paths = resolve_paths(repo_root)
-	dispatch_dir = Path(dispatch_refs["dispatch_dir"])
-	try:
-		with contextlib.redirect_stdout(io.StringIO()):
-			exit_code = dispatch_harness.run(
-				"consume-executor",
-				[
-					"--dispatch-dir",
-					str(dispatch_dir),
-					"--root",
-					str(paths.repo_root),
-				],
-			)
-	except (OSError, SystemExit, ValueError) as exc:
-		_append_error(
-			model,
-			"Executor could not start",
-			f"Corgi created dispatch truth, but Executor launch failed: {exc}",
-			now,
-			in_response_to_request_id=request_id,
-			source_artifact_ref=dispatch_refs["request_ref"],
-		)
-		return {
-			"ok": False,
-			"actor": "executor",
-			"stage": "executor_blocked",
-			"artifacts": _dispatch_artifacts(dispatch_refs, status="queued"),
-		}
-
-	state_path = dispatch_dir / "state.json"
-	state = load_json(state_path) if state_path.exists() else {}
-	status = trim_text(state.get("status")) or "queued"
-	artifacts = _executor_result_artifacts(dispatch_refs, state, repo_root=repo_root)
-	if exit_code != 0 or status not in {"completed", "validated"}:
-		source_ref = dispatch_refs["state_ref"]
-		escalation_path = dispatch_dir / "escalation.json"
-		if escalation_path.exists():
-			source_ref = repo_relative(escalation_path, repo_root)
-			artifacts = [
-				_artifact(
-					source_ref,
-					summary="Executor blocker artifact.",
-					authoritative=True,
-					status="blocked",
-				)
-			] + artifacts
-		_append_error(
-			model,
-			"Executor blocked",
-			"Executor could not complete this dispatch. View the source artifact for the blocker details.",
-			now,
-			in_response_to_request_id=request_id,
-			source_artifact_ref=source_ref,
-		)
-		return {"ok": False, "actor": "executor", "stage": "executor_blocked", "artifacts": artifacts}
-
-	report = _executor_report_payload(state, repo_root=repo_root)
-	primary_output_ref = _executor_primary_output_ref(report)
-	primary_output_body = _executor_output_body(primary_output_ref, repo_root=repo_root)
-	result_ref = state.get("result_ref") if isinstance(state, dict) else None
-	model["feed"].append(
-		_feed_item(
-			"system_status",
-			"Executor completed",
-			_executor_completion_body(report, primary_output_body),
-			authoritative=True,
-			now=now,
-			source_artifact_ref=primary_output_ref
-			or (result_ref if isinstance(result_ref, str) else dispatch_refs["state_ref"]),
-			turn_type="permission_action",
-			in_response_to_request_id=request_id,
-		)
+	return session_execution.consume_executor_dispatch(
+		session,
+		dispatch_refs,
+		now,
+		feed_item=_feed_item,
+		artifact=_artifact,
+		append_error=_append_error,
+		repo_root=repo_root,
+		request_id=request_id,
 	)
-	return {"ok": True, "actor": "executor", "stage": "executor_completed", "artifacts": artifacts}
 
 
 def _consume_reviewer_dispatch(
@@ -2443,63 +2082,16 @@ def _consume_reviewer_dispatch(
 	repo_root: str | Path | None = None,
 	request_id: str | None = None,
 ) -> dict[str, Any]:
-	model = session["model"]
-	dispatch_dir = Path(dispatch_refs["dispatch_dir"])
-	review_ref = trim_text(dispatch_refs.get("review_ref"))
-	if not review_ref:
-		return {"ok": True, "artifacts": []}
-	try:
-		with contextlib.redirect_stdout(io.StringIO()):
-			exit_code = dispatch_harness.run(
-				"consume-reviewer",
-				[
-					"--dispatch-dir",
-					str(dispatch_dir),
-				],
-			)
-	except (OSError, SystemExit, ValueError) as exc:
-		_append_error(
-			model,
-			"Reviewer could not start",
-			f"Corgi could not complete the advisory review for this dispatch: {exc}",
-			now,
-			in_response_to_request_id=request_id,
-			source_artifact_ref=dispatch_refs.get("request_ref"),
-		)
-		return {"ok": False, "actor": "reviewer", "stage": "reviewer_blocked", "artifacts": []}
-
-	review_path = resolve_paths(repo_root).repo_root / review_ref
-	if exit_code != 0 or not review_path.exists():
-		_append_error(
-			model,
-			"Reviewer blocked",
-			"Reviewer did not produce the expected advisory review artifact.",
-			now,
-			in_response_to_request_id=request_id,
-			source_artifact_ref=dispatch_refs.get("request_ref"),
-		)
-		return {"ok": False, "actor": "reviewer", "stage": "reviewer_blocked", "artifacts": []}
-
-	review_payload = load_json(review_path)
-	review_artifact = _artifact(
-		review_ref,
-		summary="Reviewer advisory artifact for the completed dispatch.",
-		authoritative=True,
-		status=trim_text(review_payload.get("verdict")) or "completed",
+	return session_execution.consume_reviewer_dispatch(
+		session,
+		dispatch_refs,
+		now,
+		feed_item=_feed_item,
+		artifact=_artifact,
+		append_error=_append_error,
+		repo_root=repo_root,
+		request_id=request_id,
 	)
-	model["feed"].append(
-		_feed_item(
-			"system_status",
-			"Reviewer completed",
-			_reviewer_completion_body(review_payload),
-			authoritative=True,
-			now=now,
-			source_artifact_ref=review_ref,
-			turn_type="permission_action",
-			in_response_to_request_id=request_id,
-		)
-	)
-	return {"ok": True, "actor": "reviewer", "stage": "reviewer_completed", "artifacts": [review_artifact]}
 
 
 def _finalize_dispatch(
@@ -2510,77 +2102,20 @@ def _finalize_dispatch(
 	repo_root: str | Path | None = None,
 	request_id: str | None = None,
 ) -> dict[str, Any]:
-	model = session["model"]
-	dispatch_dir = Path(dispatch_refs["dispatch_dir"])
-	try:
-		with contextlib.redirect_stdout(io.StringIO()):
-			exit_code = dispatch_harness.run(
-				"finalize",
-				[
-					"--dispatch-dir",
-					str(dispatch_dir),
-				],
-			)
-	except (OSError, SystemExit, ValueError) as exc:
-		_append_error(
-			model,
-			"Governor finalization blocked",
-			f"Corgi completed Executor and Reviewer steps, but Governor finalization could not complete: {exc}",
-			now,
-			in_response_to_request_id=request_id,
-			source_artifact_ref=dispatch_refs.get("review_ref") or dispatch_refs.get("request_ref"),
-		)
-		return {"ok": False, "actor": "governor", "stage": "governor_finalization_blocked", "artifacts": []}
-
-	decision_path = dispatch_dir / "governor_decision.json"
-	if exit_code != 0 or not decision_path.exists():
-		_append_error(
-			model,
-			"Governor finalization blocked",
-			"Governor finalization did not produce the expected decision artifact.",
-			now,
-			in_response_to_request_id=request_id,
-			source_artifact_ref=dispatch_refs.get("review_ref") or dispatch_refs.get("request_ref"),
-		)
-		return {"ok": False, "actor": "governor", "stage": "governor_finalization_blocked", "artifacts": []}
-
-	decision_ref = repo_relative(decision_path, repo_root)
-	decision_payload = load_json(decision_path)
-	decision_artifact = _artifact(
-		decision_ref,
-		summary="Governor decision artifact for the completed dispatch.",
-		authoritative=True,
-		status=trim_text(decision_payload.get("decision")) or "recorded",
+	return session_execution.finalize_dispatch(
+		session,
+		dispatch_refs,
+		now,
+		feed_item=_feed_item,
+		artifact=_artifact,
+		append_error=_append_error,
+		repo_root=repo_root,
+		request_id=request_id,
 	)
-	model["feed"].append(
-		_feed_item(
-			"system_status",
-			"Governor decision recorded",
-			_governor_decision_body(decision_payload),
-			authoritative=True,
-			now=now,
-			source_layer="orchestration",
-			source_actor="governor",
-			source_artifact_ref=decision_ref,
-			turn_type="permission_action",
-			in_response_to_request_id=request_id,
-		)
-	)
-	return {
-		"ok": True,
-		"actor": "governor",
-		"stage": "governor_decision_recorded",
-		"artifacts": [decision_artifact],
-	}
 
 
 def _post_execution_actor_stage(*results: dict[str, Any]) -> tuple[str, str]:
-	for result in reversed(results):
-		actor = result.get("actor") if isinstance(result, dict) else None
-		stage = result.get("stage") if isinstance(result, dict) else None
-		if isinstance(actor, str) and actor and isinstance(stage, str) and stage:
-			return (actor, stage)
-	return ("executor", "executor_completed")
+	return session_execution.post_execution_actor_stage(*results)
 
 
 def _set_plan_ready_request(

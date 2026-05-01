@@ -34,6 +34,26 @@ export interface ExecutionTransport {
 	dispose?(): void;
 }
 
+export type GovernorRuntimeMode = 'exec' | 'app-server';
+export type GovernorRuntimeRoute = 'exec' | 'external';
+
+const EXTERNAL_GOVERNOR_COMMANDS = new Set([
+	'submit-prompt',
+	'answer-clarification',
+	'set-permission-scope',
+	'revise-plan',
+]);
+
+export function resolveGovernorRoute(
+	command: string,
+	governorRuntimeMode: GovernorRuntimeMode
+): GovernorRuntimeRoute {
+	if (governorRuntimeMode !== 'app-server') {
+		return 'exec';
+	}
+	return EXTERNAL_GOVERNOR_COMMANDS.has(command) ? 'external' : 'exec';
+}
+
 export class TransportUnavailableError extends Error {
 	public readonly title: string;
 	public readonly details: string[];
@@ -174,7 +194,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	private readonly scriptPath: string;
 	private readonly cwd: string;
 	private readonly pythonExecutable: string;
-	private readonly governorRuntimeMode: 'exec' | 'app-server';
+	private readonly governorRuntimeMode: GovernorRuntimeMode;
 	private readonly useEphemeralAppServerThreads: boolean;
 	private readonly runtimeEventListeners = new Set<(event: ExecutionRuntimeEvent) => void>();
 	public readonly onRuntimeEvent: vscode.Event<ExecutionRuntimeEvent> = (listener) => {
@@ -416,15 +436,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	}
 
 	private shouldUseExternalGovernor(command: string): boolean {
-		return (
-			this.governorRuntimeMode === 'app-server' &&
-			[
-				'submit-prompt',
-				'answer-clarification',
-				'set-permission-scope',
-				'revise-plan',
-			].includes(command)
-		);
+		return resolveGovernorRoute(command, this.governorRuntimeMode) === 'external';
 	}
 
 	private async handleGovernorRuntimeResponse(
@@ -561,7 +573,7 @@ function isAppServerShutdownReason(reason: string): boolean {
 	return reason.includes('app-server client shutting down');
 }
 
-function resolveGovernorRuntimeMode(): 'exec' | 'app-server' {
+function resolveGovernorRuntimeMode(): GovernorRuntimeMode {
 	const envMode = process.env.CORGI_GOVERNOR_RUNTIME?.trim();
 	if (envMode === 'app-server' || envMode === 'exec') {
 		return envMode;

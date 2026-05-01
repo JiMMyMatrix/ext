@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from orchestration.harness.paths import contract_ref, prompt_ref, resolve_agent_root, script_ref
+from orchestration.harness.dispatch_guards import artifact_only_executor_readout_request
 from orchestration.harness.start_guard import (
     ensure_dispatch_startable,
     ensure_lane_worktree_tracked,
@@ -1005,51 +1006,18 @@ def declared_files_for_request(request: Dict) -> List[str]:
     return dedupe_preserve_order([item for item in declared if isinstance(item, str) and item.strip()])
 
 
-def path_is_inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return False
-    return True
-
-
 def is_artifact_only_executor_readout(
     repo_root: Path,
     request: Dict,
     run_dir: Path,
     produced: List[str],
 ) -> bool:
-    """Allow generated readout dispatches to finish in dirty dev worktrees.
-
-    These dispatches are intentionally non-mutating: the helper writes only into
-    the executor run directory, so the normal scope audit still catches any
-    command side effects while unrelated pre-existing worktree changes do not
-    block UI smoke tests.
-    """
-    if (request.get("execution_mode") or "manual_artifact_report") != "command_chain":
-        return False
-    payload = request.get("execution_payload", {})
-    if not isinstance(payload, dict):
-        return False
-    notes = payload.get("notes", [])
-    if not isinstance(notes, list) or "artifact_only_executor_readout" not in notes:
-        return False
-    command_specs = payload.get("commands", [])
-    if not isinstance(command_specs, list) or len(command_specs) != 1:
-        return False
-    command = parse_command_spec(command_specs[0])
-    if script_ref("executor_write_readout.py", repo_root) not in command["argv"]:
-        return False
-    required_outputs = request.get("required_outputs", [])
-    if not isinstance(required_outputs, list) or not required_outputs:
-        return False
-    produced_refs = [
-        item for item in [*produced, *required_outputs]
-        if isinstance(item, str) and item.strip()
-    ]
-    if not produced_refs:
-        return False
-    return all(path_is_inside(repo_root / ref, run_dir) for ref in produced_refs)
+    return artifact_only_executor_readout_request(
+        repo_root,
+        request,
+        run_dir=run_dir,
+        produced_refs=produced,
+    )
 
 
 def checkpoint_artifact_paths(request: Dict) -> List[str]:

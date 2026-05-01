@@ -14,6 +14,7 @@ import {
 } from '../phase1Model';
 import {
 	createExecutionTransport,
+	resolveGovernorRoute,
 	resolveExecutionTransportTarget,
 	TransportUnavailableError,
 } from '../executionTransport';
@@ -292,6 +293,27 @@ suite('Corgi Webview UX', () => {
 		assert.ok(transportSource.includes("'fail-governor-turn'"));
 		assert.ok(transportSource.includes('isAppServerShutdownReason'));
 		assert.ok(transportSource.includes('isGovernorRuntimeResponse'));
+	});
+
+	test('Governor runtime route resolution is explicit and action-bound', () => {
+		for (const command of [
+			'submit-prompt',
+			'answer-clarification',
+			'set-permission-scope',
+			'revise-plan',
+		]) {
+			assert.strictEqual(resolveGovernorRoute(command, 'app-server'), 'external');
+		}
+		for (const command of [
+			'decline-permission',
+			'execute-plan',
+			'interrupt',
+			'reconnect',
+			'state',
+		]) {
+			assert.strictEqual(resolveGovernorRoute(command, 'app-server'), 'exec');
+		}
+		assert.strictEqual(resolveGovernorRoute('submit-prompt', 'exec'), 'exec');
 	});
 
 	test('development app-server runtime uses ephemeral threads for clean test launches', () => {
