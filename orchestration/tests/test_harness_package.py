@@ -1703,6 +1703,67 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["snapshot"]["currentStage"], "governor_decision_recorded")
             self.assertEqual(model["snapshot"]["runState"], "idle")
 
+    def test_reviewer_test_fixture_can_start_ready_and_complete_reviewer(self) -> None:
+        repo_root = Path.cwd()
+        agent_parent = repo_root / ".agent"
+        agent_parent.mkdir(exist_ok=True)
+
+        def run_fixture(scenario: str) -> None:
+            with tempfile.TemporaryDirectory(dir=agent_parent) as runtime_agent_root:
+                env = {
+                    **os.environ,
+                    "ORCHESTRATION_AGENT_ROOT": runtime_agent_root,
+                    "ORCHESTRATION_APPROVED_PYTHON": str(Path(sys.executable).resolve()),
+                }
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "orchestration/scripts/seed_reviewer_test_session.py",
+                        "--root",
+                        str(repo_root),
+                        "--scenario",
+                        scenario,
+                    ],
+                    check=True,
+                    cwd=repo_root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                with (
+                    mock.patch.dict(os.environ, env),
+                    mock.patch.object(
+                        runtime_support,
+                        "APPROVED_PYTHON",
+                        Path(sys.executable).resolve(),
+                    ),
+                ):
+                    seeded = session.load_session(repo_root)["model"]
+                    dispatch_results = sorted(Path(runtime_agent_root).glob("dispatches/**/result.json"))
+                    self.assertEqual(len(dispatch_results), 1)
+                    dispatch_dir = dispatch_results[0].parent
+                    request_payload = load_json(dispatch_dir / "request.json")
+                    review_path = repo_root / request_payload["review_artifact_path"]
+                    self._assert_executor_readout(repo_root, dispatch_dir, seeded)
+
+                    if scenario == "reviewer-ready":
+                        self.assertEqual(seeded["snapshot"]["currentActor"], "reviewer")
+                        self.assertEqual(seeded["snapshot"]["currentStage"], "reviewer_ready")
+                        self.assertEqual(seeded["snapshot"]["runState"], "idle")
+                        self.assertEqual(seeded["activeForegroundRequestId"], "corgi-fixture:reviewer")
+                        self.assertFalse(review_path.exists())
+                        self.assertFalse((dispatch_dir / "governor_decision.json").exists())
+                    else:
+                        self._assert_reviewer_readout(repo_root, dispatch_dir, seeded)
+                        self.assertEqual(seeded["snapshot"]["currentActor"], "reviewer")
+                        self.assertEqual(seeded["snapshot"]["currentStage"], "reviewer_completed")
+                        self.assertEqual(seeded["snapshot"]["runState"], "idle")
+                        self.assertIsNone(seeded["activeForegroundRequestId"])
+                        self.assertFalse((dispatch_dir / "governor_decision.json").exists())
+
+        run_fixture("reviewer-ready")
+        run_fixture("reviewer-completed")
+
     def test_session_plan_revision_keeps_plan_ready_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)

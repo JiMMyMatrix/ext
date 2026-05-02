@@ -245,6 +245,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('resetDevelopmentSessionState(this.context);'));
 		assert.ok(webviewSource.includes('return context.extensionMode === vscode.ExtensionMode.Development;'));
 		assert.ok(launchScriptSource.includes('seed_executor_test_session.py'));
+		assert.ok(launchScriptSource.includes('seed_reviewer_test_session.py'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCENARIO'));
 		assert.strictEqual(
 			scripts['test:window:executor'],
@@ -253,6 +254,14 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:window:plan-ready'],
 			'CORGI_TEST_WINDOW_SCENARIO=plan-ready bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:reviewer'],
+			'CORGI_TEST_WINDOW_SCENARIO=reviewer-completed bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:reviewer-ready'],
+			'CORGI_TEST_WINDOW_SCENARIO=reviewer-ready bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.ok(!extensionSource.includes('CORGI_RESET_DEV_SESSION'));
 		assert.ok(!developmentSessionSource.includes('CORGI_RESET_DEV_SESSION'));

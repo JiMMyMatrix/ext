@@ -51,9 +51,21 @@ if [[ -n "$TEST_SCENARIO" ]]; then
 			PYTHON_BIN="$(command -v python3)"
 		fi
 	fi
+	case "$TEST_SCENARIO" in
+		plan-ready|execute-permission)
+			SEED_SCRIPT="$ROOT_DIR/orchestration/scripts/seed_executor_test_session.py"
+			;;
+		reviewer-ready|reviewer-completed)
+			SEED_SCRIPT="$ROOT_DIR/orchestration/scripts/seed_reviewer_test_session.py"
+			;;
+		*)
+			echo "Unknown Corgi test-window scenario: $TEST_SCENARIO" >&2
+			exit 2
+			;;
+	esac
 	ORCHESTRATION_AGENT_ROOT="$RUNTIME_AGENT_ROOT" \
 	ORCHESTRATION_APPROVED_PYTHON="$PYTHON_BIN" \
-	"$PYTHON_BIN" "$ROOT_DIR/orchestration/scripts/seed_executor_test_session.py" \
+	"$PYTHON_BIN" "$SEED_SCRIPT" \
 		--root "$ROOT_DIR" \
 		--scenario "$TEST_SCENARIO"
 fi
