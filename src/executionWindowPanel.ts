@@ -6,6 +6,7 @@ import { resolveOrchestrationStateRootPath } from './agentPaths';
 import {
 	appendError,
 	appendControllerSemanticClarification,
+	applyModelAction,
 	createInitialModel,
 	getArtifactById,
 	type ExecutionWindowModel,
@@ -356,10 +357,16 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		action: ModelAction,
 		options: { clearSemanticLoop?: boolean } = {}
 	) {
+		const previousModel = this.model;
+		if (this.shouldApplyOptimisticExecutePlan(action)) {
+			this.model = applyModelAction(this.model, action);
+			this.postState();
+		}
 		try {
 			this.model = await this.transport.dispatch(action);
 			this.hasAuthoritativeTransportState = true;
 		} catch (error) {
+			this.model = previousModel;
 			this.pushTransportError(
 				error,
 				'Orchestration action failed',
@@ -372,6 +379,17 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			this.semanticLoopState = undefined;
 		}
 		this.postState();
+	}
+
+	private shouldApplyOptimisticExecutePlan(action: ModelAction): boolean {
+		return Boolean(
+			action.type === 'execute_plan' &&
+				action.request_id &&
+				this.model.planReadyRequest &&
+				this.model.snapshot.currentStage === 'plan_ready' &&
+				this.model.snapshot.permissionScope === 'plan' &&
+				action.context_ref === this.model.planReadyRequest.contextRef
+		);
 	}
 
 	private nextRequestId(): string {
@@ -1857,6 +1875,9 @@ export function getExecutionWindowHtml(
 			if (model?.activeClarification) {
 				return 'Needs input';
 			}
+			if (snapshot.currentStage === 'plan_executing') {
+				return 'Running';
+			}
 			if (isDispatchQueued(snapshot)) {
 				return 'Executor ready';
 			}
@@ -1939,6 +1960,9 @@ export function getExecutionWindowHtml(
 			if (isPlanReady(snapshot)) {
 				return 'Plan ready';
 			}
+			if (snapshot.currentStage === 'plan_executing') {
+				return 'Executor running';
+			}
 			if (isDispatchQueued(snapshot)) {
 				return 'Executor is ready';
 			}
@@ -2003,6 +2027,8 @@ export function getExecutionWindowHtml(
 			switch (snapshot.currentStage) {
 				case 'dispatch_queued':
 					return 'Executor is ready';
+				case 'plan_executing':
+					return 'Executor running';
 				case 'reviewer_completed':
 					return 'Reviewer checked';
 				case 'permission_needed':
@@ -2035,7 +2061,7 @@ export function getExecutionWindowHtml(
 			}
 
 			if (item.type === 'system_status') {
-				if (item.title === 'Dispatch queued') {
+				if (item.title === 'Dispatch queued' || item.title === 'Executor starting') {
 					return false;
 				}
 				return item.title !== 'Ready when you are';
@@ -2066,7 +2092,10 @@ export function getExecutionWindowHtml(
 			if (item.type === 'user_message' && item.turn_type === 'permission_action') {
 				return false;
 			}
-			if (item.type === 'system_status' && item.title === 'Dispatch queued') {
+			if (
+				item.type === 'system_status' &&
+				(item.title === 'Dispatch queued' || item.title === 'Executor starting')
+			) {
 				return false;
 			}
 			if (item.type === 'permission_request') {
@@ -2568,6 +2597,12 @@ export function getExecutionWindowHtml(
 					'Preparing the request for the Governor...'
 				);
 				scheduleGovernorWaitHeartbeat(event);
+			} else if (event.stage === 'executor_run_started') {
+				replaceForegroundTail(
+					'Executor is running the plan',
+					'active',
+					'Executor is working from the accepted plan...'
+				);
 			} else if (event.stage === 'turn_request_sent') {
 				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
 				replaceForegroundTail(
@@ -3496,6 +3531,16 @@ export function getExecutionWindowHtml(
 					return {
 						title: 'State changed',
 						body: 'Refresh and use the current action surface.',
+					};
+				case 'error.plan_not_ready':
+					return {
+						title: fallback.title || 'Plan not ready',
+						body: fallback.body || 'Refresh and use the current plan action.',
+					};
+				case 'error.permission_scope_too_low':
+					return {
+						title: fallback.title || 'Permission needed',
+						body: fallback.body || 'Choose the required permission scope before continuing.',
 					};
 				case 'error.duplicate_request':
 					return {

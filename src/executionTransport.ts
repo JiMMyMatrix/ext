@@ -292,6 +292,13 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 			message: `Orchestration command started: ${command}`,
 			requestId: action?.request_id,
 		});
+		if (command === 'execute-plan') {
+			this.emitRuntimeEvent({
+				stage: 'executor_run_started',
+				message: 'Executor is running the accepted plan...',
+				requestId: action?.request_id,
+			});
+		}
 		let result: unknown;
 		try {
 			result = await this.runRaw(group, command, action);

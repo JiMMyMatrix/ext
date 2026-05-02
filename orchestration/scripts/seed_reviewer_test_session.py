@@ -51,7 +51,6 @@ def _latest_dispatch_refs(model: dict[str, Any], repo_root: Path) -> dict[str, A
 def seed_reviewer_ready_session(repo_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 	payload = seed_plan_ready_session(repo_root)
 	model = payload["model"]
-	model["snapshot"]["permissionScope"] = "execute"
 	session.save_session(payload, repo_root=repo_root)
 
 	model = session.dispatch_session_action(

@@ -3298,6 +3298,24 @@ def handle_execute_plan(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
+
+	def block_plan_execution(
+		title: str,
+		body: str,
+		*,
+		presentation_key: str = "error.plan_not_ready",
+		presentation_args: dict[str, Any] | None = None,
+	) -> None:
+		_append_error(
+			model,
+			title,
+			body,
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key=presentation_key,
+			presentation_args=presentation_args,
+		)
+
 	if not request_id:
 		_append_error(
 			model,
@@ -3320,23 +3338,57 @@ def handle_execute_plan(
 		return
 	plan_ready = model.get("planReadyRequest")
 	if not isinstance(plan_ready, dict):
-		_append_error(
-			model,
+		block_plan_execution(
 			"No plan is ready",
 			"There is no current plan checkpoint to execute.",
-			now,
-			in_response_to_request_id=request_id,
+			presentation_args={"reason": "missing_plan"},
+		)
+		return
+	if not isinstance(model.get("acceptedIntakeSummary"), dict):
+		block_plan_execution(
+			"Accepted intake missing",
+			"The current plan no longer has an accepted intake artifact. Refresh before executing.",
+			presentation_args={"reason": "missing_intake"},
 		)
 		return
 	if model["snapshot"].get("currentStage") != "plan_ready":
-		_append_error(
-			model,
+		block_plan_execution(
 			"Plan changed",
 			"The current session is no longer at a plan-ready checkpoint.",
-			now,
-			in_response_to_request_id=request_id,
 			presentation_key="error.stale_context",
-			presentation_args={"kind": "plan"},
+			presentation_args={"kind": "plan", "reason": "stage_changed"},
+		)
+		return
+	if model["snapshot"].get("permissionScope") != "plan":
+		block_plan_execution(
+			"Plan permission needed",
+			"Return to Plan scope before executing this plan checkpoint.",
+			presentation_key="error.permission_scope_too_low",
+			presentation_args={
+				"required": "plan",
+				"current": model["snapshot"].get("permissionScope") or "unset",
+			},
+		)
+		return
+	if model["snapshot"].get("pendingPermissionRequest"):
+		block_plan_execution(
+			"Permission still pending",
+			"Choose or decline the current permission request before executing the plan.",
+			presentation_args={"reason": "pending_permission"},
+		)
+		return
+	if model.get("activeClarification"):
+		block_plan_execution(
+			"Clarification still open",
+			"Answer the current clarification before executing the plan.",
+			presentation_args={"reason": "active_clarification"},
+		)
+		return
+	if model["snapshot"].get("runState") == "running":
+		block_plan_execution(
+			"Work already running",
+			"Wait for the current run to finish, or stop it before executing this plan.",
+			presentation_args={"reason": "run_in_progress"},
 		)
 		return
 	if not _context_matches(plan_ready.get("contextRef"), context_ref):

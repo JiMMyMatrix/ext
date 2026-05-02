@@ -89,6 +89,17 @@ def emit_plan_execution_dispatch(
     )
     objective = plan_execution_objective(model)
     accepted_ref = accepted_intake_ref(session, repo_root)
+    if not accepted_ref:
+        append_error(
+            model,
+            "Accepted intake artifact missing",
+            "The accepted intake artifact is required before Executor can start.",
+            now,
+            in_response_to_request_id=request_id,
+            presentation_key="error.plan_not_ready",
+            presentation_args={"reason": "missing_accepted_intake_artifact"},
+        )
+        return None
     plan_ready = model.get("planReadyRequest") if isinstance(model.get("planReadyRequest"), dict) else {}
     inputs = [
         ref

@@ -1402,6 +1402,97 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["feed"][-1]["type"], "error")
             self.assertEqual(model["feed"][-1].get("presentation_key"), "error.stale_context")
 
+    def test_session_execute_plan_without_accepted_intake_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Analyze the repo.",
+                request_id="corgi-request:analyze",
+                repo_root=repo_root,
+                **self._semantic_submit(),
+            )
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Focus on architecture, structure, and subsystem boundaries.",
+                request_id="corgi-request:clarify",
+                context_ref=model["activeClarification"]["contextRef"],
+                repo_root=repo_root,
+            )
+            with self._mock_governor_dialogue(body="Planning response."):
+                model = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="plan",
+                    request_id="corgi-request:plan",
+                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                    repo_root=repo_root,
+                )
+
+            state = session.load_session(repo_root)
+            state["model"]["acceptedIntakeSummary"] = None
+            session.save_session(state, repo_root=repo_root)
+            model = session.dispatch_session_action(
+                "execute_plan",
+                request_id="corgi-request:missing-intake-execute",
+                context_ref=model["planReadyRequest"]["contextRef"],
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["currentStage"], "plan_ready")
+            self.assertEqual(model["snapshot"]["permissionScope"], "plan")
+            self.assertIsNotNone(model["planReadyRequest"])
+            self.assertEqual(model["feed"][-1]["type"], "error")
+            self.assertEqual(model["feed"][-1]["title"], "Accepted intake missing")
+            self.assertEqual(model["feed"][-1].get("presentation_key"), "error.plan_not_ready")
+            self.assertEqual(
+                model["feed"][-1].get("presentation_args"),
+                {"reason": "missing_intake"},
+            )
+
+    def test_session_execute_plan_without_accepted_intake_artifact_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Analyze the repo.",
+                request_id="corgi-request:analyze",
+                repo_root=repo_root,
+                **self._semantic_submit(),
+            )
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Focus on architecture, structure, and subsystem boundaries.",
+                request_id="corgi-request:clarify",
+                context_ref=model["activeClarification"]["contextRef"],
+                repo_root=repo_root,
+            )
+            with self._mock_governor_dialogue(body="Planning response."):
+                model = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="plan",
+                    request_id="corgi-request:plan",
+                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                    repo_root=repo_root,
+                )
+
+            state = session.load_session(repo_root)
+            intake_ref = state["meta"]["activeIntakeRef"]
+            intake.accepted_intake_path(intake_ref, repo_root=repo_root).unlink()
+            session.save_session(state, repo_root=repo_root)
+            model = session.dispatch_session_action(
+                "execute_plan",
+                request_id="corgi-request:missing-artifact-execute",
+                context_ref=model["planReadyRequest"]["contextRef"],
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["currentStage"], "plan_ready")
+            self.assertEqual(model["snapshot"]["permissionScope"], "plan")
+            self.assertEqual(model["feed"][-1]["type"], "error")
+            self.assertEqual(model["feed"][-1]["title"], "Accepted intake artifact missing")
+            self.assertEqual(model["feed"][-1].get("presentation_key"), "error.plan_not_ready")
+            self.assertFalse((repo_root / ".agent" / "dispatches").exists())
+
     def test_session_execute_plan_without_request_id_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)

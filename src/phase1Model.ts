@@ -782,7 +782,18 @@ function buildGovernorDialogueReply(
 
 	if (snapshot.currentStage === 'dispatch_queued' || snapshot.runState === 'queued') {
 		return {
-			body: `Current progress: dispatch truth is queued${task ? ` for ${task}` : ''}. Executor has not started yet.`,
+			body: `Current progress: Executor is ready${task ? ` for ${task}` : ''}.`,
+			details: [
+				`Prompt: ${summarizePrompt(prompt)}`,
+				`Current actor: ${actor}`,
+				`Current stage: ${stage}`,
+			],
+		};
+	}
+
+	if (snapshot.currentStage === 'plan_executing') {
+		return {
+			body: `Current progress: Executor is running${task ? ` on ${task}` : ''}.`,
 			details: [
 				`Prompt: ${summarizePrompt(prompt)}`,
 				`Current actor: ${actor}`,
@@ -1010,15 +1021,69 @@ function scopeSatisfies(current: PermissionScope, required: PermissionScope): bo
 function hasPlanReadyRequest(model: ExecutionWindowModel): model is ExecutionWindowModel & {
 	planReadyRequest: PlanReadyRequest;
 } {
-	return Boolean(
-		model.planReadyRequest &&
-			model.acceptedIntakeSummary &&
-			model.snapshot.currentStage === 'plan_ready' &&
-			model.snapshot.permissionScope === 'plan' &&
-			!model.snapshot.pendingPermissionRequest &&
-			!model.activeClarification &&
-			model.snapshot.runState !== 'running'
-	);
+	return !planReadyBlocker(model);
+}
+
+function planReadyBlocker(
+	model: ExecutionWindowModel
+): { title: string; body: string; presentationKey: string; presentationArgs?: Record<string, unknown> } | undefined {
+	if (!model.planReadyRequest) {
+		return {
+			title: 'No plan is ready',
+			body: 'There is no current plan checkpoint to execute.',
+			presentationKey: 'error.plan_not_ready',
+			presentationArgs: { reason: 'missing_plan' },
+		};
+	}
+	if (!model.acceptedIntakeSummary) {
+		return {
+			title: 'Accepted intake missing',
+			body: 'The current plan no longer has an accepted intake artifact. Refresh before executing.',
+			presentationKey: 'error.plan_not_ready',
+			presentationArgs: { reason: 'missing_intake' },
+		};
+	}
+	if (model.snapshot.currentStage !== 'plan_ready') {
+		return {
+			title: 'Plan changed',
+			body: 'The current session is no longer at a plan-ready checkpoint.',
+			presentationKey: 'error.stale_context',
+			presentationArgs: { kind: 'plan', reason: 'stage_changed' },
+		};
+	}
+	if (model.snapshot.permissionScope !== 'plan') {
+		return {
+			title: 'Plan permission needed',
+			body: 'Return to Plan scope before executing this plan checkpoint.',
+			presentationKey: 'error.permission_scope_too_low',
+			presentationArgs: { required: 'plan', current: model.snapshot.permissionScope },
+		};
+	}
+	if (model.snapshot.pendingPermissionRequest) {
+		return {
+			title: 'Permission still pending',
+			body: 'Choose or decline the current permission request before executing the plan.',
+			presentationKey: 'error.plan_not_ready',
+			presentationArgs: { reason: 'pending_permission' },
+		};
+	}
+	if (model.activeClarification) {
+		return {
+			title: 'Clarification still open',
+			body: 'Answer the current clarification before executing the plan.',
+			presentationKey: 'error.plan_not_ready',
+			presentationArgs: { reason: 'active_clarification' },
+		};
+	}
+	if (model.snapshot.runState === 'running') {
+		return {
+			title: 'Work already running',
+			body: 'Wait for the current run to finish, or stop it before executing this plan.',
+			presentationKey: 'error.plan_not_ready',
+			presentationArgs: { reason: 'run_in_progress' },
+		};
+	}
+	return undefined;
 }
 
 function permissionScopesThatSatisfy(required: PermissionScope): PermissionScope[] {
@@ -1716,18 +1781,22 @@ export function applyModelAction(
 				);
 			}
 
-			if (!hasPlanReadyRequest(model)) {
+			const blocker = planReadyBlocker(model);
+			if (blocker) {
 				return appendError(
 					model,
-					'No plan is ready',
-					'There is no current plan checkpoint to execute.',
+					blocker.title,
+					blocker.body,
 					undefined,
 					now,
-					action.request_id
+					action.request_id,
+					blocker.presentationKey,
+					blocker.presentationArgs
 				);
 			}
+			const planReadyRequest = model.planReadyRequest as PlanReadyRequest;
 
-			if (!hasFreshContextRef(action, model.planReadyRequest.contextRef)) {
+			if (!hasFreshContextRef(action, planReadyRequest.contextRef)) {
 				return appendError(
 					model,
 					'Plan changed',
@@ -1744,9 +1813,9 @@ export function applyModelAction(
 				...model,
 				snapshot: refreshSnapshot(model.snapshot, now, {
 					currentActor: 'orchestration',
-					currentStage: 'dispatch_queued',
+					currentStage: 'plan_executing',
 					permissionScope: 'execute',
-					runState: 'queued',
+					runState: 'running',
 					pendingPermissionRequest: undefined,
 					pendingInterrupt: undefined,
 					transportState: 'connected',
@@ -1755,8 +1824,8 @@ export function applyModelAction(
 					...model.feed,
 					createFeedItem(
 						'system_status',
-						'Dispatch queued',
-						'Execute plan was confirmed and dispatch truth was queued for the accepted plan.',
+						'Executor starting',
+						'Execute plan was confirmed. Executor is starting from the accepted plan.',
 						true,
 						now,
 						undefined,
@@ -1767,7 +1836,7 @@ export function applyModelAction(
 						}
 					),
 				],
-				activeForegroundRequestId: action.request_id ?? model.planReadyRequest.foregroundRequestId,
+				activeForegroundRequestId: action.request_id ?? planReadyRequest.foregroundRequestId,
 				planReadyRequest: undefined,
 			};
 		}

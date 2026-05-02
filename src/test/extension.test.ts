@@ -1089,6 +1089,45 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
 	});
 
+	test('webview snapshot shows plan execution as active goal state', () => {
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			acceptedIntakeSummary: {
+				title: 'Analyze repo',
+				body: 'Analyze the repository architecture.',
+			},
+			activeForegroundRequestId: 'corgi-request:test:execute',
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Analyze the repository architecture.',
+				currentActor: 'orchestration',
+				currentStage: 'plan_executing',
+				permissionScope: 'execute',
+				runState: 'running',
+				recentArtifacts: [],
+			},
+			feed: [
+				{
+					id: 'executor-starting',
+					type: 'system_status',
+					title: 'Executor starting',
+					body: 'Executor is starting from the accepted plan.',
+					timestamp: '2026-04-10T10:00:30.000Z',
+					authoritative: true,
+					in_response_to_request_id: 'corgi-request:test:execute',
+				},
+			],
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+		const messageText = snapshot.messages.map((message) => message.text).join('\n');
+
+		assert.match(snapshot.goalStrip, /Step: Executor running/);
+		assert.match(snapshot.goalStrip, /Running/);
+		assert.ok(!messageText.includes('Executor starting'));
+		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
+	});
+
 	test('transport selection resolves the real orchestration workspace when available', () => {
 		const target = resolveExecutionTransportTarget(
 			vscode.ExtensionMode.Development,
@@ -1808,15 +1847,15 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(continuationModel.activeClarification, undefined);
 		assert.strictEqual(continuationModel.snapshot.permissionScope, 'execute');
 		assert.strictEqual(continuationModel.snapshot.currentActor, 'orchestration');
-		assert.strictEqual(continuationModel.snapshot.currentStage, 'dispatch_queued');
-		assert.strictEqual(continuationModel.snapshot.runState, 'queued');
+		assert.strictEqual(continuationModel.snapshot.currentStage, 'plan_executing');
+		assert.strictEqual(continuationModel.snapshot.runState, 'running');
 		assert.strictEqual(continuationModel.snapshot.pendingPermissionRequest, undefined);
 		assert.ok(continuationModel.acceptedIntakeSummary);
 		assert.strictEqual(continuationModel.planReadyRequest, undefined);
 		assert.ok(!continuationModel.feed.some((item) => item.type === 'clarification_request' && item.in_response_to_request_id === 'req-do-it'));
 		const lastItem = continuationModel.feed[continuationModel.feed.length - 1];
 		assert.strictEqual(lastItem.type, 'system_status');
-		assert.strictEqual(lastItem.title, 'Dispatch queued');
+		assert.strictEqual(lastItem.title, 'Executor starting');
 		assert.strictEqual(lastItem.in_response_to_request_id, 'req-do-it');
 	});
 
@@ -1854,6 +1893,50 @@ suite('Corgi Webview UX', () => {
 		const lastItem = failedModel.feed[failedModel.feed.length - 1];
 		assert.strictEqual(lastItem.type, 'error');
 		assert.strictEqual(lastItem.presentation_key, 'error.stale_context');
+	});
+
+	test('execute plan action without accepted intake fails with specific plan error', () => {
+		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+			type: 'submit_prompt',
+			text: 'Analyze the repo.',
+			semantic_route_type: 'governed_work_intent',
+			request_id: 'req-analyze',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+		const clarificationModel = applyModelAction(promptModel, {
+			type: 'answer_clarification',
+			text: 'Focus on architecture, structure, and subsystem boundaries.',
+			context_ref: promptModel.activeClarification?.contextRef,
+			now: '2026-04-10T10:00:10.000Z',
+		});
+		const planReadyModel = applyModelAction(clarificationModel, {
+			type: 'set_permission_scope',
+			permission_scope: 'plan',
+			context_ref: clarificationModel.snapshot.pendingPermissionRequest?.contextRef,
+			request_id: 'req-plan-click',
+			now: '2026-04-10T10:00:15.000Z',
+		});
+		const failedModel = applyModelAction(
+			{
+				...planReadyModel,
+				acceptedIntakeSummary: undefined,
+			},
+			{
+				type: 'execute_plan',
+				context_ref: planReadyModel.planReadyRequest?.contextRef,
+				request_id: 'req-missing-intake-execute',
+				now: '2026-04-10T10:00:20.000Z',
+			}
+		);
+
+		assert.strictEqual(failedModel.snapshot.currentStage, 'plan_ready');
+		assert.strictEqual(failedModel.snapshot.permissionScope, 'plan');
+		assert.ok(failedModel.planReadyRequest);
+		const lastItem = failedModel.feed[failedModel.feed.length - 1];
+		assert.strictEqual(lastItem.type, 'error');
+		assert.strictEqual(lastItem.title, 'Accepted intake missing');
+		assert.strictEqual(lastItem.presentation_key, 'error.plan_not_ready');
+		assert.deepStrictEqual(lastItem.presentation_args, { reason: 'missing_intake' });
 	});
 
 	test('execute plan action without request id fails closed', () => {
