@@ -1703,6 +1703,19 @@ export function applyModelAction(
 		}
 
 		case 'execute_plan': {
+			if (!action.request_id) {
+				return appendError(
+					model,
+					'Request id required',
+					'Execute plan requires a fresh controller request id.',
+					undefined,
+					now,
+					undefined,
+					'error.stale_context',
+					{ kind: 'plan' }
+				);
+			}
+
 			if (!hasPlanReadyRequest(model)) {
 				return appendError(
 					model,

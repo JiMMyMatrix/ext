@@ -1822,11 +1822,18 @@ export function getExecutionWindowHtml(
 			return snapshot.currentStage === 'governor_decision_recorded';
 		}
 
-		function retainOptimisticHidesUntilAuthoritativeChange() {
-			// Same-context action surfaces should not reappear on a timer after
-			// the user clicks them. They clear only when authoritative state
-			// removes or replaces that context.
-		}
+			function retainOptimisticHidesUntilAuthoritativeChange() {
+				// Same-context action surfaces should not reappear on a timer after
+				// the user clicks them. They clear only when authoritative state
+				// removes or replaces that context.
+			}
+
+			function clearOptimisticActionHides() {
+				ui.pendingPermissionContextRef = undefined;
+				ui.pendingPermissionHiddenAt = undefined;
+				ui.pendingPlanContextRef = undefined;
+				ui.pendingPlanHiddenAt = undefined;
+			}
 
 		function isPlanReady(snapshot) {
 			return Boolean(
@@ -2844,15 +2851,18 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
-			const requestKey = ui.foregroundRequest.requestKey;
-			if (latestPostExecutionStatus(requestKey) || latestDispatchQueuedStatus(requestKey)) {
-				clearForegroundRequest();
-				return;
-			}
-			if (latestGovernorReplyForRequest(requestKey)) {
-				clearForegroundRequest();
-				return;
-			}
+				const requestKey = ui.foregroundRequest.requestKey;
+				if (latestPostExecutionStatus(requestKey) || latestDispatchQueuedStatus(requestKey)) {
+					clearForegroundRequest();
+					return;
+				}
+				if (latestRequestError(requestKey)) {
+					clearOptimisticActionHides();
+				}
+				if (latestGovernorReplyForRequest(requestKey)) {
+					clearForegroundRequest();
+					return;
+				}
 
 			if (
 				ui.foregroundRequest.status === 'live' &&
@@ -3915,11 +3925,12 @@ export function getExecutionWindowHtml(
 				return;
 			}
 
-			const action = target.dataset.action;
-			if (action === 'refresh_state') {
-				vscode.postMessage({ type: 'refresh_state' });
-				scheduleWebviewSnapshot('refresh_state_click');
-				return;
+				const action = target.dataset.action;
+				if (action === 'refresh_state') {
+					clearOptimisticActionHides();
+					vscode.postMessage({ type: 'refresh_state' });
+					scheduleWebviewSnapshot('refresh_state_click');
+					return;
 			}
 			if (action === 'execute_plan') {
 				const requestId = nextForegroundRequestKey();

@@ -3298,6 +3298,16 @@ def handle_execute_plan(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
+	if not request_id:
+		_append_error(
+			model,
+			"Request id required",
+			"Execute plan requires a fresh controller request id.",
+			now,
+			presentation_key="error.stale_context",
+			presentation_args={"kind": "plan"},
+		)
+		return
 	if session_ref is not None and not _session_ref_matches(model, session_ref):
 		_append_error(
 			model,

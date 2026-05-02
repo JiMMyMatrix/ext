@@ -1396,6 +1396,47 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["feed"][-1]["type"], "error")
             self.assertEqual(model["feed"][-1].get("presentation_key"), "error.stale_context")
 
+    def test_session_execute_plan_without_request_id_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            model = session.dispatch_session_action(
+                "submit_prompt",
+                text="Analyze the repo.",
+                request_id="corgi-request:analyze",
+                repo_root=repo_root,
+                **self._semantic_submit(),
+            )
+            model = session.dispatch_session_action(
+                "answer_clarification",
+                text="Focus on architecture, structure, and subsystem boundaries.",
+                request_id="corgi-request:clarify",
+                context_ref=model["activeClarification"]["contextRef"],
+                repo_root=repo_root,
+            )
+            with self._mock_governor_dialogue(body="Planning response."):
+                model = session.dispatch_session_action(
+                    "set_permission_scope",
+                    permission_scope="plan",
+                    request_id="corgi-request:plan",
+                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                    repo_root=repo_root,
+                )
+
+            model = session.dispatch_session_action(
+                "execute_plan",
+                context_ref=model["planReadyRequest"]["contextRef"],
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(model["snapshot"]["currentStage"], "plan_ready")
+            self.assertEqual(model["snapshot"]["permissionScope"], "plan")
+            self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
+            self.assertIsNotNone(model["planReadyRequest"])
+            self.assertFalse((repo_root / ".agent" / "dispatches").exists())
+            self.assertEqual(model["feed"][-1]["type"], "error")
+            self.assertEqual(model["feed"][-1]["title"], "Request id required")
+            self.assertEqual(model["feed"][-1].get("presentation_key"), "error.stale_context")
+
     def test_session_execute_plan_uses_configured_agent_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)

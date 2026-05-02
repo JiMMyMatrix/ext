@@ -799,6 +799,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('data-action="refresh_state"'));
 		assert.ok(webviewSource.includes('authoritativePermissionContextRef() !== ui.pendingPermissionContextRef'));
 		assert.ok(webviewSource.includes('authoritativePlanContextRef() !== ui.pendingPlanContextRef'));
+		assert.ok(webviewSource.includes('function clearOptimisticActionHides()'));
+		assert.ok(webviewSource.includes('if (latestRequestError(requestKey))'));
+		assert.ok(webviewSource.includes('clearOptimisticActionHides();'));
 		assert.ok(!webviewSource.includes('pendingPermissionRequest?.contextRef !=='));
 	});
 
@@ -1850,6 +1853,43 @@ suite('Corgi Webview UX', () => {
 		assert.ok(failedModel.planReadyRequest);
 		const lastItem = failedModel.feed[failedModel.feed.length - 1];
 		assert.strictEqual(lastItem.type, 'error');
+		assert.strictEqual(lastItem.presentation_key, 'error.stale_context');
+	});
+
+	test('execute plan action without request id fails closed', () => {
+		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
+			type: 'submit_prompt',
+			text: 'Analyze the repo.',
+			semantic_route_type: 'governed_work_intent',
+			request_id: 'req-analyze',
+			now: '2026-04-10T10:00:05.000Z',
+		});
+		const clarificationModel = applyModelAction(promptModel, {
+			type: 'answer_clarification',
+			text: 'Focus on architecture, structure, and subsystem boundaries.',
+			context_ref: promptModel.activeClarification?.contextRef,
+			now: '2026-04-10T10:00:10.000Z',
+		});
+		const planReadyModel = applyModelAction(clarificationModel, {
+			type: 'set_permission_scope',
+			permission_scope: 'plan',
+			context_ref: clarificationModel.snapshot.pendingPermissionRequest?.contextRef,
+			request_id: 'req-plan-click',
+			now: '2026-04-10T10:00:15.000Z',
+		});
+		const failedModel = applyModelAction(planReadyModel, {
+			type: 'execute_plan',
+			context_ref: planReadyModel.planReadyRequest?.contextRef,
+			now: '2026-04-10T10:00:20.000Z',
+		});
+
+		assert.strictEqual(failedModel.snapshot.currentStage, 'plan_ready');
+		assert.strictEqual(failedModel.snapshot.permissionScope, 'plan');
+		assert.strictEqual(failedModel.snapshot.pendingPermissionRequest, undefined);
+		assert.ok(failedModel.planReadyRequest);
+		const lastItem = failedModel.feed[failedModel.feed.length - 1];
+		assert.strictEqual(lastItem.type, 'error');
+		assert.strictEqual(lastItem.title, 'Request id required');
 		assert.strictEqual(lastItem.presentation_key, 'error.stale_context');
 	});
 
