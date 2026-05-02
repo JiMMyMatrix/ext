@@ -893,8 +893,49 @@ export function getExecutionWindowHtml(
 
 		.header {
 			flex: 0 0 auto;
-			padding: 10px 12px 8px;
+			padding: 9px 12px 7px;
 			border-bottom: 1px solid var(--line);
+		}
+
+		.goal-strip {
+			display: grid;
+			gap: 3px;
+			min-width: 0;
+		}
+
+		.goal-main,
+		.goal-meta {
+			display: flex;
+			align-items: center;
+			gap: 7px;
+			min-width: 0;
+		}
+
+		.goal-main {
+			color: var(--text);
+			font-size: 12px;
+			font-weight: 600;
+		}
+
+		.goal-title,
+		.goal-step {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.goal-label {
+			color: var(--muted);
+			font-weight: 500;
+		}
+
+		.goal-meta {
+			color: var(--muted);
+			font-size: 11px;
+		}
+
+		.goal-separator {
+			color: var(--faint);
 		}
 
 		.status-dot {
@@ -1156,6 +1197,40 @@ export function getExecutionWindowHtml(
 			color: var(--muted);
 		}
 
+		.message.result-summary {
+			border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+			border-radius: 12px;
+			background: color-mix(in srgb, var(--panel-raised) 70%, transparent);
+			padding: 8px 10px;
+		}
+
+		.result-title {
+			color: var(--text);
+			font-size: 12px;
+			font-weight: 700;
+		}
+
+		.result-body {
+			color: var(--muted);
+			font-size: 12px;
+			line-height: 1.45;
+		}
+
+		.result-details {
+			margin-top: 6px;
+			color: var(--muted);
+			font-size: 12px;
+		}
+
+		.result-details summary {
+			cursor: pointer;
+			user-select: none;
+		}
+
+		.result-details .message-body {
+			margin-top: 6px;
+		}
+
 		.activity-row {
 			display: grid;
 			grid-template-columns: 18px minmax(0, 1fr);
@@ -1360,7 +1435,7 @@ export function getExecutionWindowHtml(
 			border-radius: 14px;
 			background: var(--panel);
 			display: grid;
-			gap: 8px;
+			gap: 7px;
 			padding: 8px;
 		}
 
@@ -1375,6 +1450,10 @@ export function getExecutionWindowHtml(
 			flex-wrap: wrap;
 			gap: 6px;
 			align-items: center;
+		}
+
+		.composer-actions button {
+			padding: 4px 9px;
 		}
 
 		textarea {
@@ -1452,7 +1531,7 @@ export function getExecutionWindowHtml(
 <body>
 	<div class="app" id="app" hidden>
 		<header class="header">
-			<div id="headerContent"></div>
+			<div class="goal-strip" id="headerContent"></div>
 		</header>
 		<main class="feed" id="feed"></main>
 		<footer class="footer">
@@ -1572,6 +1651,7 @@ export function getExecutionWindowHtml(
 				reason,
 				renderedAt: new Date().toISOString(),
 				header: compactText(headerContent.innerText || headerContent.textContent || '', 600),
+				goalStrip: compactText(headerContent.innerText || headerContent.textContent || '', 600),
 				state: {
 					currentActor: snapshot.currentActor || '',
 					currentStage: snapshot.currentStage || '',
@@ -1771,16 +1851,16 @@ export function getExecutionWindowHtml(
 				return 'Needs input';
 			}
 			if (isDispatchQueued(snapshot)) {
-				return 'Queued';
+				return 'Executor ready';
 			}
 			if (isGovernorDecisionRecorded(snapshot)) {
 				return 'Finalized';
 			}
 			if (isReviewerCompleted(snapshot)) {
-				return 'Reviewed';
+				return 'Done';
 			}
 			if (isExecutorCompleted(snapshot)) {
-				return 'Completed';
+				return 'Done';
 			}
 			if (snapshot.runState === 'running') {
 				return 'Running';
@@ -1836,6 +1916,57 @@ export function getExecutionWindowHtml(
 			return 'Start with a concrete task, or ask what is happening.';
 		}
 
+		function goalStepLabel(snapshot) {
+			if (model?.activeClarification) {
+				return 'Clarification needed';
+			}
+			if (snapshot.pendingPermissionRequest) {
+				return 'Permission needed';
+			}
+			if (snapshot.pendingInterrupt) {
+				return 'Stop requested';
+			}
+			if (snapshot.currentStage === 'semantic_intake') {
+				return 'Understanding request';
+			}
+			if (isPlanReady(snapshot)) {
+				return 'Plan ready';
+			}
+			if (isDispatchQueued(snapshot)) {
+				return 'Executor is ready';
+			}
+			if (isGovernorDecisionRecorded(snapshot)) {
+				return 'Final decision recorded';
+			}
+			if (isReviewerCompleted(snapshot)) {
+				return 'Reviewer checked the result';
+			}
+			if (isExecutorCompleted(snapshot)) {
+				return 'Executor wrote the result';
+			}
+			if (snapshot.currentActor === 'governor' && snapshot.runState === 'running') {
+				return 'Governor is planning';
+			}
+			if (snapshot.currentActor === 'executor') {
+				return 'Executor is working';
+			}
+			if (snapshot.currentActor === 'reviewer') {
+				return 'Reviewer is checking';
+			}
+			if (snapshot.runState === 'running') {
+				return 'Corgi is working';
+			}
+			return snapshot.task ? 'Ready to continue' : 'Ready';
+		}
+
+		function goalDisplayState(snapshot, stale) {
+			return {
+				title: compactText(railTitle(snapshot), 96),
+				step: goalStepLabel(snapshot),
+				status: statusLabel(snapshot, stale),
+			};
+		}
+
 		function summarizeToken(value, fallback) {
 			if (!value) {
 				return fallback;
@@ -1862,7 +1993,24 @@ export function getExecutionWindowHtml(
 		}
 
 		function stageSummary(snapshot) {
-			return summarizeToken(snapshot.currentStage, '');
+			switch (snapshot.currentStage) {
+				case 'dispatch_queued':
+					return 'Executor is ready';
+				case 'reviewer_completed':
+					return 'Reviewer checked';
+				case 'permission_needed':
+					return 'Permission needed';
+				case 'semantic_intake':
+					return 'Understanding request';
+				case 'executor_completed':
+					return 'Executor completed';
+				case 'governor_decision_recorded':
+					return 'Finalized';
+				case 'plan_ready':
+					return 'Plan ready';
+				default:
+					return summarizeToken(snapshot.currentStage, '');
+			}
 		}
 
 		function isMeaningfulMilestone(item) {
@@ -1880,6 +2028,9 @@ export function getExecutionWindowHtml(
 			}
 
 			if (item.type === 'system_status') {
+				if (item.title === 'Dispatch queued') {
+					return false;
+				}
 				return item.title !== 'Ready when you are';
 			}
 
@@ -1903,6 +2054,9 @@ export function getExecutionWindowHtml(
 
 		function shouldRenderInTranscript(item) {
 			if (item.type === 'artifact_reference' || item.type === 'shell_event') {
+				return false;
+			}
+			if (item.type === 'system_status' && item.title === 'Dispatch queued') {
 				return false;
 			}
 			if (item.type === 'permission_request') {
@@ -1967,27 +2121,26 @@ export function getExecutionWindowHtml(
 			);
 		}
 
+		function renderSourceActionForItem(item) {
+			const artifact = milestoneArtifact(item);
+			if (!artifact) {
+				return '';
+			}
+			return (
+				'<div class="inline-actions">' +
+					renderArtifactQuickButton(artifact) +
+				'</div>'
+			);
+		}
+
 		function renderContextChips(snapshot, limit) {
 			const chips = [];
-			if (model?.activeClarification) {
-				chips.push('<span class="pill is-warning">Clarification</span>');
-			}
-			if (snapshot.pendingPermissionRequest) {
-				chips.push('<span class="pill is-warning">Permission</span>');
-			}
 			if (snapshot.permissionScope && snapshot.permissionScope !== 'unset') {
 				chips.push(
 					'<span class="pill is-status">Scope: ' +
 						escapeHtml(snapshot.permissionScope.charAt(0).toUpperCase() + snapshot.permissionScope.slice(1)) +
 					'</span>'
 				);
-			}
-			if (snapshot.pendingInterrupt) {
-				chips.push('<span class="pill is-danger">Stop pending</span>');
-			} else if (isDispatchQueued(snapshot)) {
-				chips.push('<span class="pill is-status">Dispatch queued</span>');
-			} else if (snapshot.runState === 'running') {
-				chips.push('<span class="pill is-primary">Running</span>');
 			}
 			if (typeof limit !== 'number' || limit < 0 || chips.length <= limit) {
 				return chips.join('');
@@ -2428,13 +2581,13 @@ export function getExecutionWindowHtml(
 				const isPlan = event.runtimeKind === 'plan';
 				replaceForegroundTail(
 					isSemanticIntake
-						? 'Governor is interpreting the request'
+						? 'Understanding request'
 						: isPlan
 							? 'Governor is drafting the plan'
 							: 'Governor is drafting a reply',
 					'active',
 					isSemanticIntake
-						? 'Governor is interpreting the request...'
+						? 'Understanding request...'
 						: isPlan
 							? 'Governor is drafting the plan...'
 							: 'Governor is drafting a reply...'
@@ -2769,7 +2922,7 @@ export function getExecutionWindowHtml(
 				latestTerminalStatus?.title === 'Reviewer completed'
 			) {
 				freezeForegroundRequest(
-					'Reviewer completed',
+					'Reviewer checked the result',
 					'done',
 					'Reviewer checked the Executor result artifact.'
 				);
@@ -2781,7 +2934,7 @@ export function getExecutionWindowHtml(
 				latestTerminalStatus?.title === 'Executor completed'
 			) {
 				freezeForegroundRequest(
-					'Executor completed',
+					'Executor wrote the result',
 					'done',
 					'Executor wrote the bounded result artifact.'
 				);
@@ -2790,7 +2943,7 @@ export function getExecutionWindowHtml(
 
 			if (isDispatchQueued(snapshot) || latestDispatchQueuedStatus(requestKey)) {
 				freezeForegroundRequest(
-					'Dispatch queued',
+					'Executor is ready',
 					'done',
 					'Corgi created dispatch truth for the accepted plan.'
 				);
@@ -2806,9 +2959,9 @@ export function getExecutionWindowHtml(
 			if (snapshot.currentActor === 'governor') {
 				if (snapshot.currentStage === 'semantic_intake') {
 					replaceForegroundTail(
-						'Governor is interpreting the request',
+						'Understanding request',
 						'active',
-						'Governor is interpreting the request...'
+						'Understanding request...'
 					);
 					return;
 				}
@@ -2821,7 +2974,7 @@ export function getExecutionWindowHtml(
 			}
 
 			if (snapshot.runState === 'running') {
-				replaceForegroundTail('Dispatch queued', 'active', 'Corgi queued dispatch truth for the accepted plan.');
+				replaceForegroundTail('Executor is ready', 'active', 'Corgi queued dispatch truth for the accepted plan.');
 				return;
 			}
 
@@ -2868,27 +3021,20 @@ export function getExecutionWindowHtml(
 
 			const snapshot = model.snapshot;
 			const stale = isSnapshotStale(snapshot);
-			const railTask = railTitle(snapshot);
-			const subline = [];
-			const actor = actorSummary(snapshot);
-			const stage = stageSummary(snapshot);
-			if (actor) {
-				subline.push(renderRevealPill('Actor', actor));
-			}
-			if (stage) {
-				subline.push(renderRevealPill('Stage', stage));
-			}
-			subline.push(
-				'<span class="pill">' +
-					'<span class="status-dot ' + statusDotClass(snapshot, stale) + '"></span>' +
-					escapeHtml(statusLabel(snapshot, stale)) +
-				'</span>'
-			);
-
+			const goal = goalDisplayState(snapshot, stale);
 			headerContent.innerHTML =
-				'<div class="header-subline">' +
-					renderRevealPill('Current work', railTask, 'is-primary') +
-					subline.join('') +
+				'<div class="goal-main">' +
+					'<span class="status-dot ' + statusDotClass(snapshot, stale) + '"></span>' +
+					'<span class="goal-title"><span class="goal-label">Goal:</span> ' +
+						escapeHtml(goal.title) +
+					'</span>' +
+				'</div>' +
+				'<div class="goal-meta">' +
+					'<span class="goal-step"><span class="goal-label">Step:</span> ' +
+						escapeHtml(goal.step) +
+					'</span>' +
+					'<span class="goal-separator">·</span>' +
+					'<span>' + escapeHtml(goal.status) + '</span>' +
 				'</div>';
 		}
 
@@ -2956,14 +3102,14 @@ export function getExecutionWindowHtml(
 					buttons.push(
 						'<button type="button" data-action="execute_plan" data-context-ref="' +
 						escapeHtml(planReady.contextRef) +
-						'">Execute this plan</button>'
+						'">Execute plan</button>'
 					);
 				}
 				if (actions.includes('revise_plan')) {
 					buttons.push(
 						'<button type="button" class="secondary" data-action="revise_plan" data-context-ref="' +
 						escapeHtml(planReady.contextRef) +
-						'">Add details or revise plan</button>'
+						'">Revise</button>'
 					);
 				}
 			}
@@ -3164,10 +3310,10 @@ export function getExecutionWindowHtml(
 				return paragraphs.map(renderGovernorParagraph).join('');
 			}
 
-			function renderStructuredAssistantBody(value) {
-				const text = String(value || '').trim();
-				if (!text.includes('\\n')) {
-					return renderGovernorMessageBody(text);
+		function renderStructuredAssistantBody(value) {
+			const text = String(value || '').trim();
+			if (!text.includes('\\n')) {
+				return renderGovernorMessageBody(text);
 				}
 				const lines = text.split('\\n');
 				let html = '';
@@ -3201,6 +3347,47 @@ export function getExecutionWindowHtml(
 				}
 				flushList();
 				return html;
+			}
+
+			function compactResultCopy(item, copy) {
+				switch (item.title) {
+					case 'Executor completed':
+						return {
+							title: 'Executor completed',
+							body: 'Executor wrote a bounded result artifact for this goal.',
+						};
+					case 'Reviewer completed':
+						return {
+							title: 'Reviewer checked the result',
+							body: 'Reviewer finished its read-only check of the Executor output.',
+						};
+					case 'Governor decision recorded':
+						return {
+							title: 'Final decision recorded',
+							body: 'Governor recorded the final dispatch decision.',
+						};
+					default:
+						return copy;
+				}
+			}
+
+			function renderCompactResultMessage(item, copy, renderedBody) {
+				const compact = compactResultCopy(item, copy);
+				const details =
+					copy.body && copy.body !== compact.body
+						? '<details class="result-details">' +
+							'<summary>Details</summary>' +
+							'<div class="message-body is-governor-copy">' + renderedBody + '</div>' +
+						  '</details>'
+						: '';
+				return (
+					'<article class="message assistant result-summary">' +
+						'<div class="result-title">' + escapeHtml(compact.title) + '</div>' +
+						'<div class="result-body">' + escapeHtml(compact.body) + '</div>' +
+						renderSourceActionForItem(item) +
+						details +
+					'</article>'
+				);
 			}
 
 			function displayScope(value) {
@@ -3351,6 +3538,14 @@ export function getExecutionWindowHtml(
 				const renderedBody = structuredAssistantMessage
 					? renderStructuredAssistantBody(body)
 					: escapeHtml(body);
+				if (
+					item.type === 'system_status' &&
+					(item.title === 'Executor completed' ||
+						item.title === 'Reviewer completed' ||
+						item.title === 'Governor decision recorded')
+				) {
+					return renderCompactResultMessage(item, copy, renderedBody);
+				}
 				if (item.type === 'error') {
 					return (
 						'<article class="message error">' +
@@ -3711,7 +3906,7 @@ export function getExecutionWindowHtml(
 			}
 			if (action === 'execute_plan') {
 				const requestId = nextForegroundRequestKey();
-				startForegroundRequest('Execute this plan', 'Requesting Execute permission...', requestId);
+				startForegroundRequest('Execute plan', 'Requesting Execute permission...', requestId);
 				setForegroundSingleBullet(
 					'Requesting Execute permission...',
 					'active',

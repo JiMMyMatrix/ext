@@ -123,6 +123,257 @@ type SemanticRoutingFixture = {
 	notes: string;
 };
 
+type SnapshotTextRow = {
+	className: string;
+	text: string;
+};
+
+type WebviewSnapshotPayload = {
+	goalStrip: string;
+	actions: SnapshotTextRow[];
+	messages: SnapshotTextRow[];
+	progress: SnapshotTextRow[];
+	composer: {
+		context: string;
+		hint: string;
+		button: string;
+		placeholder: string;
+		disabled: boolean;
+	};
+	state: {
+		currentActor: string;
+		currentStage: string;
+		permissionScope: string;
+		runState: string;
+		task: string;
+	};
+};
+
+type PostedWebviewMessage = {
+	type: string;
+	payload?: WebviewSnapshotPayload;
+};
+
+function decodeHtmlEntities(value: string): string {
+	return value
+		.replace(/&nbsp;/g, ' ')
+		.replace(/&amp;/g, '&')
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&quot;/g, '"')
+		.replace(/&#39;/g, "'");
+}
+
+function htmlToText(value: string): string {
+	return decodeHtmlEntities(
+		value
+			.replace(/<style\b[\s\S]*?<\/style>/gi, '')
+			.replace(/<script\b[\s\S]*?<\/script>/gi, '')
+			.replace(/<[^>]+>/g, ' ')
+			.replace(/\s+/g, ' ')
+			.trim()
+	);
+}
+
+function parseClassName(attributes: string): string {
+	return decodeHtmlEntities(attributes.match(/\bclass="([^"]*)"/)?.[1] ?? '');
+}
+
+function selectorClasses(selector: string): string[] {
+	return selector
+		.split(',')
+		.map((part) => part.trim())
+		.filter((part) => part.startsWith('.'))
+		.map((part) => part.slice(1));
+}
+
+class FakeWebviewNode {
+	constructor(
+		readonly className: string,
+		readonly innerHTML: string
+	) {}
+
+	get textContent(): string {
+		return htmlToText(this.innerHTML);
+	}
+
+	get innerText(): string {
+		return this.textContent;
+	}
+}
+
+class FakeWebviewElement {
+	innerHTML = '';
+	textContent = '';
+	value = '';
+	placeholder = '';
+	disabled = false;
+	hidden = false;
+	scrollTop = 0;
+	scrollHeight = 1200;
+	clientHeight = 600;
+	selectionStart = 0;
+	selectionEnd = 0;
+	private readonly listeners = new Map<string, Array<(event: { preventDefault(): void; target: FakeWebviewElement; key?: string }) => void>>();
+
+	addEventListener(
+		type: string,
+		listener: (event: { preventDefault(): void; target: FakeWebviewElement; key?: string }) => void
+	): void {
+		const listeners = this.listeners.get(type) ?? [];
+		listeners.push(listener);
+		this.listeners.set(type, listeners);
+	}
+
+	requestSubmit(): void {
+		for (const listener of this.listeners.get('submit') ?? []) {
+			listener({
+				preventDefault() {
+					// The webview handler expects this browser API.
+				},
+				target: this,
+			});
+		}
+	}
+
+	focus(): void {
+		// No-op for renderer tests.
+	}
+
+	get innerText(): string {
+		return htmlToText(this.innerHTML || this.textContent || this.value);
+	}
+
+	set innerText(value: string) {
+		this.textContent = value;
+	}
+
+	querySelectorAll(selector: string): FakeWebviewNode[] {
+		if (selector === 'button') {
+			return parseElementsBySelector(this.innerHTML, ['button'], []);
+		}
+		return parseElementsBySelector(this.innerHTML, ['article', 'div', 'li'], selectorClasses(selector));
+	}
+}
+
+function parseElementsBySelector(
+	html: string,
+	tags: string[],
+	requiredClasses: string[]
+): FakeWebviewNode[] {
+	const nodes: FakeWebviewNode[] = [];
+	for (const tag of tags) {
+		const pattern = new RegExp('<' + tag + '\\b([^>]*)>([\\s\\S]*?)<\\/' + tag + '>', 'gi');
+		for (const match of html.matchAll(pattern)) {
+			const className = parseClassName(match[1] ?? '');
+			if (
+				requiredClasses.length > 0 &&
+				!requiredClasses.some((requiredClass) => className.split(/\s+/).includes(requiredClass))
+			) {
+				continue;
+			}
+			nodes.push(new FakeWebviewNode(className, match[2] ?? ''));
+		}
+	}
+	return nodes;
+}
+
+class FakeWebviewDocument {
+	private readonly elements = new Map<string, FakeWebviewElement>();
+	private readonly listeners = new Map<string, Array<(event: { target: { closest(selector: string): null } }) => void>>();
+
+	getElementById(id: string): FakeWebviewElement {
+		const existing = this.elements.get(id);
+		if (existing) {
+			return existing;
+		}
+		const created = new FakeWebviewElement();
+		this.elements.set(id, created);
+		return created;
+	}
+
+	addEventListener(
+		type: string,
+		listener: (event: { target: { closest(selector: string): null } }) => void
+	): void {
+		const listeners = this.listeners.get(type) ?? [];
+		listeners.push(listener);
+		this.listeners.set(type, listeners);
+	}
+}
+
+class FakeWebviewWindow {
+	private readonly listeners = new Map<string, Array<(event: { data: unknown }) => void>>();
+
+	addEventListener(type: string, listener: (event: { data: unknown }) => void): void {
+		const listeners = this.listeners.get(type) ?? [];
+		listeners.push(listener);
+		this.listeners.set(type, listeners);
+	}
+
+	dispatchMessage(data: unknown): void {
+		for (const listener of this.listeners.get('message') ?? []) {
+			listener({ data });
+		}
+	}
+}
+
+function renderWebviewSnapshot(model: ExecutionWindowModel): WebviewSnapshotPayload {
+	const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
+	const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)?.[1];
+	assert.ok(script, 'Expected generated webview HTML to contain an inline script.');
+
+	const postedMessages: PostedWebviewMessage[] = [];
+	const fakeDocument = new FakeWebviewDocument();
+	const fakeWindow = new FakeWebviewWindow();
+	let persistedState: unknown = undefined;
+	let timeoutId = 0;
+
+	const context = {
+		acquireVsCodeApi: () => ({
+			getState: () => persistedState,
+			setState: (value: unknown) => {
+				persistedState = value;
+			},
+			postMessage: (message: PostedWebviewMessage) => {
+				postedMessages.push(message);
+			},
+		}),
+		document: fakeDocument,
+		window: fakeWindow,
+		console,
+		Date,
+		JSON,
+		Math,
+		String,
+		Array,
+		Boolean,
+		Number,
+		RegExp,
+		setTimeout: (callback: () => void) => {
+			callback();
+			timeoutId += 1;
+			return timeoutId;
+		},
+		clearTimeout: () => {
+			// Timers run synchronously in this focused renderer harness.
+		},
+		setInterval: () => 0,
+		clearInterval: () => {
+			// No-op for renderer tests.
+		},
+	};
+
+	vm.runInNewContext(script, context);
+	fakeWindow.dispatchMessage({ type: 'state', payload: model });
+
+	const snapshot = postedMessages
+		.filter((message) => message.type === 'webview_snapshot')
+		.at(-1)?.payload;
+	assert.ok(snapshot, 'Expected webview renderer to post a monitor snapshot.');
+	return snapshot;
+}
+
 function semanticFixtureModel(state: SemanticRoutingFixture['session_state']): ExecutionWindowModel {
 	const model = createInitialModel('2026-04-10T10:00:00.000Z');
 	if (state === 'active_clarification') {
@@ -381,7 +632,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes("event.runtimeKind === 'plan'"));
 		assert.ok(webviewSource.includes('if (event.model)'));
 		assert.ok(webviewSource.includes('this.model = event.model'));
-		assert.ok(webviewSource.includes('Governor is interpreting the request'));
+		assert.ok(webviewSource.includes('Understanding request'));
 		assert.ok(webviewSource.includes('Governor is drafting the plan'));
 		assert.ok(webviewSource.includes('Still drafting the plan'));
 		assert.ok(webviewSource.includes('runtimeTimings'));
@@ -562,6 +813,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('planRevisionMode'));
 		assert.ok(webviewSource.includes("type: 'execute_plan'"));
 		assert.ok(webviewSource.includes("type: 'revise_plan'"));
+		assert.ok(webviewSource.includes('">Execute plan</button>'));
+		assert.ok(webviewSource.includes('">Revise</button>'));
 		assert.ok(webviewSource.includes('Send to Governor'));
 	});
 
@@ -580,6 +833,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('const copy = displayCopy(item);'));
 		assert.ok(webviewSource.includes('renderStructuredAssistantBody(body)'));
 		assert.ok(webviewSource.includes("item.title === 'Executor completed'"));
+		assert.ok(webviewSource.includes('function renderCompactResultMessage(item, copy, renderedBody)'));
+		assert.ok(webviewSource.includes('message assistant result-summary'));
+		assert.ok(webviewSource.includes('Reviewer checked the result'));
 		assert.ok(webviewSource.includes('escapeHtml(body)'));
 
 		const permissionModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
@@ -613,6 +869,192 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(errorItem.type, 'error');
 		assert.strictEqual(errorItem.presentation_key, 'error.stale_context');
 		assert.strictEqual(errorItem.presentation_args?.kind, 'clarification');
+	});
+
+	test('webview snapshot renders the goal strip and compact post-execution summaries', () => {
+		const reviewArtifact = {
+			id: 'review-report',
+			label: 'Reviewer report',
+			path: '.agent/reviews/review.md',
+			status: 'ready',
+			summary: 'Reviewer report artifact',
+			authoritative: true,
+		};
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			acceptedIntakeSummary: {
+				title: 'Analyze repo',
+				body: 'Analyze the repository architecture.',
+			},
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Analyze the repository architecture.',
+				currentActor: 'reviewer',
+				currentStage: 'reviewer_completed',
+				permissionScope: 'execute',
+				runState: 'idle',
+				recentArtifacts: [reviewArtifact],
+			},
+			feed: [
+				{
+					id: 'user-message',
+					type: 'user_message',
+					title: 'Prompt submitted',
+					body: 'analyze the repo',
+					timestamp: '2026-04-10T10:00:00.000Z',
+					authoritative: false,
+				},
+				{
+					id: 'governor-plan',
+					type: 'actor_event',
+					title: 'Governor responded',
+					body: 'Objective: analyze the repository architecture.\n\nReadiness: plan-ready.',
+					timestamp: '2026-04-10T10:00:05.000Z',
+					authoritative: true,
+					source_actor: 'governor',
+				},
+				{
+					id: 'executor-completed',
+					type: 'system_status',
+					title: 'Executor completed',
+					body: 'Executor wrote details at .agent/executor/result.md.',
+					timestamp: '2026-04-10T10:00:20.000Z',
+					authoritative: true,
+					source_artifact_ref: reviewArtifact.path,
+				},
+				{
+					id: 'reviewer-completed',
+					type: 'system_status',
+					title: 'Reviewer completed',
+					body: 'Reviewer completed the read-only check at .agent/reviews/review.md.',
+					timestamp: '2026-04-10T10:00:30.000Z',
+					authoritative: true,
+					source_artifact_ref: reviewArtifact.path,
+				},
+			],
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+		const messageText = snapshot.messages.map((message) => message.text).join('\n');
+		const resultSummaries = snapshot.messages.filter((message) =>
+			message.className.includes('result-summary')
+		);
+
+		assert.match(snapshot.goalStrip, /Goal: Analyze the repository architecture\./);
+		assert.match(snapshot.goalStrip, /Step: Reviewer checked the result/);
+		assert.match(snapshot.goalStrip, /Done/);
+		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
+		assert.ok(resultSummaries.length >= 2);
+		assert.match(messageText, /Executor wrote a bounded result artifact/);
+		assert.match(messageText, /Reviewer checked the result/);
+		assert.match(messageText, /View source/);
+		assert.ok(!messageText.includes('reviewer_completed'));
+		assert.ok(!snapshot.composer.context.includes('Reviewer'));
+	});
+
+	test('webview snapshot keeps plan-ready actions compact and action-bound', () => {
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			acceptedIntakeSummary: {
+				title: 'Analyze repo',
+				body: 'Analyze the repository architecture.',
+			},
+			planReadyRequest: {
+				id: 'plan-ready',
+				contextRef: 'plan-context-1',
+				title: 'Plan ready',
+				body: 'The plan is ready.',
+				requestedAt: '2026-04-10T10:00:20.000Z',
+				foregroundRequestId: 'req-plan',
+				acceptedIntakeSummary: {
+					title: 'Analyze repo',
+					body: 'Analyze the repository architecture.',
+				},
+				allowedActions: ['execute_plan', 'revise_plan'],
+				planVersion: 1,
+				planContextRef: 'plan-context-1',
+			},
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Analyze the repository architecture.',
+				currentActor: 'governor',
+				currentStage: 'plan_ready',
+				permissionScope: 'plan',
+				runState: 'idle',
+			},
+			feed: [
+				{
+					id: 'governor-plan',
+					type: 'actor_event',
+					title: 'Governor responded',
+					body: 'Objective: analyze the repository architecture.\n\nExecution readiness: plan-ready only.',
+					timestamp: '2026-04-10T10:00:20.000Z',
+					authoritative: true,
+					source_actor: 'governor',
+				},
+			],
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+		const actionText = snapshot.actions.map((action) => action.text);
+		const executeAction = snapshot.actions.find((action) => action.text === 'Execute plan');
+		const reviseAction = snapshot.actions.find((action) => action.text === 'Revise');
+
+		assert.match(snapshot.goalStrip, /Step: Plan ready/);
+		assert.deepStrictEqual(actionText, ['Execute plan', 'Revise']);
+		assert.ok(executeAction);
+		assert.ok(!executeAction.className.includes('secondary'));
+		assert.ok(reviseAction?.className.includes('secondary'));
+		assert.strictEqual(snapshot.composer.context, 'Scope: Plan');
+		assert.ok(!snapshot.composer.context.includes('Plan ready'));
+	});
+
+	test('webview snapshot condenses dispatch queued into the goal strip instead of transcript noise', () => {
+		const requestArtifact = {
+			id: 'dispatch-request',
+			label: 'Dispatch request',
+			path: '.agent/dispatches/lane/main/dispatch-123/request.json',
+			status: 'ready',
+			summary: 'Dispatch request artifact',
+			authoritative: true,
+		};
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			acceptedIntakeSummary: {
+				title: 'Analyze repo',
+				body: 'Analyze the repository architecture.',
+			},
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Analyze the repository architecture.',
+				currentActor: 'orchestration',
+				currentStage: 'dispatch_queued',
+				permissionScope: 'execute',
+				runState: 'queued',
+				recentArtifacts: [requestArtifact],
+			},
+			feed: [
+				{
+					id: 'dispatch-queued',
+					type: 'system_status',
+					title: 'Dispatch queued',
+					body: 'Dispatch truth was created.',
+					timestamp: '2026-04-10T10:00:30.000Z',
+					authoritative: true,
+					source_artifact_ref: requestArtifact.path,
+				},
+			],
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+		const messageText = snapshot.messages.map((message) => message.text).join('\n');
+
+		assert.match(snapshot.goalStrip, /Step: Executor is ready/);
+		assert.match(snapshot.goalStrip, /Executor ready/);
+		assert.ok(!messageText.includes('Dispatch queued'));
+		assert.ok(!messageText.includes('Dispatch truth was created'));
+		assert.deepStrictEqual(snapshot.actions.map((action) => action.text), ['View source']);
+		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
 	});
 
 	test('transport selection resolves the real orchestration workspace when available', () => {
@@ -918,7 +1360,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('initialFeedCount'));
 		assert.ok(html.includes('composerContext'));
 		assert.ok(html.includes('composerActions'));
-		assert.ok(html.includes("renderRevealPill('Current work', railTask, 'is-primary')"));
+		assert.ok(html.includes('goal-strip'));
+		assert.ok(html.includes('goalDisplayState'));
+		assert.ok(html.includes('goalStrip: compactText'));
 		assert.ok(html.includes('View source'));
 		assert.ok(html.includes('foregroundRequest'));
 		assert.ok(html.includes('Interpreting request'));
@@ -941,7 +1385,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('Scope: '));
 		assert.ok(html.includes('Waiting for clarification'));
 		assert.ok(html.includes('Waiting for permission: '));
-		assert.ok(html.includes('Dispatch queued'));
+		assert.ok(html.includes('Executor is ready'));
 		assert.ok(html.includes('latestDispatchQueuedStatus'));
 		assert.ok(html.includes('latestPostExecutionStatus'));
 		assert.ok(
@@ -1020,13 +1464,14 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('vscode.setState(defaultPersistedState);'));
 	});
 
-	test('webview removes the current work panel and keeps context in the header', () => {
+	test('webview removes the current work panel and keeps context in the goal strip', () => {
 		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
 
 		assert.ok(!html.includes('<section class="session-rail" id="sessionRail"></section>'));
 		assert.ok(!html.includes('data-action="toggle_rail"'));
-		assert.ok(html.includes("renderRevealPill('Current work', railTask, 'is-primary')"));
-		assert.ok(html.includes('pill-reveal-value'));
+		assert.ok(html.includes('class="goal-strip" id="headerContent"'));
+		assert.ok(html.includes('<span class="goal-label">Goal:</span>'));
+		assert.ok(html.includes('<span class="goal-label">Step:</span>'));
 		assert.ok(html.includes('<span class="status-dot '));
 		assert.ok(!html.includes('Lane: '));
 		assert.ok(!html.includes('Branch: '));
