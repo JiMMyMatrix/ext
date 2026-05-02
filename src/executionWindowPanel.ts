@@ -2056,6 +2056,9 @@ export function getExecutionWindowHtml(
 			if (item.type === 'artifact_reference' || item.type === 'shell_event') {
 				return false;
 			}
+			if (item.type === 'user_message' && item.turn_type === 'permission_action') {
+				return false;
+			}
 			if (item.type === 'system_status' && item.title === 'Dispatch queued') {
 				return false;
 			}
@@ -2842,6 +2845,10 @@ export function getExecutionWindowHtml(
 			}
 
 			const requestKey = ui.foregroundRequest.requestKey;
+			if (latestPostExecutionStatus(requestKey) || latestDispatchQueuedStatus(requestKey)) {
+				clearForegroundRequest();
+				return;
+			}
 			if (latestGovernorReplyForRequest(requestKey)) {
 				clearForegroundRequest();
 				return;
@@ -2866,6 +2873,10 @@ export function getExecutionWindowHtml(
 
 			const snapshot = model.snapshot;
 			const requestKey = ui.foregroundRequest.requestKey;
+			if (latestPostExecutionStatus(requestKey) || latestDispatchQueuedStatus(requestKey)) {
+				clearForegroundRequest();
+				return;
+			}
 			const latestError = latestRequestError(requestKey);
 			if (latestError) {
 				freezeForegroundRequest(latestError.title, 'failed', 'Corgi needs your input before this can continue.');
@@ -2988,7 +2999,7 @@ export function getExecutionWindowHtml(
 			if (model?.snapshot && isPlanReady(model.snapshot) && ui.planRevisionMode) {
 				return {
 					placeholder: 'Tell the Governor what to add, explain, or revise...',
-					hint: 'This updates the plan only. Execute still requires Execute permission.',
+					hint: 'This updates the plan only. Choose Execute plan when it is ready.',
 					buttonLabel: 'Send to Governor',
 				};
 			}
@@ -3610,6 +3621,12 @@ export function getExecutionWindowHtml(
 			}
 
 			const requestKey = ui.foregroundRequest.requestKey;
+			if (
+				latestPostExecutionStatus(requestKey) ||
+				latestDispatchQueuedStatus(requestKey)
+			) {
+				return '';
+			}
 			if (latestGovernorReplyForRequest(requestKey)) {
 				return '';
 			}
@@ -3906,11 +3923,11 @@ export function getExecutionWindowHtml(
 			}
 			if (action === 'execute_plan') {
 				const requestId = nextForegroundRequestKey();
-				startForegroundRequest('Execute plan', 'Requesting Execute permission...', requestId);
+				startForegroundRequest('', 'Preparing Executor...', requestId);
 				setForegroundSingleBullet(
-					'Requesting Execute permission...',
+					'Preparing Executor...',
 					'active',
-					'Requesting Execute permission...'
+					'Preparing Executor...'
 				);
 				scheduleActivityTrace(requestId);
 				ui.planRevisionMode = false;

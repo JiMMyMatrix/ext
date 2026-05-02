@@ -3340,43 +3340,6 @@ def handle_execute_plan(
 			presentation_args={"kind": "plan"},
 		)
 		return
-	if not _scope_satisfies(_current_permission_scope(model), "execute"):
-		summary = plan_ready.get("acceptedIntakeSummary") or model.get("acceptedIntakeSummary") or {}
-		summary_body = trim_text(summary.get("body") if isinstance(summary, dict) else "") or "Accepted plan"
-		permission_request = _permission_request(
-			"execute",
-			now,
-			continuation_kind="plan_execution",
-			pending_prompt=summary_body,
-			pending_normalized_text=summary_body,
-			foreground_request_id=request_id or plan_ready.get("foregroundRequestId"),
-		)
-		model["snapshot"]["pendingPermissionRequest"] = permission_request
-		model["snapshot"]["pendingInterrupt"] = None
-		model["activeClarification"] = None
-		model["activeForegroundRequestId"] = request_id or plan_ready.get("foregroundRequestId")
-		model["feed"].append(
-			_feed_item(
-				"permission_request",
-				permission_request["title"],
-				permission_request["body"],
-				authoritative=True,
-				now=now,
-				turn_type="permission_action",
-				in_response_to_request_id=request_id,
-				presentation_key="permission.needed",
-				presentation_args={"scope": "execute"},
-			)
-		)
-		_refresh_snapshot(
-			model,
-			now,
-			currentActor="orchestration",
-			currentStage="permission_needed",
-			runState="idle",
-			transportState="connected",
-		)
-		return
 	dispatch_refs = _emit_plan_execution_dispatch(
 		session,
 		now,
@@ -3442,7 +3405,7 @@ def handle_execute_plan(
 			_feed_item(
 				"system_status",
 				"Dispatch queued",
-				f"Execute permission is active and dispatch truth was created at {dispatch_refs['request_ref']}.",
+				f"Execute plan was confirmed and dispatch truth was created at {dispatch_refs['request_ref']}.",
 				authoritative=True,
 				now=now,
 				source_artifact_ref=dispatch_refs["request_ref"],

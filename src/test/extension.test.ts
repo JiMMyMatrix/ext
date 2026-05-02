@@ -886,6 +886,7 @@ suite('Corgi Webview UX', () => {
 				title: 'Analyze repo',
 				body: 'Analyze the repository architecture.',
 			},
+			activeForegroundRequestId: 'corgi-request:test:execute',
 			snapshot: {
 				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
 				task: 'Analyze the repository architecture.',
@@ -914,6 +915,16 @@ suite('Corgi Webview UX', () => {
 					source_actor: 'governor',
 				},
 				{
+					id: 'execute-plan-action',
+					type: 'user_message',
+					title: 'Permission selected',
+					body: 'Execute plan',
+					timestamp: '2026-04-10T10:00:10.000Z',
+					authoritative: false,
+					turn_type: 'permission_action',
+					in_response_to_request_id: 'corgi-request:test:execute',
+				},
+				{
 					id: 'executor-completed',
 					type: 'system_status',
 					title: 'Executor completed',
@@ -921,6 +932,7 @@ suite('Corgi Webview UX', () => {
 					timestamp: '2026-04-10T10:00:20.000Z',
 					authoritative: true,
 					source_artifact_ref: reviewArtifact.path,
+					in_response_to_request_id: 'corgi-request:test:execute',
 				},
 				{
 					id: 'reviewer-completed',
@@ -930,6 +942,7 @@ suite('Corgi Webview UX', () => {
 					timestamp: '2026-04-10T10:00:30.000Z',
 					authoritative: true,
 					source_artifact_ref: reviewArtifact.path,
+					in_response_to_request_id: 'corgi-request:test:execute',
 				},
 			],
 		};
@@ -948,8 +961,10 @@ suite('Corgi Webview UX', () => {
 		assert.match(messageText, /Executor wrote a bounded result artifact/);
 		assert.match(messageText, /Reviewer checked the result/);
 		assert.match(messageText, /View source/);
+		assert.ok(!messageText.includes('Execute plan'));
 		assert.ok(!messageText.includes('reviewer_completed'));
 		assert.ok(!snapshot.composer.context.includes('Reviewer'));
+		assert.deepStrictEqual(snapshot.progress, []);
 	});
 
 	test('webview snapshot keeps plan-ready actions compact and action-bound', () => {
@@ -1024,6 +1039,7 @@ suite('Corgi Webview UX', () => {
 				title: 'Analyze repo',
 				body: 'Analyze the repository architecture.',
 			},
+			activeForegroundRequestId: 'corgi-request:test:execute',
 			snapshot: {
 				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
 				task: 'Analyze the repository architecture.',
@@ -1035,6 +1051,16 @@ suite('Corgi Webview UX', () => {
 			},
 			feed: [
 				{
+					id: 'execute-plan-action',
+					type: 'user_message',
+					title: 'Permission selected',
+					body: 'Execute plan',
+					timestamp: '2026-04-10T10:00:25.000Z',
+					authoritative: false,
+					turn_type: 'permission_action',
+					in_response_to_request_id: 'corgi-request:test:execute',
+				},
+				{
 					id: 'dispatch-queued',
 					type: 'system_status',
 					title: 'Dispatch queued',
@@ -1042,6 +1068,7 @@ suite('Corgi Webview UX', () => {
 					timestamp: '2026-04-10T10:00:30.000Z',
 					authoritative: true,
 					source_artifact_ref: requestArtifact.path,
+					in_response_to_request_id: 'corgi-request:test:execute',
 				},
 			],
 		};
@@ -1053,7 +1080,9 @@ suite('Corgi Webview UX', () => {
 		assert.match(snapshot.goalStrip, /Executor ready/);
 		assert.ok(!messageText.includes('Dispatch queued'));
 		assert.ok(!messageText.includes('Dispatch truth was created'));
+		assert.ok(!messageText.includes('Execute plan'));
 		assert.deepStrictEqual(snapshot.actions.map((action) => action.text), ['View source']);
+		assert.deepStrictEqual(snapshot.progress, []);
 		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
 	});
 
@@ -1745,7 +1774,7 @@ suite('Corgi Webview UX', () => {
 		assert.match(lastItem.body ?? '', /orchestration\/harness\/session\.py/);
 	});
 
-	test('execute plan action requests execute permission instead of restarting intake', () => {
+	test('execute plan action authorizes execute and queues dispatch without a second permission click', () => {
 		const promptModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
 			type: 'submit_prompt',
 			text: 'Analyze the repo.',
@@ -1774,34 +1803,18 @@ suite('Corgi Webview UX', () => {
 		});
 
 		assert.strictEqual(continuationModel.activeClarification, undefined);
+		assert.strictEqual(continuationModel.snapshot.permissionScope, 'execute');
 		assert.strictEqual(continuationModel.snapshot.currentActor, 'orchestration');
-		assert.strictEqual(continuationModel.snapshot.currentStage, 'permission_needed');
-		assert.strictEqual(continuationModel.snapshot.pendingPermissionRequest?.recommendedScope, 'execute');
-		assert.strictEqual(continuationModel.snapshot.pendingPermissionRequest?.foregroundRequestId, 'req-do-it');
+		assert.strictEqual(continuationModel.snapshot.currentStage, 'dispatch_queued');
+		assert.strictEqual(continuationModel.snapshot.runState, 'queued');
+		assert.strictEqual(continuationModel.snapshot.pendingPermissionRequest, undefined);
 		assert.ok(continuationModel.acceptedIntakeSummary);
-		assert.ok(continuationModel.planReadyRequest);
+		assert.strictEqual(continuationModel.planReadyRequest, undefined);
 		assert.ok(!continuationModel.feed.some((item) => item.type === 'clarification_request' && item.in_response_to_request_id === 'req-do-it'));
 		const lastItem = continuationModel.feed[continuationModel.feed.length - 1];
-		assert.strictEqual(lastItem.type, 'permission_request');
+		assert.strictEqual(lastItem.type, 'system_status');
+		assert.strictEqual(lastItem.title, 'Dispatch queued');
 		assert.strictEqual(lastItem.in_response_to_request_id, 'req-do-it');
-
-		const dispatchedModel = applyModelAction(continuationModel, {
-			type: 'set_permission_scope',
-			permission_scope: 'execute',
-			context_ref: continuationModel.snapshot.pendingPermissionRequest?.contextRef,
-			request_id: 'req-execute-click',
-			now: '2026-04-10T10:00:25.000Z',
-		});
-
-		assert.strictEqual(dispatchedModel.snapshot.permissionScope, 'execute');
-		assert.strictEqual(dispatchedModel.snapshot.currentActor, 'orchestration');
-		assert.strictEqual(dispatchedModel.snapshot.currentStage, 'dispatch_queued');
-		assert.strictEqual(dispatchedModel.snapshot.runState, 'queued');
-		assert.strictEqual(dispatchedModel.planReadyRequest, undefined);
-		const dispatchItem = dispatchedModel.feed[dispatchedModel.feed.length - 1];
-		assert.strictEqual(dispatchItem.type, 'system_status');
-		assert.strictEqual(dispatchItem.title, 'Dispatch queued');
-		assert.strictEqual(dispatchItem.in_response_to_request_id, 'req-do-it');
 	});
 
 	test('execute plan action with stale context fails closed', () => {

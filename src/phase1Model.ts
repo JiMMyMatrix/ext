@@ -804,7 +804,7 @@ function buildGovernorDialogueReply(
 
 	if (model.acceptedIntakeSummary && snapshot.currentStage === 'plan_ready') {
 		return {
-			body: `I’ll revise the current plan with that guidance: ${summarizePrompt(prompt)}. Executor remains disabled until Execute permission is granted.`,
+			body: `I’ll revise the current plan with that guidance: ${summarizePrompt(prompt)}. Executor remains disabled until you choose Execute plan.`,
 			details: [
 				`Prompt: ${summarizePrompt(prompt)}`,
 				`Current actor: ${actor}`,
@@ -895,11 +895,11 @@ function buildGovernorPlanReply(summary: AcceptedIntakeSummary): {
 			'Proposed steps: inspect the relevant structure, identify the likely files or subsystems, call out risks or unknowns, and prepare the smallest safe execution path.',
 			'Likely files/areas: start from accepted intake artifacts, src/executionWindowPanel.ts, src/executionTransport.ts, src/phase1Model.ts, orchestration/harness/session.py, and orchestration/contracts/ux.md before touching implementation.',
 			'Risks or unknowns: verify actual authority boundaries from runtime code and contracts rather than directory names alone.',
-			'Execution readiness: Plan scope is active. Executor remains disabled until Execute permission is granted.',
+			'Execution readiness: Plan scope is active. Executor remains disabled until you choose Execute plan.',
 		].join('\n\n'),
 		details: [
 			'Permission scope: Plan',
-			'Executor remains disabled until Execute permission is granted.',
+			'Executor remains disabled until you choose Execute plan.',
 		],
 	};
 }
@@ -1727,52 +1727,12 @@ export function applyModelAction(
 				);
 			}
 
-			if (!scopeSatisfies(model.snapshot.permissionScope, 'execute')) {
-				const permissionRequest = buildPermissionRequest('execute', now, {
-					continuationKind: 'plan_execution',
-					pendingPrompt: model.planReadyRequest.acceptedIntakeSummary.body,
-					pendingNormalizedText: model.planReadyRequest.acceptedIntakeSummary.body,
-					foregroundRequestId: action.request_id ?? model.planReadyRequest.foregroundRequestId,
-				});
-				return {
-					...model,
-					snapshot: refreshSnapshot(model.snapshot, now, {
-						currentActor: 'orchestration',
-						currentStage: 'permission_needed',
-						runState: 'idle',
-						pendingPermissionRequest: permissionRequest,
-						pendingInterrupt: undefined,
-						transportState: 'connected',
-					}),
-					feed: [
-						...model.feed,
-						createFeedItem(
-							'permission_request',
-							permissionRequest.title,
-							permissionRequest.body,
-							true,
-							now,
-							undefined,
-							undefined,
-							{
-								turn_type: 'permission_action',
-								in_response_to_request_id: action.request_id,
-								presentation_key: 'permission.needed',
-								presentation_args: {
-									scope: permissionRequest.recommendedScope,
-								},
-							}
-						),
-					],
-					activeForegroundRequestId: action.request_id ?? model.planReadyRequest.foregroundRequestId,
-				};
-			}
-
 			return {
 				...model,
 				snapshot: refreshSnapshot(model.snapshot, now, {
 					currentActor: 'orchestration',
 					currentStage: 'dispatch_queued',
+					permissionScope: 'execute',
 					runState: 'queued',
 					pendingPermissionRequest: undefined,
 					pendingInterrupt: undefined,
@@ -1783,7 +1743,7 @@ export function applyModelAction(
 					createFeedItem(
 						'system_status',
 						'Dispatch queued',
-						'Execute permission is active and dispatch truth was queued for the accepted plan.',
+						'Execute plan was confirmed and dispatch truth was queued for the accepted plan.',
 						true,
 						now,
 						undefined,

@@ -1281,7 +1281,7 @@ class HarnessPackageTests(unittest.TestCase):
                 "error.permission_scope_too_low",
             )
 
-    def test_session_execute_plan_action_requests_execute_permission(self) -> None:
+    def test_session_execute_plan_action_authorizes_execute_and_queues_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
             model = session.dispatch_session_action(
@@ -1315,36 +1315,12 @@ class HarnessPackageTests(unittest.TestCase):
             )
 
             self.assertIsNone(model["activeClarification"])
-            self.assertEqual(model["snapshot"]["currentActor"], "orchestration")
-            self.assertEqual(model["snapshot"]["currentStage"], "permission_needed")
-            self.assertEqual(
-                model["snapshot"]["pendingPermissionRequest"]["recommendedScope"],
-                "execute",
-            )
-            self.assertEqual(
-                model["snapshot"]["pendingPermissionRequest"]["foregroundRequestId"],
-                "corgi-request:do-it",
-            )
-            self.assertIsNotNone(model["acceptedIntakeSummary"])
-            self.assertIsNotNone(model["planReadyRequest"])
-            self.assertEqual(model["feed"][-1]["type"], "permission_request")
-            self.assertEqual(
-                model["feed"][-1]["in_response_to_request_id"],
-                "corgi-request:do-it",
-            )
-
-            model = session.dispatch_session_action(
-                "set_permission_scope",
-                permission_scope="execute",
-                request_id="corgi-request:execute-click",
-                context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
-                repo_root=repo_root,
-            )
-
             self.assertEqual(model["snapshot"]["permissionScope"], "execute")
             self.assertEqual(model["snapshot"]["currentActor"], "orchestration")
             self.assertEqual(model["snapshot"]["currentStage"], "dispatch_queued")
             self.assertEqual(model["snapshot"]["runState"], "queued")
+            self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
+            self.assertIsNotNone(model["acceptedIntakeSummary"])
             self.assertIsNone(model["planReadyRequest"])
             self.assertEqual(model["feed"][-1]["type"], "system_status")
             self.assertEqual(model["feed"][-1]["title"], "Dispatch queued")
@@ -1456,13 +1432,6 @@ class HarnessPackageTests(unittest.TestCase):
                     context_ref=model["planReadyRequest"]["contextRef"],
                     repo_root=repo_root,
                 )
-                model = session.dispatch_session_action(
-                    "set_permission_scope",
-                    permission_scope="execute",
-                    request_id="corgi-request:execute-click",
-                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
-                    repo_root=repo_root,
-                )
 
             request_ref = model["feed"][-1]["source_artifact_ref"]
             self.assertIsInstance(request_ref, str)
@@ -1503,34 +1472,10 @@ class HarnessPackageTests(unittest.TestCase):
                     context_ref=model["activeClarification"]["contextRef"],
                     repo_root=repo_root,
                 )
-                prepared = session.dispatch_session_action(
-                    "set_permission_scope",
-                    permission_scope="plan",
-                    request_id="corgi-request:auto-plan",
-                    context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
-                    governor_runtime="external",
-                    repo_root=repo_root,
-                )
-                model = session.dispatch_session_action(
-                    "complete_governor_turn",
-                    runtime_request_id=prepared["request"]["runtimeRequestId"],
-                    runtime_body=(
-                        "Objective: analyze architecture. Proposed steps: inspect extension and "
-                        "orchestration boundaries. Likely areas: src/ and orchestration/. "
-                        "Risks or unknowns: scope may need narrowing. Execution readiness: ready."
-                    ),
-                    repo_root=repo_root,
-                )
-                model = session.dispatch_session_action(
-                    "execute_plan",
-                    request_id="corgi-request:auto-execute-plan",
-                    context_ref=model["planReadyRequest"]["contextRef"],
-                    repo_root=repo_root,
-                )
                 model = session.dispatch_session_action(
                     "set_permission_scope",
                     permission_scope="execute",
-                    request_id="corgi-request:auto-execute-permission",
+                    request_id="corgi-request:auto-execute",
                     context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
                     auto_consume_executor=True,
                     repo_root=repo_root,
@@ -1617,10 +1562,6 @@ class HarnessPackageTests(unittest.TestCase):
                     ),
                     repo_root=repo_root,
                 )
-                saved = session.load_session(repo_root)
-                saved["model"]["snapshot"]["permissionScope"] = "execute"
-                session.save_session(saved, repo_root=repo_root)
-
                 model = session.dispatch_session_action(
                     "execute_plan",
                     request_id="corgi-request:plan-auto-execute-plan",
@@ -1642,7 +1583,7 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertIsNone(model["activeForegroundRequestId"])
             self.assertEqual(model["feed"][-1]["title"], "Governor decision recorded")
 
-    def test_executor_test_fixture_starts_at_execute_permission(self) -> None:
+    def test_executor_test_fixture_starts_at_plan_ready_execution_checkpoint(self) -> None:
         repo_root = Path.cwd()
         agent_parent = repo_root / ".agent"
         agent_parent.mkdir(exist_ok=True)
@@ -1677,18 +1618,17 @@ class HarnessPackageTests(unittest.TestCase):
             ):
                 seeded = session.load_session(repo_root)["model"]
                 pending_permission = seeded["snapshot"]["pendingPermissionRequest"]
-                self.assertIsNotNone(pending_permission)
-                self.assertEqual(pending_permission["recommendedScope"], "execute")
-                self.assertEqual(seeded["snapshot"]["currentStage"], "permission_needed")
+                self.assertIsNone(pending_permission)
+                self.assertIsNotNone(seeded["planReadyRequest"])
+                self.assertEqual(seeded["snapshot"]["currentStage"], "plan_ready")
                 self.assertEqual(seeded["snapshot"]["permissionScope"], "plan")
                 self.assertIsNone(seeded["activeClarification"])
 
                 model = session.dispatch_session_action(
-                    "set_permission_scope",
-                    permission_scope="execute",
+                    "execute_plan",
                     request_id="corgi-request:fixture-execute",
                     session_ref=seeded["snapshot"]["sessionRef"],
-                    context_ref=pending_permission["contextRef"],
+                    context_ref=seeded["planReadyRequest"]["contextRef"],
                     auto_consume_executor=True,
                     repo_root=repo_root,
                 )

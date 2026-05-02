@@ -183,17 +183,10 @@ def seed_plan_ready_session(
 
 
 def seed_execute_permission_session(repo_root: Path) -> dict[str, Any]:
-	payload = seed_plan_ready_session(repo_root)
-	model = payload["model"]
-	return {
-		"model": session.dispatch_session_action(
-			"execute_plan",
-			request_id="corgi-fixture:execute-plan",
-			session_ref=model["snapshot"]["sessionRef"],
-			context_ref=model["planReadyRequest"]["contextRef"],
-			repo_root=repo_root,
-		)
-	}
+	# Compatibility alias: the old Execute permission card was merged into the
+	# Plan-ready "Execute plan" action, so the executor fixture now starts at the
+	# checkpoint that can launch execution directly.
+	return seed_plan_ready_session(repo_root)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -204,7 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
 		"--scenario",
 		choices=["plan-ready", "execute-permission"],
 		default="execute-permission",
-		help="plan-ready starts at the plan checkpoint; execute-permission starts at the Execute permission card.",
+		help=(
+			"plan-ready starts at the plan checkpoint; execute-permission is a "
+			"compatibility alias for the same checkpoint."
+		),
 	)
 	parser.add_argument("--root", default=".", help="Repository root to seed.")
 	return parser
