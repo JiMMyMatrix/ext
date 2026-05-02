@@ -1848,7 +1848,7 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(continuationModel.snapshot.permissionScope, 'execute');
 		assert.strictEqual(continuationModel.snapshot.currentActor, 'orchestration');
 		assert.strictEqual(continuationModel.snapshot.currentStage, 'plan_executing');
-		assert.strictEqual(continuationModel.snapshot.runState, 'running');
+		assert.strictEqual(continuationModel.snapshot.runState, 'queued');
 		assert.strictEqual(continuationModel.snapshot.pendingPermissionRequest, undefined);
 		assert.ok(continuationModel.acceptedIntakeSummary);
 		assert.strictEqual(continuationModel.planReadyRequest, undefined);
@@ -1857,6 +1857,24 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(lastItem.type, 'system_status');
 		assert.strictEqual(lastItem.title, 'Executor starting');
 		assert.strictEqual(lastItem.in_response_to_request_id, 'req-do-it');
+	});
+
+	test('optimistic execute plan state does not expose stop before authoritative running state', () => {
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			activeForegroundRequestId: 'req-do-it',
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				currentActor: 'orchestration',
+				currentStage: 'plan_executing',
+				permissionScope: 'execute',
+				runState: 'queued',
+			},
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+
+		assert.ok(!snapshot.actions.some((action) => action.text === 'Stop'));
 	});
 
 	test('execute plan action with stale context fails closed', () => {

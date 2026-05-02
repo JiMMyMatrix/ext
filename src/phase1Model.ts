@@ -1815,7 +1815,10 @@ export function applyModelAction(
 					currentActor: 'orchestration',
 					currentStage: 'plan_executing',
 					permissionScope: 'execute',
-					runState: 'running',
+					// This is an optimistic UI transition while orchestration is
+					// accepting the plan action. The run is not interruptible until
+					// authoritative state persists a running executor.
+					runState: 'queued',
 					pendingPermissionRequest: undefined,
 					pendingInterrupt: undefined,
 					transportState: 'connected',
