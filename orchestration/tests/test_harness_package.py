@@ -409,6 +409,12 @@ class HarnessPackageTests(unittest.TestCase):
         self.assertIn("urllib.request", server_source)
         self.assertIn("reasoning_split", server_source)
         self.assertIn("Set MINIMAX_API_KEY", server_source)
+        self.assertIn("MINIMAX_API_KEY_FILE", server_source)
+        self.assertIn("MINIMAX_DEFAULT_API_KEY_FILE", server_source)
+        self.assertIn("MINIMAX_GROK_COMMAND", server_source)
+        self.assertIn("@vibe-kit/grok-cli", server_source)
+        self.assertIn("https://platform.minimax.io/docs/token-plan/grok-cli", server_source)
+        self.assertIn("does not advertise the required", server_source)
         self.assertIn("MINIMAX_API_KEY", skill_source)
         self.assertIn("MINIMAX_API_KEY", advisory_doc)
 

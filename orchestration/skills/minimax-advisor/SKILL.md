@@ -35,6 +35,13 @@ verify repo contents.
 - `MINIMAX_MODEL`
 - `MINIMAX_MAX_TOKENS`
 
+Local development may also put the MiniMax token in the ignored file
+`.agent/orchestration/advisory/minimax_api_key`, or set
+`MINIMAX_API_KEY_FILE` to another private path. If direct API credentials are
+not available, the Grok fallback requires the MiniMax-documented npm CLI
+`@vibe-kit/grok-cli`; set `MINIMAX_GROK_COMMAND` if another `grok` binary is
+earlier on PATH.
+
 ## Invocation Guidance
 Keep the prompt focused. Use `system_hint` for panel mode or role steering. Use
 `cycle_id` when the advice belongs to a dispatch or Governor action-test cycle.

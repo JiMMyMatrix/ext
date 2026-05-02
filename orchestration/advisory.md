@@ -63,6 +63,13 @@ process environment. The server uses MiniMax's OpenAI-compatible endpoint by
 default (`https://api.minimax.io/v1`) and keeps `consult_grok_advisor` only as
 a backward-compatible alias.
 
+For local development, the advisory server also reads an ignored token file at
+`.agent/orchestration/advisory/minimax_api_key`, or a custom
+`MINIMAX_API_KEY_FILE`. The Grok fallback is only compatible with MiniMax's
+documented npm Grok CLI (`@vibe-kit/grok-cli`); if another `grok` executable is
+on PATH, set `MINIMAX_GROK_COMMAND` to the compatible binary or use the direct
+MiniMax API path.
+
 The canonical manual command is:
 
 ```bash
