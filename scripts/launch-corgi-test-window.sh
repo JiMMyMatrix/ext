@@ -13,6 +13,13 @@ STDERR_LOG="$LOG_DIR/vscode.stderr.log"
 LEGACY_USER_DATA_DIR="$ROOT_DIR/.agent/vscode-governor-first-test-user-data"
 APP_NAME="${CORGI_VSCODE_APP_NAME:-Visual Studio Code}"
 TEST_SCENARIO="${CORGI_TEST_WINDOW_SCENARIO:-}"
+if [[ -n "${CORGI_TEST_WINDOW_AUTO_PROMPT+x}" ]]; then
+	AUTO_PROMPT="$CORGI_TEST_WINDOW_AUTO_PROMPT"
+elif [[ -n "$TEST_SCENARIO" ]]; then
+	AUTO_PROMPT=""
+else
+	AUTO_PROMPT="analyze the repo"
+fi
 
 mkdir -p "$TEST_ROOT" "$LOG_DIR"
 
@@ -86,6 +93,7 @@ open -n -a "$APP_NAME" \
 	--env CORGI_GOVERNOR_RUNTIME="${CORGI_GOVERNOR_RUNTIME:-app-server}" \
 	--env CORGI_APP_SERVER_EPHEMERAL="${CORGI_APP_SERVER_EPHEMERAL:-1}" \
 	--env CORGI_TEST_WINDOW_SCENARIO="$TEST_SCENARIO" \
+	--env CORGI_TEST_WINDOW_AUTO_PROMPT="$AUTO_PROMPT" \
 	--env ORCHESTRATION_AGENT_ROOT="$RUNTIME_AGENT_ROOT" \
 	--env ORCHESTRATION_APPROVED_PYTHON="${PYTHON_BIN:-}" \
 	--stdout "$STDOUT_LOG" \
@@ -105,4 +113,7 @@ echo "  stdout:     $STDOUT_LOG"
 echo "  stderr:     $STDERR_LOG"
 if [[ -n "$TEST_SCENARIO" ]]; then
 	echo "  scenario:   $TEST_SCENARIO"
+fi
+if [[ -n "$AUTO_PROMPT" ]]; then
+	echo "  auto-prompt: $AUTO_PROMPT"
 fi

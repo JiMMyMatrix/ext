@@ -39,6 +39,15 @@ function semanticMode(): 'sidecar-first' | 'governor-first' {
 		: 'sidecar-first';
 }
 
+function testWindowAutoPrompt(context: vscode.ExtensionContext): string | undefined {
+	if (context.extensionMode !== vscode.ExtensionMode.Development) {
+		return undefined;
+	}
+
+	const prompt = process.env.CORGI_TEST_WINDOW_AUTO_PROMPT?.trim();
+	return prompt || undefined;
+}
+
 type WebviewMessage =
 	| { type: 'ready' }
 	| { type: 'refresh_state' }
@@ -101,6 +110,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private readonly monitorSessionStartedAt = new Date().toISOString();
 	private semanticLoopState: SemanticLoopState | undefined;
 	private hasAuthoritativeTransportState = false;
+	private didSubmitTestWindowAutoPrompt = false;
 
 	private constructor(context: vscode.ExtensionContext) {
 		this.context = context;
@@ -137,7 +147,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				void this.handleMessage(message as WebviewMessage);
 			})
 		);
-		void this.refreshState();
+		void this.initializeResolvedWebview();
 		this.transport.prewarm?.();
 	}
 
@@ -337,20 +347,40 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		return Date.parse(String(payload.renderedAt ?? ''));
 	}
 
-	private async refreshState() {
+	private async refreshState(): Promise<boolean> {
 		try {
 			this.model = await this.transport.load();
 			this.hasAuthoritativeTransportState = true;
 		} catch (error) {
+			this.hasAuthoritativeTransportState = false;
 			this.pushTransportError(
 				error,
 				'Orchestration state unavailable',
 				'Failed to load orchestration state.'
 			);
-			return;
+			return false;
 		}
 
 		this.postState();
+		return true;
+	}
+
+	private async initializeResolvedWebview() {
+		if (await this.refreshState()) {
+			await this.submitTestWindowAutoPrompt();
+		}
+	}
+
+	private async submitTestWindowAutoPrompt() {
+		const prompt = testWindowAutoPrompt(this.context);
+		if (!prompt || this.didSubmitTestWindowAutoPrompt) {
+			return;
+		}
+
+		this.didSubmitTestWindowAutoPrompt = true;
+		const requestId = `corgi-request:test-window:${randomUUID()}`;
+		this.appendDevelopmentLog(`auto-submit test prompt: ${prompt}`);
+		await this.routeFreeText(prompt, requestId, false);
 	}
 
 	private async applyAction(

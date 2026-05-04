@@ -494,10 +494,14 @@ suite('Corgi Webview UX', () => {
 		assert.ok(extensionSource.includes('void provider.openView().catch'));
 		assert.ok(extensionSource.includes('resetDevelopmentSessionState(context);'));
 		assert.ok(webviewSource.includes('resetDevelopmentSessionState(this.context);'));
+		assert.ok(webviewSource.includes('testWindowAutoPrompt'));
+		assert.ok(webviewSource.includes('auto-submit test prompt'));
 		assert.ok(webviewSource.includes('return context.extensionMode === vscode.ExtensionMode.Development;'));
 		assert.ok(launchScriptSource.includes('seed_executor_test_session.py'));
 		assert.ok(launchScriptSource.includes('seed_reviewer_test_session.py'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCENARIO'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_PROMPT'));
+		assert.ok(launchScriptSource.includes('AUTO_PROMPT="analyze the repo"'));
 		assert.strictEqual(
 			scripts['test:window:executor'],
 			'CORGI_TEST_WINDOW_SCENARIO=execute-permission bash scripts/launch-corgi-test-window.sh'
