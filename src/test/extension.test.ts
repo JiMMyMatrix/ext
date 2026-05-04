@@ -62,6 +62,10 @@ const PROCESS_TEST_SCRIPT_PATH = path.resolve(
 	__dirname,
 	'../../scripts/corgi-process-test.cjs'
 );
+const PROCESS_REPLAN_HELPER_PATH = path.resolve(
+	__dirname,
+	'../../scripts/corgi-review-replan-process-test.py'
+);
 const CODEX_APP_SERVER_CLIENT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/codexAppServerClient.ts'
@@ -534,6 +538,12 @@ suite('Corgi Webview UX', () => {
 		assert.ok(processTestSource.includes('ORCHESTRATION_AGENT_ROOT'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(processTestSource.includes('--auto-consume-executor'));
+		assert.ok(processTestSource.includes('--module'));
+		assert.ok(processTestSource.includes('assertExecutorArtifacts'));
+		assert.ok(processTestSource.includes('assertReviewerArtifacts'));
+		assert.ok(processTestSource.includes('runReviewReplanModule'));
+		assert.ok(processTestSource.includes('corgi-review-replan-process-test.py'));
+		assert.ok(fs.existsSync(PROCESS_REPLAN_HELPER_PATH));
 		assert.strictEqual(promptCatalog.defaultPromptId, 'analyze-repo');
 		assert.ok(promptCatalog.prompts.length >= 8);
 		for (const prompt of promptCatalog.prompts) {
@@ -557,6 +567,22 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:process:all'],
 			'node scripts/corgi-process-test.cjs --all'
+		);
+		assert.strictEqual(
+			scripts['test:process:executor'],
+			'node scripts/corgi-process-test.cjs --module executor'
+		);
+		assert.strictEqual(
+			scripts['test:process:modules'],
+			'node scripts/corgi-process-test.cjs --module all'
+		);
+		assert.strictEqual(
+			scripts['test:process:review-replan'],
+			'node scripts/corgi-process-test.cjs --module review-replan'
+		);
+		assert.strictEqual(
+			scripts['test:process:reviewer'],
+			'node scripts/corgi-process-test.cjs --module reviewer'
 		);
 		assert.strictEqual(scripts['test:prompts'], 'node scripts/corgi-test-prompt.cjs validate');
 		assert.strictEqual(scripts['test:prompts:list'], 'node scripts/corgi-test-prompt.cjs list');

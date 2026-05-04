@@ -15,6 +15,7 @@ function parseArgs(argv) {
 		all: false,
 		throughExecutor: false,
 		keep: false,
+		module: undefined,
 		promptId: catalog.defaultPromptId,
 	};
 	for (let index = 0; index < argv.length; index += 1) {
@@ -28,6 +29,10 @@ function parseArgs(argv) {
 				break;
 			case '--keep':
 				args.keep = true;
+				break;
+			case '--module':
+				args.module = argv[index + 1];
+				index += 1;
 				break;
 			case '--prompt':
 				args.promptId = argv[index + 1];
@@ -47,9 +52,11 @@ function parseArgs(argv) {
 function printUsage() {
 	process.stdout.write(
 		[
-			'Usage: node scripts/corgi-process-test.cjs [--prompt id | --all] [--through-executor] [--keep]',
+			'Usage: node scripts/corgi-process-test.cjs [--prompt id | --all | --module name] [--through-executor] [--keep]',
 			'',
 			'Runs phase-1 command-only process tests without opening VS Code.',
+			'',
+			'Modules: executor, reviewer, review-replan, all',
 		].join('\n') + '\n'
 	);
 }
@@ -109,6 +116,66 @@ function runJson(args, env) {
 	} catch (error) {
 		throw new Error(`Invalid JSON from ${args[0]}:\n${result.stdout}`);
 	}
+}
+
+function runCommand(args, env) {
+	const result = spawnSync(
+		commandPython(),
+		[path.join(repoRoot, 'orchestration/scripts/orchestrate.py'), ...args],
+		{
+			cwd: repoRoot,
+			env,
+			encoding: 'utf8',
+			maxBuffer: 1024 * 1024 * 12,
+		}
+	);
+	if (result.status !== 0) {
+		throw new Error(
+			`orchestrate.py ${args.join(' ')} failed:\n${result.stderr || result.stdout}`
+		);
+	}
+	return result.stdout.trim();
+}
+
+function readJson(pathValue) {
+	return JSON.parse(fs.readFileSync(pathValue, 'utf8'));
+}
+
+function repoPath(relPath) {
+	return path.join(repoRoot, relPath);
+}
+
+function collectFiles(root, predicate) {
+	if (!fs.existsSync(root)) {
+		return [];
+	}
+	const files = [];
+	for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+		const entryPath = path.join(root, entry.name);
+		if (entry.isDirectory()) {
+			files.push(...collectFiles(entryPath, predicate));
+		} else if (!predicate || predicate(entryPath)) {
+			files.push(entryPath);
+		}
+	}
+	return files;
+}
+
+function recentArtifactPaths(model) {
+	return (model.snapshot.recentArtifacts ?? [])
+		.map((artifact) => artifact.path)
+		.filter((artifactPath) => typeof artifactPath === 'string' && artifactPath.length > 0);
+}
+
+function dispatchRequestPaths(agentRoot) {
+	return collectFiles(
+		path.join(agentRoot, 'dispatches'),
+		(filePath) => filePath.endsWith(`${path.sep}request.json`)
+	).sort();
+}
+
+function latestFeedItem(model, title) {
+	return [...(model.feed ?? [])].reverse().find((item) => item.title === title);
 }
 
 function hasError(model) {
@@ -475,9 +542,7 @@ function supportedPrompt(prompt) {
 	].includes(prompt.category);
 }
 
-function runPrompt(prompt, options) {
-	const safeName = prompt.id.replace(/[^a-z0-9-]+/gi, '-');
-	const runName = options.all ? safeName : `${safeName}-${runId}`;
+function createTestEnv(runName, extraEnv = {}) {
 	const agentRoot = path.join(
 		repoRoot,
 		'.agent',
@@ -492,7 +557,19 @@ function runPrompt(prompt, options) {
 		...process.env,
 		ORCHESTRATION_AGENT_ROOT: agentRoot,
 		ORCHESTRATION_APPROVED_PYTHON: approvedPython(),
+		...extraEnv,
 	};
+	return {
+		agentRoot,
+		runDir: path.join(repoRoot, '.agent', 'command-test', runName),
+		env,
+	};
+}
+
+function runPrompt(prompt, options) {
+	const safeName = prompt.id.replace(/[^a-z0-9-]+/gi, '-');
+	const runName = options.all ? safeName : `${safeName}-${runId}`;
+	const { agentRoot, runDir, env } = createTestEnv(runName);
 
 	let model;
 	if (prompt.category === 'governor_dialogue') {
@@ -508,10 +585,7 @@ function runPrompt(prompt, options) {
 	if (!options.keep && !options.all) {
 		// Preserve all-prompt runs for postmortem comparison, but keep one-off
 		// command tests tidy unless the caller asks to keep artifacts.
-		fs.rmSync(path.join(repoRoot, '.agent', 'command-test', runName), {
-			recursive: true,
-			force: true,
-		});
+		fs.rmSync(runDir, { recursive: true, force: true });
 	}
 
 	return {
@@ -523,8 +597,266 @@ function runPrompt(prompt, options) {
 	};
 }
 
+function assertExecutorArtifacts(moduleName, model, agentRoot, options = {}) {
+	const expectFeed = options.expectFeed !== false;
+	const requestPaths = dispatchRequestPaths(agentRoot);
+	assertCondition(requestPaths.length > 0, `${moduleName}: dispatch request artifact missing`);
+	const requestPath = requestPaths[0];
+	const dispatchDir = path.dirname(requestPath);
+	const request = readJson(requestPath);
+	const state = readJson(path.join(dispatchDir, 'state.json'));
+	const result = readJson(path.join(dispatchDir, 'result.json'));
+	assertCondition(request.review_required === true, `${moduleName}: dispatch is not reviewer-gated`);
+	assertCondition(request.execution_mode === 'command_chain', `${moduleName}: unexpected execution mode`);
+	assertCondition(request.executor_run?.run_ref, `${moduleName}: executor run ref missing`);
+	assertCondition(
+		state.status === 'completed' || state.status === 'validated',
+		`${moduleName}: executor state did not complete`
+	);
+	assertCondition(result.status === 'completed', `${moduleName}: executor result did not complete`);
+	assertCondition(result.scope_respected === true, `${moduleName}: executor scope was not respected`);
+	const reportPath = path.join(agentRoot, 'runs', request.executor_run.run_ref, 'report.json');
+	const readoutPath = path.join(agentRoot, 'runs', request.executor_run.run_ref, 'executor_readout.md');
+	assertCondition(fs.existsSync(reportPath), `${moduleName}: executor report missing`);
+	assertCondition(fs.existsSync(readoutPath), `${moduleName}: executor readout missing`);
+	assertCondition(
+		fs.readFileSync(readoutPath, 'utf8').includes('## Architecture Boundaries'),
+		`${moduleName}: executor readout missing architecture section`
+	);
+	if (expectFeed) {
+		assertCondition(
+			Boolean(latestFeedItem(model, 'Executor completed')),
+			`${moduleName}: model feed missing Executor completion`
+		);
+		assertCondition(
+			recentArtifactPaths(model).some((artifactPath) => artifactPath.endsWith('/executor_readout.md')),
+			`${moduleName}: recent artifacts missing executor readout`
+		);
+	}
+	return { request, dispatchDir, requestPath };
+}
+
+function assertReviewerArtifacts(moduleName, model, dispatchInfo, options = {}) {
+	const expectFeed = options.expectFeed !== false;
+	const reviewRef = dispatchInfo.request.review_artifact_path;
+	assertCondition(typeof reviewRef === 'string' && reviewRef.length > 0, `${moduleName}: review ref missing`);
+	const reviewPath = repoPath(reviewRef);
+	assertCondition(fs.existsSync(reviewPath), `${moduleName}: reviewer artifact missing`);
+	const review = readJson(reviewPath);
+	assertCondition(review.dispatch_ref === dispatchInfo.request.dispatch_ref, `${moduleName}: review dispatch mismatch`);
+	assertCondition(
+		['pass', 'request_changes', 'inconclusive'].includes(review.verdict),
+		`${moduleName}: unexpected reviewer verdict`
+	);
+	if (expectFeed) {
+		assertCondition(
+			Boolean(latestFeedItem(model, 'Reviewer completed')),
+			`${moduleName}: model feed missing Reviewer completion`
+		);
+		assertCondition(
+			recentArtifactPaths(model).includes(reviewRef),
+			`${moduleName}: recent artifacts missing reviewer artifact`
+		);
+	}
+	return review;
+}
+
+function assertGovernorDecision(moduleName, model, dispatchInfo, options = {}) {
+	const expectFeed = options.expectFeed !== false;
+	const decisionPath = path.join(dispatchInfo.dispatchDir, 'governor_decision.json');
+	assertCondition(fs.existsSync(decisionPath), `${moduleName}: governor decision missing`);
+	const decision = readJson(decisionPath);
+	assertCondition(
+		['accept', 'reject', 'needs_review', 'needs_verification'].includes(decision.decision),
+		`${moduleName}: unexpected governor decision`
+	);
+	if (expectFeed) {
+		assertCondition(
+			Boolean(latestFeedItem(model, 'Governor decision recorded')),
+			`${moduleName}: model feed missing Governor decision`
+		);
+	}
+	return decision;
+}
+
+function preparePlanForExecution(prompt, env) {
+	const model = runGovernedWorkFlow(prompt, env, false);
+	assertCondition(model.planReadyRequest, 'module: plan-ready request missing');
+	return model;
+}
+
+function queuePlanDispatch(prompt, env, planModel, requestSuffix) {
+	const model = runJson(
+		[
+			'execute-plan',
+			'--request-id',
+			requestId(prompt, requestSuffix),
+			'--session-ref',
+			planModel.snapshot.sessionRef,
+			'--context-ref',
+			planModel.planReadyRequest.contextRef,
+		],
+		env
+	);
+	assertCondition(
+		model.snapshot.currentStage === 'dispatch_queued',
+		`module: expected dispatch_queued, got ${model.snapshot.currentStage}`
+	);
+	return model;
+}
+
+function latestDispatchInfo(agentRoot) {
+	const requestPaths = dispatchRequestPaths(agentRoot);
+	assertCondition(requestPaths.length > 0, 'module: dispatch request artifact missing');
+	const requestPath = requestPaths[requestPaths.length - 1];
+	return {
+		request: readJson(requestPath),
+		dispatchDir: path.dirname(requestPath),
+		requestPath,
+	};
+}
+
+function consumeExecutor(dispatchInfo, env) {
+	runCommand(
+		['dispatch', 'consume-executor', '--dispatch-dir', dispatchInfo.dispatchDir, '--root', repoRoot],
+		env
+	);
+}
+
+function consumeReviewer(dispatchInfo, env) {
+	runCommand(['dispatch', 'consume-reviewer', '--dispatch-dir', dispatchInfo.dispatchDir], env);
+}
+
+function finalizeDispatch(dispatchInfo, env) {
+	runCommand(['dispatch', 'finalize', '--dispatch-dir', dispatchInfo.dispatchDir], env);
+}
+
+function runReviewReplanHelper(agentRoot, env) {
+	const result = spawnSync(
+		commandPython(),
+		[
+			path.join(repoRoot, 'scripts/corgi-review-replan-process-test.py'),
+			'--repo-root',
+			repoRoot,
+			'--agent-root',
+			agentRoot,
+		],
+		{
+			cwd: repoRoot,
+			env,
+			encoding: 'utf8',
+			maxBuffer: 1024 * 1024 * 12,
+		}
+	);
+	if (result.status !== 0) {
+		throw new Error(`review-replan helper failed:\n${result.stderr || result.stdout}`);
+	}
+	try {
+		return JSON.parse(result.stdout);
+	} catch (error) {
+		throw new Error(`Invalid JSON from review-replan helper:\n${result.stdout}`);
+	}
+}
+
+function runExecutorModule(options) {
+	const prompt = promptById('analyze-repo');
+	const runName = `module-executor-${runId}`;
+	const { agentRoot, runDir, env } = createTestEnv(runName);
+	const planModel = preparePlanForExecution(prompt, env);
+	const queued = queuePlanDispatch(prompt, env, planModel, 'executor-queue');
+	let dispatchInfo = latestDispatchInfo(agentRoot);
+	consumeExecutor(dispatchInfo, env);
+	dispatchInfo = latestDispatchInfo(agentRoot);
+	assertExecutorArtifacts('executor', queued, agentRoot, { expectFeed: false });
+	assertCondition(
+		!fs.existsSync(path.join(dispatchInfo.dispatchDir, 'governor_decision.json')),
+		'executor: Governor decision should not exist before reviewer/finalizer run'
+	);
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: 'module:executor',
+		stage: 'executor_completed',
+		permissionScope: queued.snapshot.permissionScope,
+		dispatchRef: dispatchInfo.request.dispatch_ref,
+	};
+}
+
+function runReviewerModule(options) {
+	const prompt = promptById('analyze-repo');
+	const runName = `module-reviewer-${runId}`;
+	const { agentRoot, runDir, env } = createTestEnv(runName);
+	const planModel = preparePlanForExecution(prompt, env);
+	const queued = queuePlanDispatch(prompt, env, planModel, 'reviewer-queue');
+	let dispatchInfo = latestDispatchInfo(agentRoot);
+	consumeExecutor(dispatchInfo, env);
+	dispatchInfo = latestDispatchInfo(agentRoot);
+	assertExecutorArtifacts('reviewer', queued, agentRoot, { expectFeed: false });
+	consumeReviewer(dispatchInfo, env);
+	dispatchInfo = latestDispatchInfo(agentRoot);
+	const review = assertReviewerArtifacts('reviewer', queued, dispatchInfo, { expectFeed: false });
+	finalizeDispatch(dispatchInfo, env);
+	const decision = assertGovernorDecision('reviewer', queued, dispatchInfo, { expectFeed: false });
+	assertCondition(review.verdict === 'pass', `reviewer: expected pass verdict, got ${review.verdict}`);
+	assertCondition(decision.decision === 'accept', `reviewer: expected accept decision, got ${decision.decision}`);
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: 'module:reviewer',
+		stage: 'governor_decision_recorded',
+		permissionScope: queued.snapshot.permissionScope,
+		dispatchRef: dispatchInfo.request.dispatch_ref,
+	};
+}
+
+function runReviewReplanModule(options) {
+	const runName = `module-review-replan-${runId}`;
+	const { agentRoot, runDir, env } = createTestEnv(runName);
+	const result = runReviewReplanHelper(agentRoot, env);
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: result.id,
+		stage: result.stage,
+		permissionScope: result.permissionScope,
+		dispatchRef: result.dispatchRef,
+	};
+}
+
+function runModule(moduleName, options) {
+	switch (moduleName) {
+		case 'executor':
+			return [runExecutorModule(options)];
+		case 'reviewer':
+			return [runReviewerModule(options)];
+		case 'review-replan':
+			return [runReviewReplanModule(options)];
+		case 'all':
+			return [
+				runExecutorModule(options),
+				runReviewerModule(options),
+				runReviewReplanModule(options),
+			];
+		default:
+			throw new Error(`Unknown module: ${moduleName}`);
+	}
+}
+
 function main() {
 	const options = parseArgs(process.argv.slice(2));
+	if (options.module) {
+		const results = runModule(options.module, options);
+		for (const result of results) {
+			process.stdout.write(
+				`[process-test] ${result.id}: ${result.stage} (${result.permissionScope})\n`
+			);
+		}
+		process.stdout.write(`Validated ${results.length} command-only module flow(s).\n`);
+		return;
+	}
 	const prompts = options.all
 		? catalog.prompts.filter(supportedPrompt)
 		: [promptById(options.promptId)];
