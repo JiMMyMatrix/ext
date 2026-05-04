@@ -35,7 +35,8 @@ the question is specifically whether Executor, Reviewer, or the
 Reviewer-requested replan loop still works. The replan module uses a dedicated
 test helper to force reviewer feedback outside the production dispatch helper,
 then verifies that the revised plan stays in the same work folder and that the
-next dispatch targets the latest plan context.
+internal loop automatically re-executes the latest plan context under the
+existing Execute permission.
 
 ## Phase 2: UI/UX Correctness
 

@@ -37,7 +37,18 @@ def governor_reply(body: str) -> mock._patch:
     )
 
 
-def request_changes_review(_repo_root: Path, request: dict, _result: dict) -> dict:
+def review_with_first_change(_repo_root: Path, request: dict, _result: dict) -> dict:
+    if request.get("attempt_number") != 1:
+        return {
+            "dispatch_ref": request["dispatch_ref"],
+            "reviewer_role": "agentR-helper",
+            "verdict": "pass",
+            "validator_assessment": ["second attempt passed"],
+            "scope_assessment": ["scope is bounded"],
+            "findings": [],
+            "residual_risks": [],
+            "recommendation": "accept",
+        }
     return {
         "dispatch_ref": request["dispatch_ref"],
         "reviewer_role": "agentR-helper",
@@ -88,7 +99,7 @@ def run(repo_root: Path, agent_root: Path) -> dict[str, object]:
         assert_condition(initial_plan, "initial plan-ready state missing")
 
         with (
-            mock.patch.object(dispatch, "build_helper_review", side_effect=request_changes_review),
+            mock.patch.object(dispatch, "build_helper_review", side_effect=review_with_first_change),
             governor_reply("Revised plan from reviewer feedback."),
         ):
             model = session.dispatch_session_action(
@@ -99,66 +110,58 @@ def run(repo_root: Path, agent_root: Path) -> dict[str, object]:
                 repo_root=repo_root,
             )
 
-        revised_plan = model["planReadyRequest"]
-        assert_condition(model["snapshot"]["currentStage"] == "plan_ready", "state did not return to plan_ready")
-        assert_condition(revised_plan, "revised plan-ready request missing")
-        assert_condition(revised_plan["workRef"] == initial_plan["workRef"], "revised plan changed work folder")
         assert_condition(
-            revised_plan["planVersion"] == initial_plan["planVersion"] + 1,
-            "plan version did not increment",
+            model["snapshot"]["currentStage"] == "governor_decision_recorded",
+            "state did not finish after automatic re-execution",
         )
-        assert_condition(
-            revised_plan["revisionReason"] == "review_requested_changes",
-            "revision reason was not reviewer feedback",
-        )
+        assert_condition(model["planReadyRequest"] is None, "plan-ready checkpoint paused the internal loop")
 
         initial_plan_path = repo_root / initial_plan["planRef"]
-        revised_plan_path = repo_root / revised_plan["planRef"]
         assert_condition(initial_plan_path.exists(), "initial plan artifact missing")
+
+        work_index = load_json(agent_root / "work" / initial_plan["workRef"] / "work.json")
+        assert_condition(work_index["current_plan_version"] == 2, "work index did not advance plan version")
+        assert_condition(work_index["status"] == "completed", "work index is not completed")
+        assert_condition(len(work_index["plans"]) == 2, "work index did not record two plans")
+        assert_condition(len(work_index["attempts"]) == 2, "work index did not record two attempts")
+        assert_condition(len(work_index["reviews"]) == 2, "work index did not record two reviewer artifacts")
+        assert_condition(len(work_index["decisions"]) == 2, "work index did not record two Governor decisions")
+        revised_plan = next((plan for plan in work_index["plans"] if plan["plan_version"] == 2), None)
+        assert_condition(revised_plan is not None, "revised plan entry missing")
+        assert_condition(
+            revised_plan["revision_reason"] == "review_requested_changes",
+            "revision reason was not reviewer feedback",
+        )
+        revised_plan_path = repo_root / revised_plan["plan_ref"]
         assert_condition(revised_plan_path.exists(), "revised plan artifact missing")
         assert_condition(initial_plan_path.parent == revised_plan_path.parent, "plan artifacts are not colocated")
 
-        work_index = load_json(agent_root / "work" / revised_plan["workRef"] / "work.json")
-        assert_condition(work_index["current_plan_version"] == 2, "work index did not advance plan version")
-        assert_condition(work_index["status"] == "plan_ready", "work index is not plan_ready")
-        assert_condition(len(work_index["plans"]) == 2, "work index did not record two plans")
-        assert_condition(len(work_index["attempts"]) == 1, "work index did not record first attempt")
-        assert_condition(len(work_index["reviews"]) == 1, "work index did not record reviewer artifact")
-        assert_condition(len(work_index["decisions"]) == 1, "work index did not record Governor decision")
-
-        first_dispatches = dispatch_requests(agent_root)
-        assert_condition(len(first_dispatches) == 1, "expected one dispatch before re-execute")
-        first_dispatch = first_dispatches[0]
-        assert_condition(first_dispatch["work_ref"] == revised_plan["workRef"], "first dispatch work_ref mismatch")
-        assert_condition(first_dispatch["plan_version"] == 1, "first dispatch was not plan v1")
-
-        model = session.dispatch_session_action(
-            "execute_plan",
-            request_id="process-test:review-replan:execute-again",
-            context_ref=revised_plan["contextRef"],
-            repo_root=repo_root,
-        )
-
-        second_dispatches = dispatch_requests(agent_root)
-        assert_condition(len(second_dispatches) == 2, "second dispatch was not created")
-        second_dispatch = next(
-            (request for request in second_dispatches if request.get("attempt_number") == 2),
+        all_dispatches = dispatch_requests(agent_root)
+        assert_condition(len(all_dispatches) == 2, "automatic re-execution did not create two dispatches")
+        first_dispatch = next(
+            (request for request in all_dispatches if request.get("attempt_number") == 1),
             None,
         )
+        second_dispatch = next(
+            (request for request in all_dispatches if request.get("attempt_number") == 2),
+            None,
+        )
+        assert_condition(first_dispatch is not None, "first attempt request missing")
         assert_condition(second_dispatch is not None, "second attempt request missing")
+        assert_condition(first_dispatch["work_ref"] == initial_plan["workRef"], "first dispatch work_ref mismatch")
+        assert_condition(first_dispatch["plan_version"] == 1, "first dispatch was not plan v1")
         assert_condition(second_dispatch["work_ref"] == initial_plan["workRef"], "second attempt changed work folder")
         assert_condition(second_dispatch["plan_version"] == 2, "second attempt did not target latest plan")
         assert_condition(
             second_dispatch["revision_of_dispatch_ref"] == first_dispatch["dispatch_ref"],
             "second attempt did not link to first dispatch",
         )
-        assert_condition(model["snapshot"]["currentStage"] == "dispatch_queued", "second dispatch did not queue")
 
     return {
         "id": "module:review-replan",
-        "stage": "plan_ready",
+        "stage": "governor_decision_recorded",
         "permissionScope": "execute",
-        "dispatchRef": first_dispatch["dispatch_ref"],
+        "dispatchRef": second_dispatch["dispatch_ref"],
     }
 
 

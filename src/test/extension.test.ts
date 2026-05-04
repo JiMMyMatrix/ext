@@ -662,6 +662,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(transportSource.includes("configured === 'exec' ? 'exec' : 'app-server'"));
 		assert.ok(transportSource.includes("'--governor-runtime', 'external'"));
 		assert.ok(transportSource.includes("'complete-governor-turn'"));
+		assert.ok(transportSource.includes('const completed = await this.runRaw'));
+		assert.ok(transportSource.includes('isGovernorRuntimeResponse(completed)'));
 		assert.ok(transportSource.includes("'fail-governor-turn'"));
 		assert.ok(transportSource.includes('isAppServerShutdownReason'));
 		assert.ok(transportSource.includes('isGovernorRuntimeResponse'));

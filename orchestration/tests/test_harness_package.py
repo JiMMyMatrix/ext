@@ -1764,7 +1764,18 @@ class HarnessPackageTests(unittest.TestCase):
                     )
                 initial_plan = model["planReadyRequest"]
 
-                def request_changes_review(_repo_root: Path, request: dict, _result: dict) -> dict:
+                def review_with_first_change(_repo_root: Path, request: dict, _result: dict) -> dict:
+                    if request.get("attempt_number") != 1:
+                        return {
+                            "dispatch_ref": request["dispatch_ref"],
+                            "reviewer_role": "agentR-helper",
+                            "verdict": "pass",
+                            "validator_assessment": ["second attempt passed"],
+                            "scope_assessment": ["scope is bounded"],
+                            "findings": [],
+                            "residual_risks": [],
+                            "recommendation": "accept",
+                        }
                     return {
                         "dispatch_ref": request["dispatch_ref"],
                         "reviewer_role": "agentR-helper",
@@ -1777,7 +1788,7 @@ class HarnessPackageTests(unittest.TestCase):
                     }
 
                 with (
-                    mock.patch.object(dispatch, "build_helper_review", side_effect=request_changes_review),
+                    mock.patch.object(dispatch, "build_helper_review", side_effect=review_with_first_change),
                     self._mock_governor_dialogue(body="Revised plan from reviewer feedback."),
                 ):
                     model = session.dispatch_session_action(
@@ -1788,58 +1799,145 @@ class HarnessPackageTests(unittest.TestCase):
                         repo_root=repo_root,
                     )
 
-                self.assertEqual(model["snapshot"]["currentStage"], "plan_ready")
+                self.assertEqual(model["snapshot"]["currentStage"], "governor_decision_recorded")
                 self.assertEqual(model["snapshot"]["permissionScope"], "execute")
-                self.assertIsNotNone(model["planReadyRequest"])
-                revised_plan = model["planReadyRequest"]
-                self.assertEqual(revised_plan["planVersion"], initial_plan["planVersion"] + 1)
-                self.assertEqual(revised_plan["workRef"], initial_plan["workRef"])
-                self.assertEqual(revised_plan["revisionReason"], "review_requested_changes")
+                self.assertIsNone(model["planReadyRequest"])
 
-                work_dir = Path(runtime_agent_root) / "work" / revised_plan["workRef"]
+                work_dir = Path(runtime_agent_root) / "work" / initial_plan["workRef"]
                 plan_v1 = repo_root / initial_plan["planRef"]
-                plan_v2 = repo_root / revised_plan["planRef"]
                 self.assertTrue(plan_v1.exists())
-                self.assertTrue(plan_v2.exists())
-                self.assertEqual(plan_v1.parent, plan_v2.parent)
                 work_index = load_json(work_dir / "work.json")
                 self.assertEqual(work_index["current_plan_version"], 2)
-                self.assertEqual(work_index["status"], "plan_ready")
+                self.assertEqual(work_index["status"], "completed")
                 self.assertEqual(len(work_index["plans"]), 2)
-                self.assertEqual(len(work_index["attempts"]), 1)
-                self.assertEqual(len(work_index["reviews"]), 1)
-                self.assertEqual(len(work_index["decisions"]), 1)
-
-                first_request_path = next(Path(runtime_agent_root).glob("dispatches/**/request.json"))
-                first_request = load_json(first_request_path)
-                self.assertEqual(first_request["work_ref"], revised_plan["workRef"])
-                self.assertEqual(first_request["plan_ref"], initial_plan["planRef"])
-                self.assertEqual(first_request["plan_version"], 1)
-                self.assertEqual(first_request["attempt_number"], 1)
-
-                model = session.dispatch_session_action(
-                    "execute_plan",
-                    request_id="corgi-request:revision-execute-again",
-                    context_ref=revised_plan["contextRef"],
-                    repo_root=repo_root,
+                self.assertEqual(len(work_index["attempts"]), 2)
+                self.assertEqual(len(work_index["reviews"]), 2)
+                self.assertEqual(len(work_index["decisions"]), 2)
+                revised_plan_entry = next(
+                    plan for plan in work_index["plans"] if plan["plan_version"] == 2
                 )
+                self.assertEqual(revised_plan_entry["revision_reason"], "review_requested_changes")
+                plan_v2 = repo_root / revised_plan_entry["plan_ref"]
+                self.assertTrue(plan_v2.exists())
+                self.assertEqual(plan_v1.parent, plan_v2.parent)
 
                 dispatch_requests = [
                     load_json(path)
                     for path in Path(runtime_agent_root).glob("dispatches/**/request.json")
                 ]
                 self.assertEqual(len(dispatch_requests), 2)
+                first_request = next(
+                    request for request in dispatch_requests if request["attempt_number"] == 1
+                )
                 second_request = next(
                     request for request in dispatch_requests if request["attempt_number"] == 2
                 )
-                self.assertEqual(second_request["work_ref"], revised_plan["workRef"])
-                self.assertEqual(second_request["plan_ref"], revised_plan["planRef"])
+                self.assertEqual(first_request["work_ref"], initial_plan["workRef"])
+                self.assertEqual(first_request["plan_ref"], initial_plan["planRef"])
+                self.assertEqual(first_request["plan_version"], 1)
+                self.assertEqual(second_request["work_ref"], initial_plan["workRef"])
+                self.assertEqual(second_request["plan_ref"], revised_plan_entry["plan_ref"])
                 self.assertEqual(second_request["plan_version"], 2)
-                self.assertEqual(second_request["attempt_number"], 2)
                 self.assertEqual(
                     second_request["revision_of_dispatch_ref"],
                     first_request["dispatch_ref"],
                 )
+
+    def test_session_reviewer_replan_stops_at_revision_limit(self) -> None:
+        repo_root = Path.cwd()
+        agent_parent = repo_root / ".agent"
+        agent_parent.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=agent_parent) as runtime_agent_root:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "ORCHESTRATION_AGENT_ROOT": runtime_agent_root,
+                        "ORCHESTRATION_APPROVED_PYTHON": str(Path(sys.executable).resolve()),
+                    },
+                ),
+                mock.patch.object(
+                    runtime_support,
+                    "APPROVED_PYTHON",
+                    Path(sys.executable).resolve(),
+                ),
+            ):
+                model = session.dispatch_session_action(
+                    "submit_prompt",
+                    text="Analyze the repo.",
+                    request_id="corgi-request:limit-analyze",
+                    repo_root=repo_root,
+                    **self._semantic_submit(),
+                )
+                model = session.dispatch_session_action(
+                    "answer_clarification",
+                    text="Focus on architecture, structure, and subsystem boundaries.",
+                    request_id="corgi-request:limit-clarify",
+                    context_ref=model["activeClarification"]["contextRef"],
+                    repo_root=repo_root,
+                )
+                with self._mock_governor_dialogue(body="Initial plan."):
+                    model = session.dispatch_session_action(
+                        "set_permission_scope",
+                        permission_scope="plan",
+                        request_id="corgi-request:limit-plan",
+                        context_ref=model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+                        repo_root=repo_root,
+                    )
+                initial_plan = model["planReadyRequest"]
+
+                def review_always_requests_changes(_repo_root: Path, request: dict, _result: dict) -> dict:
+                    return {
+                        "dispatch_ref": request["dispatch_ref"],
+                        "reviewer_role": "agentR-helper",
+                        "verdict": "request_changes",
+                        "validator_assessment": [f"forced failure attempt {request.get('attempt_number')}"],
+                        "scope_assessment": ["scope needs another pass"],
+                        "findings": ["The work still needs correction."],
+                        "residual_risks": [],
+                        "recommendation": "redispatch_or_reject",
+                    }
+
+                with (
+                    mock.patch.object(dispatch, "build_helper_review", side_effect=review_always_requests_changes),
+                    self._mock_governor_dialogue(body="Revised plan from reviewer feedback."),
+                ):
+                    model = session.dispatch_session_action(
+                        "execute_plan",
+                        request_id="corgi-request:limit-execute",
+                        context_ref=initial_plan["contextRef"],
+                        auto_consume_executor=True,
+                        repo_root=repo_root,
+                    )
+
+                self.assertEqual(model["snapshot"]["currentStage"], "blocked")
+                self.assertEqual(model["snapshot"]["permissionScope"], "execute")
+                self.assertEqual(model["snapshot"]["runState"], "idle")
+                self.assertIsNone(model["planReadyRequest"])
+                self.assertIsNone(model["activeForegroundRequestId"])
+                self.assertEqual(model["feed"][-1]["title"], "Revision limit reached")
+                self.assertEqual(model["feed"][-1]["presentation_key"], "error.revision_limit")
+
+                work_index = load_json(Path(runtime_agent_root) / "work" / initial_plan["workRef"] / "work.json")
+                self.assertEqual(work_index["current_plan_version"], 3)
+                self.assertEqual(work_index["revision_count"], 2)
+                self.assertEqual(work_index["status"], "needs_replan")
+                self.assertEqual(len(work_index["plans"]), 3)
+                self.assertEqual(len(work_index["attempts"]), 3)
+                self.assertEqual(len(work_index["reviews"]), 3)
+                self.assertEqual(len(work_index["decisions"]), 3)
+
+                dispatch_requests = [
+                    load_json(path)
+                    for path in Path(runtime_agent_root).glob("dispatches/**/request.json")
+                ]
+                self.assertEqual(len(dispatch_requests), 3)
+                by_attempt = {request["attempt_number"]: request for request in dispatch_requests}
+                self.assertEqual(by_attempt[1]["plan_version"], 1)
+                self.assertEqual(by_attempt[2]["plan_version"], 2)
+                self.assertEqual(by_attempt[3]["plan_version"], 3)
+                self.assertEqual(by_attempt[2]["revision_of_dispatch_ref"], by_attempt[1]["dispatch_ref"])
+                self.assertEqual(by_attempt[3]["revision_of_dispatch_ref"], by_attempt[2]["dispatch_ref"])
 
     def test_session_new_intake_resets_previous_work_bundle_state(self) -> None:
         repo_root = Path.cwd()
@@ -1949,7 +2047,18 @@ class HarnessPackageTests(unittest.TestCase):
                     )
                 initial_plan = model["planReadyRequest"]
 
-                def request_changes_review(_repo_root: Path, request: dict, _result: dict) -> dict:
+                def review_with_first_change(_repo_root: Path, request: dict, _result: dict) -> dict:
+                    if request.get("attempt_number") != 1:
+                        return {
+                            "dispatch_ref": request["dispatch_ref"],
+                            "reviewer_role": "agentR-helper",
+                            "verdict": "pass",
+                            "validator_assessment": ["second attempt passed"],
+                            "scope_assessment": ["scope is bounded"],
+                            "findings": [],
+                            "residual_risks": [],
+                            "recommendation": "accept",
+                        }
                     return {
                         "dispatch_ref": request["dispatch_ref"],
                         "reviewer_role": "agentR-helper",
@@ -1961,7 +2070,7 @@ class HarnessPackageTests(unittest.TestCase):
                         "recommendation": "redispatch_or_reject",
                     }
 
-                with mock.patch.object(dispatch, "build_helper_review", side_effect=request_changes_review):
+                with mock.patch.object(dispatch, "build_helper_review", side_effect=review_with_first_change):
                     prepared = session.dispatch_session_action(
                         "execute_plan",
                         request_id="corgi-request:external-replan-execute",
@@ -1984,10 +2093,22 @@ class HarnessPackageTests(unittest.TestCase):
                     runtime_body="Revised plan from app-server Governor.",
                     repo_root=repo_root,
                 )
-                revised_plan = model["planReadyRequest"]
-                self.assertEqual(revised_plan["workRef"], initial_plan["workRef"])
-                self.assertEqual(revised_plan["planVersion"], 2)
-                self.assertEqual(revised_plan["revisionReason"], "review_requested_changes")
+                self.assertEqual(model["snapshot"]["currentStage"], "governor_decision_recorded")
+                self.assertEqual(model["snapshot"]["permissionScope"], "execute")
+                self.assertIsNone(model["planReadyRequest"])
+                dispatch_requests = [
+                    load_json(path)
+                    for path in Path(runtime_agent_root).glob("dispatches/**/request.json")
+                ]
+                self.assertEqual(len(dispatch_requests), 2)
+                second_request = next(
+                    request for request in dispatch_requests if request["attempt_number"] == 2
+                )
+                self.assertEqual(second_request["work_ref"], initial_plan["workRef"])
+                self.assertEqual(second_request["plan_version"], 2)
+                work_index = load_json(Path(runtime_agent_root) / "work" / initial_plan["workRef"] / "work.json")
+                self.assertEqual(work_index["status"], "completed")
+                self.assertEqual(work_index["current_plan_version"], 2)
 
     def test_executor_test_fixture_starts_at_plan_ready_execution_checkpoint(self) -> None:
         repo_root = Path.cwd()

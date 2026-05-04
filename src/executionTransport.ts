@@ -481,7 +481,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 				totalElapsedMs,
 			});
 			this.governorRuntimeStartedAtById.delete(request.runtimeRequestId);
-			return (await this.runRaw(
+			const completed = await this.runRaw(
 				'session',
 				'complete-governor-turn',
 				undefined,
@@ -496,7 +496,15 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 					...(result.turnId ? ['--turn-id', result.turnId] : []),
 					...(result.itemId ? ['--item-id', result.itemId] : []),
 				]
-			)) as ExecutionWindowModel;
+			);
+			if (isGovernorRuntimeResponse(completed)) {
+				return this.handleGovernorRuntimeResponse(
+					completed.request,
+					completed.model,
+					0
+				);
+			}
+			return completed as ExecutionWindowModel;
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			if (this.disposed || isAppServerShutdownReason(reason)) {

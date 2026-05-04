@@ -764,6 +764,10 @@ def _prepare_governor_dialogue_runtime_request(
 	semantic_normalized_text: str | None = None,
 	result_stage: str = "dialogue_ready",
 	runtime_kind: str = "dialogue",
+	auto_execute_revised_plan: bool = False,
+	auto_consume_executor_after_plan: bool = False,
+	auto_governor_runtime_after_plan: str = "exec",
+	return_runtime_request: bool = False,
 ) -> dict[str, Any]:
 	context = _governor_dialogue_context(session, prompt, repo_root=repo_root)
 	governor_meta = _governor_dialogue_meta(session)
@@ -806,6 +810,10 @@ def _prepare_governor_dialogue_runtime_request(
 		"semanticNormalizedText": semantic_normalized_text or prompt,
 		"revisionReason": session["model"].get("currentPlanRevisionReason"),
 		"latestReviewRef": session["model"].get("latestReviewRef"),
+		"autoExecuteRevisedPlan": auto_execute_revised_plan,
+		"autoConsumeExecutorAfterPlan": auto_consume_executor_after_plan,
+		"autoGovernorRuntimeAfterPlan": auto_governor_runtime_after_plan,
+		"returnAsRuntimeRequest": return_runtime_request,
 		"context": {
 			"sessionRef": session["model"]["snapshot"].get("sessionRef"),
 			"foregroundRequestId": request_id,
@@ -965,6 +973,17 @@ def _append_completed_governor_dialogue_response(
 			revision_reason=pending.get("revisionReason"),
 			latest_review_ref=pending.get("latestReviewRef"),
 		)
+		if pending.get("autoExecuteRevisedPlan"):
+			if _auto_execute_revised_plan(
+				session,
+				now,
+				repo_root=repo_root,
+				request_id=f"{pending.get('requestId')}:auto-reexecute",
+				governor_runtime=str(pending.get("autoGovernorRuntimeAfterPlan") or "exec"),
+				auto_consume_executor=bool(pending.get("autoConsumeExecutorAfterPlan")),
+				return_runtime_request=True,
+			):
+				return True
 	else:
 		model["planReadyRequest"] = None
 	model["activeForegroundRequestId"] = None
@@ -1539,6 +1558,10 @@ def _append_governor_dialogue_response(
 	result_stage: str = "dialogue_ready",
 	runtime_kind: str = "dialogue",
 	governor_runtime: str = "exec",
+	auto_execute_revised_plan: bool = False,
+	auto_consume_executor_after_plan: bool = False,
+	auto_governor_runtime_after_plan: str = "exec",
+	return_runtime_request: bool = False,
 ) -> bool:
 	model = session["model"]
 	if governor_runtime == "external":
@@ -1559,6 +1582,10 @@ def _append_governor_dialogue_response(
 			semantic_normalized_text=semantic_normalized_text,
 			result_stage=result_stage,
 			runtime_kind=runtime_kind,
+			auto_execute_revised_plan=auto_execute_revised_plan,
+			auto_consume_executor_after_plan=auto_consume_executor_after_plan,
+			auto_governor_runtime_after_plan=auto_governor_runtime_after_plan,
+			return_runtime_request=return_runtime_request,
 		)
 		return True
 	try:
@@ -1630,6 +1657,17 @@ def _append_governor_dialogue_response(
 			revision_reason=model.get("currentPlanRevisionReason"),
 			latest_review_ref=model.get("latestReviewRef"),
 		)
+		if auto_execute_revised_plan:
+			if _auto_execute_revised_plan(
+				session,
+				now,
+				repo_root=repo_root,
+				request_id=f"{request_id}:auto-reexecute",
+				governor_runtime=auto_governor_runtime_after_plan,
+				auto_consume_executor=auto_consume_executor_after_plan,
+				return_runtime_request=return_runtime_request,
+			):
+				return True
 	else:
 		model["planReadyRequest"] = None
 	model["activeForegroundRequestId"] = None
@@ -2233,6 +2271,42 @@ def _decision_needs_replan(decision_payload: dict[str, Any] | None) -> bool:
 	}
 
 
+def _auto_execute_revised_plan(
+	session: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	governor_runtime: str = "exec",
+	auto_consume_executor: bool = False,
+	return_runtime_request: bool = False,
+) -> bool:
+	model = session["model"]
+	plan_ready = model.get("planReadyRequest")
+	if not isinstance(plan_ready, dict):
+		return False
+	if model["snapshot"].get("currentStage") != "plan_ready":
+		return False
+	if model.get("currentPlanRevisionReason") != "review_requested_changes":
+		return False
+	if not _scope_satisfies(model["snapshot"].get("permissionScope"), "execute"):
+		return False
+	context_ref = plan_ready.get("contextRef")
+	if not isinstance(context_ref, str) or not context_ref.strip():
+		return False
+	handle_execute_plan(
+		session,
+		repo_root=repo_root,
+		session_ref=model["snapshot"].get("sessionRef"),
+		request_id=request_id or _next_id("request"),
+		context_ref=context_ref,
+		governor_runtime=governor_runtime,
+		auto_consume_executor=auto_consume_executor,
+		return_runtime_request=return_runtime_request,
+	)
+	return True
+
+
 def _maybe_replan_after_review(
 	session: dict[str, Any],
 	dispatch_refs: dict[str, Any] | None,
@@ -2242,6 +2316,8 @@ def _maybe_replan_after_review(
 	repo_root: str | Path | None = None,
 	request_id: str | None = None,
 	governor_runtime: str = "exec",
+	auto_consume_executor: bool = False,
+	return_runtime_request: bool = False,
 ) -> bool:
 	decision_payload = _record_work_review_and_decision(
 		session,
@@ -2293,7 +2369,7 @@ def _maybe_replan_after_review(
 		f"Reviewer artifact: {review_ref}. "
 		f"Governor decision: {decision_payload.get('decision')} - {decision_payload.get('reason')}."
 	)
-	return _append_governor_dialogue_response(
+	replanned = _append_governor_dialogue_response(
 		session,
 		prompt,
 		now,
@@ -2306,7 +2382,13 @@ def _maybe_replan_after_review(
 		result_stage="plan_ready",
 		runtime_kind="plan",
 		governor_runtime=governor_runtime,
+		auto_execute_revised_plan=auto_consume_executor
+		and _scope_satisfies(model["snapshot"].get("permissionScope"), "execute"),
+		auto_consume_executor_after_plan=auto_consume_executor,
+		auto_governor_runtime_after_plan=governor_runtime,
+		return_runtime_request=return_runtime_request,
 	)
+	return replanned
 
 
 def _plan_execution_objective(model: dict[str, Any]) -> str:
@@ -3687,6 +3769,7 @@ def handle_execute_plan(
 	context_ref: str | None = None,
 	governor_runtime: str = "exec",
 	auto_consume_executor: bool = False,
+	return_runtime_request: bool = False,
 ) -> None:
 	now = utc_now()
 	model = session["model"]
@@ -3846,6 +3929,8 @@ def handle_execute_plan(
 			repo_root=repo_root,
 			request_id=request_id,
 			governor_runtime=governor_runtime,
+			auto_consume_executor=auto_consume_executor,
+			return_runtime_request=return_runtime_request,
 		)
 		model["snapshot"]["recentArtifacts"] = (
 			list(model["snapshot"].get("recentArtifacts") or [])
@@ -4039,7 +4124,9 @@ def handle_complete_governor_turn(
 		app_server_item_id=item_id,
 		runtime_source=runtime_source,
 	)
-	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
+	current_pending = _pending_governor_runtime_request(session)
+	if not current_pending or current_pending.get("runtimeRequestId") == runtime_request_id:
+		session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
 
 
 def handle_fallback_governor_turn(
@@ -4623,7 +4710,10 @@ def dispatch_session_action(
 		_remember_request(session, request_id, command, now)
 	save_session(session, repo_root=repo_root)
 	pending = _pending_governor_runtime_request(session)
-	if governor_runtime == "external" and pending:
+	if pending and (
+		governor_runtime == "external"
+		or (command == "complete_governor_turn" and pending.get("returnAsRuntimeRequest"))
+	):
 		return {
 			"kind": "governor_runtime_request",
 			"model": public_model(session),
