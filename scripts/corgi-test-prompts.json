@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "defaultPromptId": "analyze-repo",
+  "prompts": [
+    {
+      "id": "analyze-repo",
+      "label": "Analyze repo",
+      "prompt": "analyze the repo",
+      "category": "governed_work",
+      "requiresScenario": "fresh-session",
+      "purpose": "Baseline governed-work intake covering semantic understanding, clarification, permission, Governor planning, and plan-ready state.",
+      "expectedFlow": [
+        "understanding_request",
+        "clarification_or_permission",
+        "plan_permission",
+        "governor_plan",
+        "plan_ready"
+      ],
+      "assertions": [
+        "Prompt is treated as governed work, not casual dialogue.",
+        "Permission is requested before planning or execution.",
+        "Plan-ready state is authoritative before execute actions appear."
+      ],
+      "tags": ["baseline", "governor-first", "plan"]
+    },
+    {
+      "id": "architecture",
+      "label": "Architecture analysis",
+      "prompt": "Analyze the repo. Focus on architecture, structure, and subsystem boundaries.",
+      "category": "governed_work",
+      "requiresScenario": "fresh-session",
+      "purpose": "Exercises broad but bounded analysis and checks that Corgi preserves the user's narrowed scope.",
+      "expectedFlow": [
+        "understanding_request",
+        "scope_clarification_or_plan_permission",
+        "governor_plan",
+        "plan_ready"
+      ],
+      "assertions": [
+        "Scope remains architecture, structure, and subsystem boundaries.",
+        "Governor plan names likely repo areas without creating dispatch truth.",
+        "Executor does not start before Execute permission."
+      ],
+      "tags": ["architecture", "scope", "plan"]
+    },
+    {
+      "id": "develop-internet",
+      "label": "Develop feature",
+      "prompt": "develop the internet connect feature",
+      "category": "implementation_intent",
+      "requiresScenario": "fresh-session",
+      "purpose": "Covers implementation-style work intent that should stay governed and permission-gated.",
+      "expectedFlow": [
+        "understanding_request",
+        "implementation_clarification_or_permission",
+        "governor_plan",
+        "plan_ready"
+      ],
+      "assertions": [
+        "Feature wording is not rejected merely because it is terse.",
+        "Planning remains separate from dispatch truth.",
+        "Execution remains unavailable until Execute permission."
+      ],
+      "tags": ["feature", "implementation", "permission"]
+    },
+    {
+      "id": "question-work",
+      "label": "Question-shaped work",
+      "prompt": "can we develop the internet feature?",
+      "category": "question_shaped_work",
+      "requiresScenario": "fresh-session",
+      "purpose": "Checks that natural question phrasing can still be interpreted as possible governed work.",
+      "expectedFlow": [
+        "understanding_request",
+        "governor_dialogue_or_governed_work_validation",
+        "clarification_if_ambiguous"
+      ],
+      "assertions": [
+        "Question-shaped work is not forced through a keyword shortcut.",
+        "Ambiguity becomes clarification or a safe Governor dialogue response.",
+        "No permission scope changes silently."
+      ],
+      "tags": ["natural-language", "ambiguity", "governor-first"]
+    },
+    {
+      "id": "progress",
+      "label": "Progress question",
+      "prompt": "what is the current progress?",
+      "category": "governor_dialogue",
+      "requiresScenario": "any-session",
+      "purpose": "Exercises read-only Governor dialogue and progress/status presentation.",
+      "expectedFlow": [
+        "understanding_request",
+        "observe_permission_if_needed",
+        "governor_dialogue"
+      ],
+      "assertions": [
+        "Progress stays read-only.",
+        "No intake, dispatch, or plan-ready state is created.",
+        "Governor output is shown without leaking internal proposal fields."
+      ],
+      "tags": ["dialogue", "progress", "observe"]
+    },
+    {
+      "id": "greeting",
+      "label": "Greeting",
+      "prompt": "hello!",
+      "category": "governor_dialogue",
+      "requiresScenario": "fresh-session",
+      "purpose": "Fast smoke test for lightweight dialogue and first-turn session handling.",
+      "expectedFlow": [
+        "understanding_request",
+        "observe_permission_or_read_only_reply",
+        "governor_dialogue"
+      ],
+      "assertions": [
+        "First-turn submit may omit session_ref.",
+        "Greeting does not create dispatch truth.",
+        "Governor reply remains concise."
+      ],
+      "tags": ["smoke", "dialogue", "first-turn"]
+    },
+    {
+      "id": "review-implementation",
+      "label": "Review implementation",
+      "prompt": "review the implementation for bugs, risks, and missing tests",
+      "category": "review_intent",
+      "requiresScenario": "fresh-session",
+      "purpose": "Exercises read-heavy review intent and later Reviewer handoff expectations.",
+      "expectedFlow": [
+        "understanding_request",
+        "plan_permission",
+        "governor_plan",
+        "reviewer_or_plan_ready"
+      ],
+      "assertions": [
+        "Review intent remains bounded and read-oriented until execution is explicitly authorized.",
+        "Reviewer is not treated as a writer.",
+        "Findings should prioritize bugs, risks, and missing tests."
+      ],
+      "tags": ["review", "risk", "tests"]
+    },
+    {
+      "id": "mixed-stop-work",
+      "label": "Mixed stop and work",
+      "prompt": "stop and analyze the repo",
+      "category": "conflict",
+      "requiresScenario": "running-session",
+      "purpose": "Checks fail-closed behavior for mixed control and work intent.",
+      "expectedFlow": [
+        "understanding_request",
+        "conflict_detection",
+        "block_or_clarification"
+      ],
+      "assertions": [
+        "Mixed stop and new work should not be silently split.",
+        "No dispatch truth is created from a mixed control turn.",
+        "User-facing copy should ask for a clearer single intent."
+      ],
+      "tags": ["conflict", "interrupt", "fail-closed"]
+    },
+    {
+      "id": "permission-followup",
+      "label": "Permission follow-up",
+      "prompt": "go ahead",
+      "category": "stateful_followup",
+      "requiresScenario": "pending-permission",
+      "purpose": "Covers ambiguous follow-up language while a permission choice is active.",
+      "expectedFlow": [
+        "understanding_request",
+        "permission_surface_or_clarification",
+        "no_silent_permission_change"
+      ],
+      "assertions": [
+        "Free text does not silently click permission buttons.",
+        "Permission scope changes only through authoritative permission actions.",
+        "Ambiguous follow-up remains safe."
+      ],
+      "tags": ["permission", "stateful", "fail-closed"]
+    }
+  ]
+}

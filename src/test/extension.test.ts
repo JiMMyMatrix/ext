@@ -50,6 +50,18 @@ const TEST_WINDOW_SCRIPT_PATH = path.resolve(
 	__dirname,
 	'../../scripts/launch-corgi-test-window.sh'
 );
+const TEST_WINDOW_PROMPT_CATALOG_PATH = path.resolve(
+	__dirname,
+	'../../scripts/corgi-test-prompts.json'
+);
+const TEST_WINDOW_PROMPT_SCRIPT_PATH = path.resolve(
+	__dirname,
+	'../../scripts/corgi-test-prompt.cjs'
+);
+const PROCESS_TEST_SCRIPT_PATH = path.resolve(
+	__dirname,
+	'../../scripts/corgi-process-test.cjs'
+);
 const CODEX_APP_SERVER_CLIENT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/codexAppServerClient.ts'
@@ -479,6 +491,21 @@ suite('Corgi Webview UX', () => {
 		);
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 		const launchScriptSource = fs.readFileSync(TEST_WINDOW_SCRIPT_PATH, 'utf8');
+		const promptCatalogSource = fs.readFileSync(TEST_WINDOW_PROMPT_CATALOG_PATH, 'utf8');
+		const promptScriptSource = fs.readFileSync(TEST_WINDOW_PROMPT_SCRIPT_PATH, 'utf8');
+		const processTestSource = fs.readFileSync(PROCESS_TEST_SCRIPT_PATH, 'utf8');
+		const promptCatalog = JSON.parse(promptCatalogSource) as {
+			defaultPromptId: string;
+			prompts: Array<{
+				id: string;
+				prompt: string;
+				category: string;
+				requiresScenario: string;
+				expectedFlow: string[];
+				assertions: string[];
+				tags: string[];
+			}>;
+		};
 		const packageJson = loadPackageJson();
 		const scripts = packageJson.scripts as Record<string, string>;
 
@@ -501,7 +528,62 @@ suite('Corgi Webview UX', () => {
 		assert.ok(launchScriptSource.includes('seed_reviewer_test_session.py'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCENARIO'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_PROMPT'));
-		assert.ok(launchScriptSource.includes('AUTO_PROMPT="analyze the repo"'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_PROMPT_PRESET'));
+		assert.ok(launchScriptSource.includes('corgi-test-prompt.cjs'));
+		assert.ok(promptScriptSource.includes('validateCatalog'));
+		assert.ok(processTestSource.includes('ORCHESTRATION_AGENT_ROOT'));
+		assert.ok(processTestSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
+		assert.ok(processTestSource.includes('--auto-consume-executor'));
+		assert.strictEqual(promptCatalog.defaultPromptId, 'analyze-repo');
+		assert.ok(promptCatalog.prompts.length >= 8);
+		for (const prompt of promptCatalog.prompts) {
+			assert.ok(prompt.id);
+			assert.ok(prompt.prompt);
+			assert.ok(prompt.category);
+			assert.ok(prompt.requiresScenario);
+			assert.ok(prompt.expectedFlow.length > 0);
+			assert.ok(prompt.assertions.length > 0);
+			assert.ok(prompt.tags.length > 0);
+		}
+		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'analyze-repo'));
+		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'architecture'));
+		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'develop-internet'));
+		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'progress'));
+		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'mixed-stop-work'));
+		assert.strictEqual(
+			scripts['test:process'],
+			'node scripts/corgi-process-test.cjs --through-executor'
+		);
+		assert.strictEqual(
+			scripts['test:process:all'],
+			'node scripts/corgi-process-test.cjs --all'
+		);
+		assert.strictEqual(scripts['test:prompts'], 'node scripts/corgi-test-prompt.cjs validate');
+		assert.strictEqual(scripts['test:prompts:list'], 'node scripts/corgi-test-prompt.cjs list');
+		assert.strictEqual(
+			scripts['test:window:architecture'],
+			'CORGI_TEST_WINDOW_PROMPT_PRESET=architecture bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:feature'],
+			'CORGI_TEST_WINDOW_PROMPT_PRESET=develop-internet bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:greeting'],
+			'CORGI_TEST_WINDOW_PROMPT_PRESET=greeting bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:mixed'],
+			'CORGI_TEST_WINDOW_PROMPT_PRESET=mixed-stop-work bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:progress'],
+			'CORGI_TEST_WINDOW_PROMPT_PRESET=progress bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:question-work'],
+			'CORGI_TEST_WINDOW_PROMPT_PRESET=question-work bash scripts/launch-corgi-test-window.sh'
+		);
 		assert.strictEqual(
 			scripts['test:window:executor'],
 			'CORGI_TEST_WINDOW_SCENARIO=execute-permission bash scripts/launch-corgi-test-window.sh'

@@ -13,12 +13,19 @@ STDERR_LOG="$LOG_DIR/vscode.stderr.log"
 LEGACY_USER_DATA_DIR="$ROOT_DIR/.agent/vscode-governor-first-test-user-data"
 APP_NAME="${CORGI_VSCODE_APP_NAME:-Visual Studio Code}"
 TEST_SCENARIO="${CORGI_TEST_WINDOW_SCENARIO:-}"
+PROMPT_PRESET="${CORGI_TEST_WINDOW_PROMPT_PRESET:-}"
 if [[ -n "${CORGI_TEST_WINDOW_AUTO_PROMPT+x}" ]]; then
 	AUTO_PROMPT="$CORGI_TEST_WINDOW_AUTO_PROMPT"
+	AUTO_PROMPT_PRESET=""
+elif [[ -n "$PROMPT_PRESET" ]]; then
+	AUTO_PROMPT="$(node "$ROOT_DIR/scripts/corgi-test-prompt.cjs" get "$PROMPT_PRESET")"
+	AUTO_PROMPT_PRESET="$PROMPT_PRESET"
 elif [[ -n "$TEST_SCENARIO" ]]; then
 	AUTO_PROMPT=""
+	AUTO_PROMPT_PRESET=""
 else
-	AUTO_PROMPT="analyze the repo"
+	AUTO_PROMPT_PRESET="$(node "$ROOT_DIR/scripts/corgi-test-prompt.cjs" default)"
+	AUTO_PROMPT="$(node "$ROOT_DIR/scripts/corgi-test-prompt.cjs" get "$AUTO_PROMPT_PRESET")"
 fi
 
 mkdir -p "$TEST_ROOT" "$LOG_DIR"
@@ -116,4 +123,7 @@ if [[ -n "$TEST_SCENARIO" ]]; then
 fi
 if [[ -n "$AUTO_PROMPT" ]]; then
 	echo "  auto-prompt: $AUTO_PROMPT"
+fi
+if [[ -n "$AUTO_PROMPT_PRESET" ]]; then
+	echo "  prompt preset: $AUTO_PROMPT_PRESET"
 fi
