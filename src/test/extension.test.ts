@@ -557,19 +557,19 @@ suite('Corgi Webview UX', () => {
 
 	test('Governor runtime route resolution is explicit and action-bound', () => {
 		for (const command of [
-			'submit-prompt',
-			'answer-clarification',
-			'set-permission-scope',
-			'revise-plan',
-		]) {
-			assert.strictEqual(resolveGovernorRoute(command, 'app-server'), 'external');
-		}
-		for (const command of [
-			'decline-permission',
-			'execute-plan',
-			'interrupt',
-			'reconnect',
-			'state',
+				'submit-prompt',
+				'answer-clarification',
+				'set-permission-scope',
+				'execute-plan',
+				'revise-plan',
+			]) {
+				assert.strictEqual(resolveGovernorRoute(command, 'app-server'), 'external');
+			}
+			for (const command of [
+				'decline-permission',
+				'interrupt',
+				'reconnect',
+				'state',
 		]) {
 			assert.strictEqual(resolveGovernorRoute(command, 'app-server'), 'exec');
 		}

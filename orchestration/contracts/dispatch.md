@@ -12,6 +12,11 @@ Dispatch truth starts after intake acceptance.
 - `request.json` remains dispatch truth only.
 - Intake must never write `request.json`.
 - `accepted_intake.json` is canonical intake input, not dispatch truth.
+- Work-loop bundle artifacts under `.agent/work/` may group plan versions,
+  attempts, reviews, and decisions for one accepted problem, but they do not
+  replace dispatch truth.
+- Optional `request.json` fields `work_ref`, `plan_ref`, `plan_version`,
+  `attempt_number`, and `revision_of_dispatch_ref` are linkage metadata only.
 
 ## Ownership
 - Governor owns dispatch intent.

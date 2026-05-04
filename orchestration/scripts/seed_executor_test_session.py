@@ -171,10 +171,12 @@ def seed_plan_ready_session(
 		),
 	]
 	session._set_plan_ready_request(  # noqa: SLF001
-		model,
+		payload,
 		now,
 		foreground_request_id=foreground_request_id,
 		advance_version=False,
+		repo_root=repo_root,
+		plan_body=model["feed"][-1]["body"],
 	)
 	payload["meta"]["activeIntakeRef"] = intake["intake_ref"]
 	payload["meta"].setdefault("processedRequestIds", {})

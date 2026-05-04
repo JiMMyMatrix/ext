@@ -804,6 +804,8 @@ def _prepare_governor_dialogue_runtime_request(
 		"semanticBlockReason": semantic_block_reason,
 		"semanticParaphrase": semantic_paraphrase,
 		"semanticNormalizedText": semantic_normalized_text or prompt,
+		"revisionReason": session["model"].get("currentPlanRevisionReason"),
+		"latestReviewRef": session["model"].get("latestReviewRef"),
 		"context": {
 			"sessionRef": session["model"]["snapshot"].get("sessionRef"),
 			"foregroundRequestId": request_id,
@@ -881,6 +883,7 @@ def _append_completed_governor_dialogue_response(
 	body: str,
 	now: str,
 	*,
+	repo_root: str | Path | None = None,
 	app_server_thread_id: str | None = None,
 	app_server_turn_id: str | None = None,
 	app_server_item_id: str | None = None,
@@ -953,7 +956,15 @@ def _append_completed_governor_dialogue_response(
 		transportState="connected",
 	)
 	if result_stage == "plan_ready":
-		_set_plan_ready_request(model, now, foreground_request_id=pending.get("requestId"))
+		_set_plan_ready_request(
+			session,
+			now,
+			foreground_request_id=pending.get("requestId"),
+			repo_root=repo_root,
+			plan_body=reply,
+			revision_reason=pending.get("revisionReason"),
+			latest_review_ref=pending.get("latestReviewRef"),
+		)
 	else:
 		model["planReadyRequest"] = None
 	model["activeForegroundRequestId"] = None
@@ -1076,6 +1087,7 @@ def _apply_governor_semantic_dialogue(
 	reply: str,
 	proposal: dict[str, Any],
 	*,
+	repo_root: str | Path | None = None,
 	runtime_source: str,
 	app_server_thread_id: str | None = None,
 	app_server_turn_id: str | None = None,
@@ -1135,6 +1147,7 @@ def _apply_governor_semantic_dialogue(
 		},
 		reply,
 		now,
+		repo_root=repo_root,
 		app_server_thread_id=app_server_thread_id,
 		app_server_turn_id=app_server_turn_id,
 		app_server_item_id=app_server_item_id,
@@ -1169,6 +1182,7 @@ def _apply_governor_semantic_work_intent(
 		return
 	_supersede_pending_permission_request(model, now, request_id=pending.get("requestId"))
 	envelope = start_intake(prompt, normalized_text=normalized, repo_root=repo_root)
+	_reset_work_loop_state(session)
 	session["meta"]["activeIntakeRef"] = envelope["intake_ref"]
 	model["acceptedIntakeSummary"] = None
 	model["planReadyRequest"] = None
@@ -1252,6 +1266,7 @@ def _apply_governor_semantic_clarification(
 	prompt = trim_text(pending.get("prompt")) or _proposal_normalized_intent(proposal, "")
 	normalized = _proposal_normalized_intent(proposal, prompt)
 	envelope = start_intake(prompt, normalized_text=normalized, repo_root=repo_root)
+	_reset_work_loop_state(session)
 	session["meta"]["activeIntakeRef"] = envelope["intake_ref"]
 	question = trim_text(proposal.get("clarification_question") if isinstance(proposal.get("clarification_question"), str) else "")
 	if not question:
@@ -1416,6 +1431,7 @@ def _complete_governor_semantic_intake(
 			now,
 			reply,
 			proposal,
+			repo_root=repo_root,
 			runtime_source=runtime_source,
 			app_server_thread_id=app_server_thread_id,
 			app_server_turn_id=app_server_turn_id,
@@ -1605,7 +1621,15 @@ def _append_governor_dialogue_response(
 		transportState="connected",
 	)
 	if result_stage == "plan_ready":
-		_set_plan_ready_request(model, now, foreground_request_id=request_id)
+		_set_plan_ready_request(
+			session,
+			now,
+			foreground_request_id=request_id,
+			repo_root=repo_root,
+			plan_body=body,
+			revision_reason=model.get("currentPlanRevisionReason"),
+			latest_review_ref=model.get("latestReviewRef"),
+		)
 	else:
 		model["planReadyRequest"] = None
 	model["activeForegroundRequestId"] = None
@@ -1628,6 +1652,9 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 			"pendingPermissionRequest": None,
 			"pendingInterrupt": None,
 			"recentArtifacts": [],
+			"currentWorkRef": None,
+			"currentPlanVersion": None,
+			"currentAttemptNumber": None,
 			"snapshotFreshness": {"receivedAt": now},
 		},
 		"feed": [
@@ -1643,12 +1670,17 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 		"activeForegroundRequestId": None,
 		"acceptedIntakeSummary": None,
 		"planReadyRequest": None,
+		"currentWorkRef": None,
+		"currentPlanRef": None,
+		"currentAttemptNumber": 0,
+		"planVersion": 0,
 	}
 
 
 def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Path | None = None) -> None:
 	session.setdefault("meta", {})
 	session["meta"].setdefault("activeIntakeRef", None)
+	session["meta"].setdefault("activeWorkRef", None)
 	session["meta"].setdefault("processedRequestIds", {})
 	session["meta"].setdefault("governorDialogue", {})
 	model = session.setdefault("model", _initial_model(now, repo_root=repo_root))
@@ -1678,12 +1710,19 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 			snapshot["pendingPermissionRequest"] = None
 	snapshot.setdefault("pendingInterrupt", None)
 	snapshot.setdefault("recentArtifacts", [])
+	snapshot.setdefault("currentWorkRef", model.get("currentWorkRef"))
+	snapshot.setdefault("currentPlanVersion", model.get("planVersion"))
+	snapshot.setdefault("currentAttemptNumber", model.get("currentAttemptNumber"))
 	snapshot.setdefault("snapshotFreshness", {"receivedAt": now})
 	model.setdefault("feed", [])
 	model.setdefault("activeClarification", None)
 	model.setdefault("activeForegroundRequestId", None)
 	model.setdefault("acceptedIntakeSummary", None)
 	model.setdefault("planReadyRequest", None)
+	model.setdefault("currentWorkRef", session["meta"].get("activeWorkRef"))
+	model.setdefault("currentPlanRef", None)
+	model.setdefault("currentAttemptNumber", 0)
+	model.setdefault("planVersion", 0)
 	if isinstance(model.get("activeClarification"), dict):
 		model["activeClarification"].setdefault(
 			"contextRef", model["activeClarification"].get("id")
@@ -1717,10 +1756,11 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 		and snapshot.get("runState") != "running"
 	):
 		_set_plan_ready_request(
-			model,
+			session,
 			now,
 			foreground_request_id=model.get("activeForegroundRequestId"),
 			advance_version=False,
+			repo_root=repo_root,
 		)
 
 
@@ -1958,6 +1998,10 @@ def _build_plan_ready_request(
 		"contextRef": request_id,
 		"planContextRef": request_id,
 		"planVersion": plan_version,
+		"workRef": model.get("currentWorkRef") or model["snapshot"].get("currentWorkRef"),
+		"planRef": model.get("currentPlanRef"),
+		"revisionReason": model.get("currentPlanRevisionReason"),
+		"latestReviewRef": model.get("latestReviewRef"),
 		"title": "Plan ready",
 		"body": "Review the Governor plan, then execute it or add details for a revision.",
 		"requestedAt": now,
@@ -1969,6 +2013,300 @@ def _build_plan_ready_request(
 
 def _accepted_intake_ref(session: dict[str, Any], repo_root: str | Path | None = None) -> str | None:
 	return session_execution.accepted_intake_ref(session, repo_root)
+
+
+def _reset_work_loop_state(session: dict[str, Any]) -> None:
+	model = session["model"]
+	session.setdefault("meta", {})["activeWorkRef"] = None
+	for key in ["currentPlanRevisionReason", "latestReviewRef", "revisionOfDispatchRef"]:
+		model.pop(key, None)
+	model["currentWorkRef"] = None
+	model["currentPlanRef"] = None
+	model["currentAttemptNumber"] = 0
+	model["planVersion"] = 0
+	model["snapshot"]["currentWorkRef"] = None
+	model["snapshot"]["currentPlanVersion"] = None
+	model["snapshot"]["currentAttemptNumber"] = None
+
+
+def _work_index_path(work_ref: str, *, repo_root: str | Path | None = None) -> Path:
+	return resolve_paths(repo_root).agent_root / "work" / Path(work_ref) / "work.json"
+
+
+def _load_work_index(work_ref: str, *, repo_root: str | Path | None = None) -> dict[str, Any]:
+	path = _work_index_path(work_ref, repo_root=repo_root)
+	return load_json(path) if path.exists() else {}
+
+
+def _save_work_index(work_ref: str, payload: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+	write_json(_work_index_path(work_ref, repo_root=repo_root), payload)
+
+
+def _ensure_work_bundle(
+	session: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+) -> tuple[str, dict[str, Any]]:
+	model = session["model"]
+	meta = session.setdefault("meta", {})
+	work_ref = meta.get("activeWorkRef")
+	if not isinstance(work_ref, str) or not work_ref.strip():
+		lane = model["snapshot"].get("lane") or default_lane(model["snapshot"].get("branch") or git_branch_name(repo_root))
+		work_ref = f"{lane}/{_next_id('work')}"
+		meta["activeWorkRef"] = work_ref
+	index = _load_work_index(work_ref, repo_root=repo_root)
+	if not index:
+		index = {
+			"work_ref": work_ref,
+			"accepted_intake_ref": _accepted_intake_ref(session, repo_root),
+			"lane": model["snapshot"].get("lane"),
+			"task": model["snapshot"].get("task"),
+			"status": "planning",
+			"current_plan_version": 0,
+			"current_plan_ref": None,
+			"revision_count": 0,
+			"plans": [],
+			"attempts": [],
+			"reviews": [],
+			"decisions": [],
+			"created_at": now,
+			"updated_at": now,
+		}
+	else:
+		index.setdefault("work_ref", work_ref)
+		index.setdefault("accepted_intake_ref", _accepted_intake_ref(session, repo_root))
+		index.setdefault("status", "planning")
+		index.setdefault("current_plan_version", 0)
+		index.setdefault("current_plan_ref", None)
+		index.setdefault("revision_count", 0)
+		index.setdefault("plans", [])
+		index.setdefault("attempts", [])
+		index.setdefault("reviews", [])
+		index.setdefault("decisions", [])
+		index["updated_at"] = now
+	_save_work_index(work_ref, index, repo_root=repo_root)
+	model["snapshot"]["currentWorkRef"] = work_ref
+	return work_ref, index
+
+
+def _write_plan_artifact(
+	session: dict[str, Any],
+	now: str,
+	body: str,
+	*,
+	repo_root: str | Path | None = None,
+	revision_reason: str | None = None,
+	latest_review_ref: str | None = None,
+) -> tuple[str, int]:
+	model = session["model"]
+	work_ref, index = _ensure_work_bundle(session, now, repo_root=repo_root)
+	plan_version = int(model.get("planVersion") or 1)
+	plan_path = resolve_paths(repo_root).agent_root / "work" / Path(work_ref) / "plans" / f"plan-v{plan_version}.md"
+	plan_path.parent.mkdir(parents=True, exist_ok=True)
+	header = [
+		f"# Plan v{plan_version}",
+		"",
+		f"- work_ref: {work_ref}",
+		f"- plan_version: {plan_version}",
+	]
+	accepted_ref = _accepted_intake_ref(session, repo_root)
+	if accepted_ref:
+		header.append(f"- accepted_intake_ref: {accepted_ref}")
+	if revision_reason:
+		header.append(f"- revision_reason: {revision_reason}")
+	if latest_review_ref:
+		header.append(f"- latest_review_ref: {latest_review_ref}")
+	header.extend(["", trim_text(body) or "Governor did not return plan text.", ""])
+	plan_path.write_text("\n".join(header), encoding="utf-8")
+	plan_ref = repo_relative(plan_path, repo_root)
+	plans = [item for item in index.get("plans", []) if isinstance(item, dict)]
+	plans = [item for item in plans if item.get("plan_version") != plan_version]
+	plans.append(
+		{
+			"plan_version": plan_version,
+			"plan_ref": plan_ref,
+			"created_at": now,
+			"revision_reason": revision_reason,
+			"latest_review_ref": latest_review_ref,
+		}
+	)
+	index["plans"] = plans
+	index["current_plan_version"] = plan_version
+	index["current_plan_ref"] = plan_ref
+	index["status"] = "plan_ready"
+	index["updated_at"] = now
+	if plan_version > 1:
+		index["revision_count"] = max(int(index.get("revision_count") or 0), plan_version - 1)
+	_save_work_index(work_ref, index, repo_root=repo_root)
+	model["currentPlanRef"] = plan_ref
+	model["currentWorkRef"] = work_ref
+	model["snapshot"]["currentWorkRef"] = work_ref
+	model["snapshot"]["currentPlanVersion"] = plan_version
+	model["snapshot"]["recentArtifacts"] = [
+		_artifact(plan_ref, summary=f"Governor plan v{plan_version}.", authoritative=True, status="plan_ready"),
+		*list(model["snapshot"].get("recentArtifacts") or []),
+	]
+	return plan_ref, plan_version
+
+
+def _record_work_dispatch_attempt(
+	session: dict[str, Any],
+	dispatch_refs: dict[str, Any] | None,
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+) -> None:
+	if not dispatch_refs:
+		return
+	work_ref = dispatch_refs.get("work_ref")
+	if not isinstance(work_ref, str) or not work_ref.strip():
+		return
+	index = _load_work_index(work_ref, repo_root=repo_root)
+	if not index:
+		return
+	attempt_number = dispatch_refs.get("attempt_number")
+	attempts = [item for item in index.get("attempts", []) if isinstance(item, dict)]
+	attempts.append(
+		{
+			"attempt_number": attempt_number,
+			"dispatch_ref": dispatch_refs.get("dispatch_ref"),
+			"request_ref": dispatch_refs.get("request_ref"),
+			"plan_version": dispatch_refs.get("plan_version"),
+			"plan_ref": dispatch_refs.get("plan_ref"),
+			"created_at": now,
+		}
+	)
+	index["attempts"] = attempts
+	index["status"] = "dispatch_queued"
+	index["updated_at"] = now
+	_save_work_index(work_ref, index, repo_root=repo_root)
+	model = session["model"]
+	model["currentAttemptNumber"] = attempt_number
+	model["snapshot"]["currentWorkRef"] = work_ref
+	model["snapshot"]["currentAttemptNumber"] = attempt_number
+
+
+def _record_work_review_and_decision(
+	session: dict[str, Any],
+	dispatch_refs: dict[str, Any] | None,
+	decision: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+) -> dict[str, Any] | None:
+	if not dispatch_refs:
+		return None
+	work_ref = dispatch_refs.get("work_ref")
+	if not isinstance(work_ref, str) or not work_ref.strip():
+		return None
+	index = _load_work_index(work_ref, repo_root=repo_root)
+	if not index:
+		return None
+	decision_ref = None
+	decision_payload: dict[str, Any] = {}
+	dispatch_dir = Path(str(dispatch_refs.get("dispatch_dir") or ""))
+	if dispatch_dir:
+		decision_path = dispatch_dir / "governor_decision.json"
+		if decision_path.exists():
+			decision_ref = repo_relative(decision_path, repo_root)
+			decision_payload = load_json(decision_path)
+	review_ref = dispatch_refs.get("review_ref")
+	if isinstance(review_ref, str) and review_ref.strip() and review_ref not in index.get("reviews", []):
+		index.setdefault("reviews", []).append(review_ref)
+	if decision_ref and decision_ref not in index.get("decisions", []):
+		index.setdefault("decisions", []).append(decision_ref)
+	index["status"] = "completed" if decision_payload.get("decision") == "accept" else "needs_replan"
+	index["updated_at"] = now
+	_save_work_index(work_ref, index, repo_root=repo_root)
+	return decision_payload or None
+
+
+def _decision_needs_replan(decision_payload: dict[str, Any] | None) -> bool:
+	if not isinstance(decision_payload, dict):
+		return False
+	next_action = trim_text(decision_payload.get("recommended_next_action"))
+	return decision_payload.get("decision") == "reject" and next_action in {
+		"redispatch_or_reject",
+		"redispatch_or_escalate",
+		"replan",
+	}
+
+
+def _maybe_replan_after_review(
+	session: dict[str, Any],
+	dispatch_refs: dict[str, Any] | None,
+	decision: dict[str, Any],
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	governor_runtime: str = "exec",
+) -> bool:
+	decision_payload = _record_work_review_and_decision(
+		session,
+		dispatch_refs,
+		decision,
+		now,
+		repo_root=repo_root,
+	)
+	if not _decision_needs_replan(decision_payload):
+		return False
+	model = session["model"]
+	work_ref = dispatch_refs.get("work_ref") if isinstance(dispatch_refs, dict) else None
+	if not isinstance(work_ref, str) or not work_ref.strip():
+		return False
+	index = _load_work_index(work_ref, repo_root=repo_root)
+	if int(index.get("revision_count") or 0) >= 2:
+		_append_error(
+			model,
+			"Revision limit reached",
+			"Reviewer feedback still requires changes after the bounded revision loop. Review the source artifacts before continuing.",
+			now,
+			in_response_to_request_id=request_id,
+			source_artifact_ref=decision.get("artifacts", [{}])[0].get("path")
+			if decision.get("artifacts")
+			else None,
+			presentation_key="error.revision_limit",
+		)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="orchestration",
+			currentStage="blocked",
+			runState="idle",
+			transportState="connected",
+		)
+		model["activeForegroundRequestId"] = None
+		return True
+	review_ref = dispatch_refs.get("review_ref") if isinstance(dispatch_refs, dict) else None
+	model["currentWorkRef"] = work_ref
+	model["snapshot"]["currentWorkRef"] = work_ref
+	model["latestReviewRef"] = review_ref
+	model["currentPlanRevisionReason"] = "review_requested_changes"
+	model["revisionOfDispatchRef"] = dispatch_refs.get("dispatch_ref") if isinstance(dispatch_refs, dict) else None
+	prompt = (
+		"Revise the current plan for the same accepted intake. "
+		"Use the Reviewer feedback and Governor decision as advisory evidence. "
+		"Keep the revised plan in scope and do not create dispatch truth. "
+		f"Previous dispatch: {dispatch_refs.get('dispatch_ref')}. "
+		f"Reviewer artifact: {review_ref}. "
+		f"Governor decision: {decision_payload.get('decision')} - {decision_payload.get('reason')}."
+	)
+	return _append_governor_dialogue_response(
+		session,
+		prompt,
+		now,
+		repo_root=repo_root,
+		request_id=request_id,
+		turn_type="governed_work_intent",
+		semantic_route_type="governed_work_intent",
+		semantic_confidence="high",
+		semantic_normalized_text="revise current plan from reviewer feedback",
+		result_stage="plan_ready",
+		runtime_kind="plan",
+		governor_runtime=governor_runtime,
+	)
 
 
 def _plan_execution_objective(model: dict[str, Any]) -> str:
@@ -1994,7 +2332,7 @@ def _emit_plan_execution_dispatch(
 	repo_root: str | Path | None = None,
 	request_id: str | None = None,
 ) -> dict[str, Any] | None:
-	return session_execution.emit_plan_execution_dispatch(
+	dispatch_refs = session_execution.emit_plan_execution_dispatch(
 		session,
 		now,
 		repo_root=repo_root,
@@ -2002,6 +2340,8 @@ def _emit_plan_execution_dispatch(
 		next_id=_next_id,
 		append_error=_append_error,
 	)
+	_record_work_dispatch_attempt(session, dispatch_refs, now, repo_root=repo_root)
+	return dispatch_refs
 
 
 def _dispatch_artifacts(dispatch_refs: dict[str, Any], *, status: str = "queued") -> list[dict[str, Any]]:
@@ -2119,16 +2459,33 @@ def _post_execution_actor_stage(*results: dict[str, Any]) -> tuple[str, str]:
 
 
 def _set_plan_ready_request(
-	model: dict[str, Any],
+	session: dict[str, Any],
 	now: str,
 	*,
 	foreground_request_id: str | None = None,
 	advance_version: bool = True,
+	repo_root: str | Path | None = None,
+	plan_body: str | None = None,
+	revision_reason: str | None = None,
+	latest_review_ref: str | None = None,
 ) -> None:
+	model = session["model"]
 	if advance_version:
 		model["planVersion"] = int(model.get("planVersion") or 0) + 1
 	else:
 		model["planVersion"] = int(model.get("planVersion") or 1)
+	if plan_body is not None:
+		plan_ref, _ = _write_plan_artifact(
+			session,
+			now,
+			plan_body,
+			repo_root=repo_root,
+			revision_reason=revision_reason,
+			latest_review_ref=latest_review_ref,
+		)
+		model["currentPlanRef"] = plan_ref
+		model["currentPlanRevisionReason"] = revision_reason
+		model["latestReviewRef"] = latest_review_ref
 	model["planReadyRequest"] = _build_plan_ready_request(
 		model, now, foreground_request_id=foreground_request_id
 	)
@@ -2255,6 +2612,7 @@ def _accept_pending_intake(
 		current_foreground_request_id if permission_scope == "execute" else None
 	)
 	dispatch_refs = None
+	replanned = False
 	if permission_scope == "execute":
 		dispatch_refs = _emit_plan_execution_dispatch(
 			session,
@@ -2304,8 +2662,23 @@ def _accept_pending_intake(
 				if review.get("ok")
 				else {"ok": False, "artifacts": []}
 			)
+			replanned = _maybe_replan_after_review(
+				session,
+				dispatch_refs,
+				decision,
+				now,
+				repo_root=repo_root,
+				request_id=request_id,
+				governor_runtime=governor_runtime,
+			)
 			model["snapshot"]["recentArtifacts"] = (
-				decision["artifacts"] + review["artifacts"] + execution["artifacts"] + artifacts
+				list(model["snapshot"].get("recentArtifacts") or [])
+				+ decision["artifacts"]
+				+ review["artifacts"]
+				+ execution["artifacts"]
+				+ artifacts
+				if replanned
+				else decision["artifacts"] + review["artifacts"] + execution["artifacts"] + artifacts
 			)
 		else:
 			model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + artifacts
@@ -2338,15 +2711,16 @@ def _accept_pending_intake(
 				),
 			)
 		)
-	_refresh_snapshot(
-		model,
-		now,
-		currentActor="orchestration",
-		currentStage="dispatch_queued" if permission_scope == "execute" else "intake_accepted",
-		runState="queued" if permission_scope == "execute" else "idle",
-		transportState="connected",
-	)
-	if permission_scope == "execute" and auto_consume_executor:
+	if not replanned:
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="orchestration",
+			currentStage="dispatch_queued" if permission_scope == "execute" else "intake_accepted",
+			runState="queued" if permission_scope == "execute" else "idle",
+			transportState="connected",
+		)
+	if permission_scope == "execute" and auto_consume_executor and not replanned:
 		latest = model["feed"][-1] if model["feed"] else {}
 		current_actor, current_stage = _post_execution_actor_stage(execution, review, decision)
 		_refresh_snapshot(
@@ -2705,6 +3079,7 @@ def handle_submit_prompt(
 
 	_supersede_pending_permission_request(model, now, request_id=request_id)
 	envelope = start_intake(prompt, normalized_text=semantic_prompt, repo_root=repo_root)
+	_reset_work_loop_state(session)
 	session["meta"]["activeIntakeRef"] = envelope["intake_ref"]
 
 	_append_user_turn(
@@ -3227,21 +3602,37 @@ def handle_set_permission_scope(
 				if review.get("ok")
 				else {"ok": False, "artifacts": []}
 			)
-			model["snapshot"]["recentArtifacts"] = (
-				decision["artifacts"] + review["artifacts"] + execution["artifacts"] + existing_artifacts
-			)
-			latest = model["feed"][-1] if model["feed"] else {}
-			current_actor, current_stage = _post_execution_actor_stage(execution, review, decision)
-			_refresh_snapshot(
-				model,
+			replanned = _maybe_replan_after_review(
+				session,
+				dispatch_refs,
+				decision,
 				now,
-				currentActor=current_actor,
-				currentStage=current_stage,
-				runState="idle",
-				transportState="connected",
+				repo_root=repo_root,
+				request_id=continuation_request_id,
+				governor_runtime=governor_runtime,
 			)
-			if latest.get("type") != "error":
-				model["activeForegroundRequestId"] = None
+			model["snapshot"]["recentArtifacts"] = (
+				list(model["snapshot"].get("recentArtifacts") or [])
+				+ decision["artifacts"]
+				+ review["artifacts"]
+				+ execution["artifacts"]
+				+ existing_artifacts
+				if replanned
+				else decision["artifacts"] + review["artifacts"] + execution["artifacts"] + existing_artifacts
+			)
+			if not replanned:
+				latest = model["feed"][-1] if model["feed"] else {}
+				current_actor, current_stage = _post_execution_actor_stage(execution, review, decision)
+				_refresh_snapshot(
+					model,
+					now,
+					currentActor=current_actor,
+					currentStage=current_stage,
+					runState="idle",
+					transportState="connected",
+				)
+				if latest.get("type") != "error":
+					model["activeForegroundRequestId"] = None
 		else:
 			model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + existing_artifacts
 			model["feed"].append(
@@ -3294,6 +3685,7 @@ def handle_execute_plan(
 	session_ref: str | None = None,
 	request_id: str | None = None,
 	context_ref: str | None = None,
+	governor_runtime: str = "exec",
 	auto_consume_executor: bool = False,
 ) -> None:
 	now = utc_now()
@@ -3359,7 +3751,7 @@ def handle_execute_plan(
 			presentation_args={"kind": "plan", "reason": "stage_changed"},
 		)
 		return
-	if model["snapshot"].get("permissionScope") != "plan":
+	if not _scope_satisfies(model["snapshot"].get("permissionScope"), "plan"):
 		block_plan_execution(
 			"Plan permission needed",
 			"Return to Plan scope before executing this plan checkpoint.",
@@ -3446,21 +3838,37 @@ def handle_execute_plan(
 			if review.get("ok")
 			else {"ok": False, "artifacts": []}
 		)
-		model["snapshot"]["recentArtifacts"] = (
-			decision["artifacts"] + review["artifacts"] + execution["artifacts"] + existing_artifacts
-		)
-		latest = model["feed"][-1] if model["feed"] else {}
-		current_actor, current_stage = _post_execution_actor_stage(execution, review, decision)
-		_refresh_snapshot(
-			model,
+		replanned = _maybe_replan_after_review(
+			session,
+			dispatch_refs,
+			decision,
 			now,
-			currentActor=current_actor,
-			currentStage=current_stage,
-			runState="idle",
-			transportState="connected",
+			repo_root=repo_root,
+			request_id=request_id,
+			governor_runtime=governor_runtime,
 		)
-		if latest.get("type") != "error":
-			model["activeForegroundRequestId"] = None
+		model["snapshot"]["recentArtifacts"] = (
+			list(model["snapshot"].get("recentArtifacts") or [])
+			+ decision["artifacts"]
+			+ review["artifacts"]
+			+ execution["artifacts"]
+			+ existing_artifacts
+			if replanned
+			else decision["artifacts"] + review["artifacts"] + execution["artifacts"] + existing_artifacts
+		)
+		if not replanned:
+			latest = model["feed"][-1] if model["feed"] else {}
+			current_actor, current_stage = _post_execution_actor_stage(execution, review, decision)
+			_refresh_snapshot(
+				model,
+				now,
+				currentActor=current_actor,
+				currentStage=current_stage,
+				runState="idle",
+				transportState="connected",
+			)
+			if latest.get("type") != "error":
+				model["activeForegroundRequestId"] = None
 	else:
 		model["snapshot"]["recentArtifacts"] = _dispatch_artifacts(dispatch_refs) + existing_artifacts
 		model["feed"].append(
@@ -3625,6 +4033,7 @@ def handle_complete_governor_turn(
 		pending,
 		body or "",
 		now,
+		repo_root=repo_root,
 		app_server_thread_id=thread_id,
 		app_server_turn_id=turn_id,
 		app_server_item_id=item_id,
@@ -3986,6 +4395,8 @@ def handle_reconnect(
 		model["snapshot"]["pendingPermissionRequest"] = None
 		model["activeClarification"] = None
 		model["acceptedIntakeSummary"] = None
+		model["planReadyRequest"] = None
+		_reset_work_loop_state(session)
 		model["snapshot"]["pendingInterrupt"] = None
 		model["snapshot"]["recentArtifacts"] = []
 		_governor_dialogue_meta(session).clear()
@@ -4144,6 +4555,7 @@ def dispatch_session_action(
 			session_ref=session_ref,
 			request_id=request_id,
 			context_ref=context_ref,
+			governor_runtime=governor_runtime,
 			auto_consume_executor=auto_consume_executor,
 		)
 	elif command == "revise_plan":
@@ -4290,6 +4702,7 @@ def build_parser() -> argparse.ArgumentParser:
 	execute_plan.add_argument("--session-ref")
 	execute_plan.add_argument("--context-ref")
 	execute_plan.add_argument("--auto-consume-executor", action="store_true")
+	add_governor_runtime(execute_plan)
 	revise_plan = subparsers.add_parser("revise_plan")
 	revise_plan.add_argument("--text", required=True)
 	revise_plan.add_argument("--request-id")

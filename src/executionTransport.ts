@@ -41,6 +41,7 @@ const EXTERNAL_GOVERNOR_COMMANDS = new Set([
 	'submit-prompt',
 	'answer-clarification',
 	'set-permission-scope',
+	'execute-plan',
 	'revise-plan',
 ]);
 

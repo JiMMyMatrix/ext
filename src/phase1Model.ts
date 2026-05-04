@@ -123,6 +123,10 @@ export interface PlanReadyRequest extends RequestCard {
 	allowedActions: PlanReadyAction[];
 	planVersion?: number;
 	planContextRef?: string;
+	workRef?: string;
+	planRef?: string;
+	revisionReason?: string;
+	latestReviewRef?: string;
 }
 
 export interface PermissionRequest extends RequestCard {
@@ -878,7 +882,8 @@ function buildPlanReadyRequest(
 	summary: AcceptedIntakeSummary,
 	now: string,
 	foregroundRequestId?: string,
-	planVersion = 1
+	planVersion = 1,
+	existing?: Partial<PlanReadyRequest>
 ): PlanReadyRequest {
 	const id = nextId('plan-ready');
 	const contextRef = buildContextRef('plan-ready');
@@ -887,6 +892,10 @@ function buildPlanReadyRequest(
 		contextRef,
 		planContextRef: contextRef,
 		planVersion,
+		workRef: existing?.workRef,
+		planRef: existing?.planRef,
+		revisionReason: existing?.revisionReason,
+		latestReviewRef: existing?.latestReviewRef,
 		title: 'Plan ready',
 		body: 'Review the Governor plan, then execute it or add details for a revision.',
 		requestedAt: now,
@@ -1931,7 +1940,8 @@ export function applyModelAction(
 				model.planReadyRequest.acceptedIntakeSummary,
 				now,
 				action.request_id ?? model.planReadyRequest.foregroundRequestId,
-				(model.planReadyRequest.planVersion ?? 1) + 1
+				(model.planReadyRequest.planVersion ?? 1) + 1,
+				model.planReadyRequest
 			);
 			return {
 				...withUserTurn,

@@ -101,10 +101,15 @@ def emit_plan_execution_dispatch(
         )
         return None
     plan_ready = model.get("planReadyRequest") if isinstance(model.get("planReadyRequest"), dict) else {}
+    work_ref = trim_text(plan_ready.get("workRef")) if plan_ready else ""
+    plan_ref = trim_text(plan_ready.get("planRef")) if plan_ready else ""
+    plan_version = plan_ready.get("planVersion") if plan_ready else None
+    attempt_number = int(model.get("currentAttemptNumber") or 0) + 1
     inputs = [
         ref
         for ref in [
             accepted_ref,
+            plan_ref or None,
             f"plan_context_ref:{plan_ready.get('planContextRef')}" if plan_ready else None,
             f"plan_version:{plan_ready.get('planVersion')}" if plan_ready else None,
         ]
@@ -113,6 +118,8 @@ def emit_plan_execution_dispatch(
     args = [
         "--dispatch-ref",
         dispatch_ref,
+        "--attempt-number",
+        str(attempt_number),
         "--objective",
         objective,
         "--lane",
@@ -167,6 +174,15 @@ def emit_plan_execution_dispatch(
         "--root",
         str(paths.repo_root),
     ]
+    if work_ref:
+        args.extend(["--work-ref", work_ref])
+    if plan_ref:
+        args.extend(["--plan-ref", plan_ref])
+    if isinstance(plan_version, int):
+        args.extend(["--plan-version", str(plan_version)])
+    revision_of_dispatch_ref = trim_text(model.get("revisionOfDispatchRef"))
+    if revision_of_dispatch_ref:
+        args.extend(["--revision-of-dispatch-ref", revision_of_dispatch_ref])
     for input_ref in inputs:
         args.extend(["--input", input_ref])
         args.extend(["--run-read", input_ref])
@@ -189,6 +205,10 @@ def emit_plan_execution_dispatch(
         "state_ref": repo_relative(dispatch_dir / "state.json", repo_root),
         "review_ref": review_ref,
         "dispatch_dir": str(dispatch_dir),
+        "work_ref": work_ref or None,
+        "plan_ref": plan_ref or None,
+        "plan_version": plan_version,
+        "attempt_number": attempt_number,
     }
 
 

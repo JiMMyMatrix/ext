@@ -199,6 +199,10 @@ def build_emit_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-track", choices=sorted(ALLOWED_TASK_TRACKS))
     parser.add_argument("--estimated-complexity", choices=sorted(ALLOWED_ESTIMATED_COMPLEXITIES))
     parser.add_argument("--attempt-number", type=int, default=1)
+    parser.add_argument("--work-ref")
+    parser.add_argument("--plan-ref")
+    parser.add_argument("--plan-version", type=int)
+    parser.add_argument("--revision-of-dispatch-ref")
     parser.add_argument("--escalated", action="store_true")
     parser.add_argument("--escalation-context-file")
     parser.add_argument("--batch-context-file")
@@ -285,6 +289,14 @@ def emit_main(argv: Optional[List[str]] = None) -> int:
             "attempt_number": args.attempt_number,
             "escalated": bool(args.escalated),
         }
+        if args.work_ref:
+            request["work_ref"] = args.work_ref
+        if args.plan_ref:
+            request["plan_ref"] = args.plan_ref
+        if args.plan_version is not None:
+            request["plan_version"] = args.plan_version
+        if args.revision_of_dispatch_ref:
+            request["revision_of_dispatch_ref"] = args.revision_of_dispatch_ref
         if args.task_track:
             request["task_track"] = args.task_track
         if args.estimated_complexity:

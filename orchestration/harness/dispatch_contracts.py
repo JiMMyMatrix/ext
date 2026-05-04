@@ -455,6 +455,13 @@ def validate_request(payload: Dict, failures: List[str]) -> None:
         attempt_number = payload.get("attempt_number")
         if not isinstance(attempt_number, int) or attempt_number < 1 or attempt_number > 3:
             failures.append("request.json attempt_number must be an integer between 1 and 3")
+    for field in ["work_ref", "plan_ref", "revision_of_dispatch_ref"]:
+        if field in payload:
+            require_string(payload, field, failures, prefix="request.json ")
+    if "plan_version" in payload:
+        plan_version = payload.get("plan_version")
+        if not isinstance(plan_version, int) or plan_version < 1:
+            failures.append("request.json plan_version must be a positive integer")
     if "escalated" in payload and not isinstance(payload["escalated"], bool):
         failures.append("request.json escalated must be a boolean")
     if "executor_run" in payload:
