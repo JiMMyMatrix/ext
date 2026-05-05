@@ -50,6 +50,14 @@ const TEST_WINDOW_SCRIPT_PATH = path.resolve(
 	__dirname,
 	'../../scripts/launch-corgi-test-window.sh'
 );
+const TEST_WINDOW_CLOSE_SCRIPT_PATH = path.resolve(
+	__dirname,
+	'../../scripts/close-corgi-test-window.sh'
+);
+const TEST_WINDOW_AUTO_SCRIPT_PATH = path.resolve(
+	__dirname,
+	'../../scripts/run-corgi-test-window-auto.sh'
+);
 const TEST_WINDOW_PROMPT_CATALOG_PATH = path.resolve(
 	__dirname,
 	'../../scripts/corgi-test-prompts.json'
@@ -57,6 +65,10 @@ const TEST_WINDOW_PROMPT_CATALOG_PATH = path.resolve(
 const TEST_WINDOW_PROMPT_SCRIPT_PATH = path.resolve(
 	__dirname,
 	'../../scripts/corgi-test-prompt.cjs'
+);
+const TEST_WINDOW_STATUS_SCRIPT_PATH = path.resolve(
+	__dirname,
+	'../../scripts/corgi-test-window-status.cjs'
 );
 const PROCESS_TEST_SCRIPT_PATH = path.resolve(
 	__dirname,
@@ -495,8 +507,11 @@ suite('Corgi Webview UX', () => {
 		);
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 		const launchScriptSource = fs.readFileSync(TEST_WINDOW_SCRIPT_PATH, 'utf8');
+		const closeScriptSource = fs.readFileSync(TEST_WINDOW_CLOSE_SCRIPT_PATH, 'utf8');
+		const autoScriptSource = fs.readFileSync(TEST_WINDOW_AUTO_SCRIPT_PATH, 'utf8');
 		const promptCatalogSource = fs.readFileSync(TEST_WINDOW_PROMPT_CATALOG_PATH, 'utf8');
 		const promptScriptSource = fs.readFileSync(TEST_WINDOW_PROMPT_SCRIPT_PATH, 'utf8');
+		const statusScriptSource = fs.readFileSync(TEST_WINDOW_STATUS_SCRIPT_PATH, 'utf8');
 		const processTestSource = fs.readFileSync(PROCESS_TEST_SCRIPT_PATH, 'utf8');
 		const promptCatalog = JSON.parse(promptCatalogSource) as {
 			defaultPromptId: string;
@@ -526,15 +541,37 @@ suite('Corgi Webview UX', () => {
 		assert.ok(extensionSource.includes('resetDevelopmentSessionState(context);'));
 		assert.ok(webviewSource.includes('resetDevelopmentSessionState(this.context);'));
 		assert.ok(webviewSource.includes('testWindowAutoPrompt'));
+		assert.ok(webviewSource.includes('testWindowAutoStepMode'));
 		assert.ok(webviewSource.includes('auto-submit test prompt'));
+		assert.ok(webviewSource.includes('runTestWindowAutoStep'));
 		assert.ok(webviewSource.includes('return context.extensionMode === vscode.ExtensionMode.Development;'));
 		assert.ok(launchScriptSource.includes('seed_executor_test_session.py'));
 		assert.ok(launchScriptSource.includes('seed_reviewer_test_session.py'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCENARIO'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_PROMPT'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_STEPS'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_PROMPT_PRESET'));
 		assert.ok(launchScriptSource.includes('corgi-test-prompt.cjs'));
+		assert.ok(launchScriptSource.includes('"$CLOSE_SCRIPT"'));
+		assert.ok(!launchScriptSource.includes('pkill -f "$USER_DATA_DIR"'));
+		assert.ok(!launchScriptSource.includes('pkill -9 -f "$USER_DATA_DIR"'));
+		assert.ok(closeScriptSource.includes('assert_test_profile_path'));
+		assert.ok(closeScriptSource.includes('Refusing to close non-test VS Code profile'));
+		assert.ok(closeScriptSource.includes('$ROOT_DIR/.agent/test-window/'));
+		assert.ok(closeScriptSource.includes('pkill -f "$profile_dir"'));
+		assert.ok(!closeScriptSource.includes('pkill -f "$APP_NAME"'));
+		assert.ok(!closeScriptSource.includes('pkill -f "Visual Studio Code"'));
+		assert.ok(autoScriptSource.includes('trap cleanup EXIT'));
+		assert.ok(autoScriptSource.includes('close-corgi-test-window.sh'));
+		assert.ok(autoScriptSource.includes('corgi-test-window-status.cjs'));
+		assert.ok(autoScriptSource.includes('CORGI_TEST_WINDOW_SNAPSHOT_GRACE_SECONDS'));
 		assert.ok(promptScriptSource.includes('validateCatalog'));
+		assert.ok(statusScriptSource.includes('corgi_webview_snapshot.json'));
+		assert.ok(statusScriptSource.includes('relevantLogErrors'));
+		assert.ok(statusScriptSource.includes('processAlive'));
+		assert.ok(statusScriptSource.includes('feedHasError'));
+		assert.ok(statusScriptSource.includes('knownBlockingError'));
+		assert.ok(!statusScriptSource.includes('visibleError'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_AGENT_ROOT'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(processTestSource.includes('--auto-consume-executor'));
@@ -591,6 +628,14 @@ suite('Corgi Webview UX', () => {
 			'CORGI_TEST_WINDOW_PROMPT_PRESET=architecture bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
+			scripts['test:window:architecture:auto'],
+			'CORGI_TEST_WINDOW_PROMPT_PRESET=architecture CORGI_TEST_WINDOW_AUTO_STEPS=plan bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:architecture:e2e'],
+			'CORGI_TEST_WINDOW_PROMPT_PRESET=architecture CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
 			scripts['test:window:feature'],
 			'CORGI_TEST_WINDOW_PROMPT_PRESET=develop-internet bash scripts/launch-corgi-test-window.sh'
 		);
@@ -625,6 +670,18 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:window:reviewer-ready'],
 			'CORGI_TEST_WINDOW_SCENARIO=reviewer-ready bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:close'],
+			'bash scripts/close-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:auto'],
+			'bash scripts/run-corgi-test-window-auto.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:status'],
+			'node scripts/corgi-test-window-status.cjs'
 		);
 		assert.ok(!extensionSource.includes('CORGI_RESET_DEV_SESSION'));
 		assert.ok(!developmentSessionSource.includes('CORGI_RESET_DEV_SESSION'));
@@ -1611,6 +1668,12 @@ suite('Corgi Webview UX', () => {
 	test('webview reports structured monitor snapshots without screenshots', () => {
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
+		const autoHtml = getExecutionWindowHtml(
+			'vscode-webview-resource://test',
+			'nonce-for-test',
+			false,
+			'plan'
+		);
 
 		assert.ok(webviewSource.includes("type: 'webview_snapshot'"));
 		assert.ok(webviewSource.includes('corgi_webview_snapshot.json'));
@@ -1634,6 +1697,11 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('model: {'));
 		assert.ok(html.includes('feed: cloneForSnapshot(feedItems)'));
 		assert.ok(html.includes('activeClarification: cloneForSnapshot(model?.activeClarification)'));
+		assert.ok(html.includes('autoStep: {'));
+		assert.ok(autoHtml.includes('const testWindowAutoStepMode = "plan";'));
+		assert.ok(autoHtml.includes('function scheduleTestWindowAutoStep(reason)'));
+		assert.ok(autoHtml.includes('button[data-clarification-answer]'));
+		assert.ok(autoHtml.includes('button[data-action="set_permission_scope"]'));
 		assert.ok(!html.toLowerCase().includes('screenshot'));
 		assert.ok(!html.includes('toDataURL'));
 	});

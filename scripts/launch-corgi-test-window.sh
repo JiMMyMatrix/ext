@@ -11,9 +11,11 @@ EXTENSIONS_DIR="$PROFILE_ROOT/extensions"
 STDOUT_LOG="$LOG_DIR/vscode.stdout.log"
 STDERR_LOG="$LOG_DIR/vscode.stderr.log"
 LEGACY_USER_DATA_DIR="$ROOT_DIR/.agent/vscode-governor-first-test-user-data"
+CLOSE_SCRIPT="$ROOT_DIR/scripts/close-corgi-test-window.sh"
 APP_NAME="${CORGI_VSCODE_APP_NAME:-Visual Studio Code}"
 TEST_SCENARIO="${CORGI_TEST_WINDOW_SCENARIO:-}"
 PROMPT_PRESET="${CORGI_TEST_WINDOW_PROMPT_PRESET:-}"
+AUTO_STEPS="${CORGI_TEST_WINDOW_AUTO_STEPS:-}"
 if [[ -n "${CORGI_TEST_WINDOW_AUTO_PROMPT+x}" ]]; then
 	AUTO_PROMPT="$CORGI_TEST_WINDOW_AUTO_PROMPT"
 	AUTO_PROMPT_PRESET=""
@@ -31,16 +33,7 @@ fi
 mkdir -p "$TEST_ROOT" "$LOG_DIR"
 
 # Test launches should start clean, while production reload keeps session memory.
-pkill -f "$USER_DATA_DIR" >/dev/null 2>&1 || true
-pkill -f "$LEGACY_USER_DATA_DIR" >/dev/null 2>&1 || true
-for _ in 1 2 3 4 5; do
-	if ! pgrep -f "$USER_DATA_DIR|$LEGACY_USER_DATA_DIR" >/dev/null 2>&1; then
-		break
-	fi
-	sleep 0.4
-done
-pkill -9 -f "$USER_DATA_DIR" >/dev/null 2>&1 || true
-pkill -9 -f "$LEGACY_USER_DATA_DIR" >/dev/null 2>&1 || true
+"$CLOSE_SCRIPT" >/dev/null 2>&1 || true
 for _ in 1 2 3; do
 	rm -rf "$PROFILE_ROOT" "$RUNTIME_AGENT_ROOT" && break
 	sleep 0.4
@@ -101,6 +94,7 @@ open -n -a "$APP_NAME" \
 	--env CORGI_APP_SERVER_EPHEMERAL="${CORGI_APP_SERVER_EPHEMERAL:-1}" \
 	--env CORGI_TEST_WINDOW_SCENARIO="$TEST_SCENARIO" \
 	--env CORGI_TEST_WINDOW_AUTO_PROMPT="$AUTO_PROMPT" \
+	--env CORGI_TEST_WINDOW_AUTO_STEPS="$AUTO_STEPS" \
 	--env ORCHESTRATION_AGENT_ROOT="$RUNTIME_AGENT_ROOT" \
 	--env ORCHESTRATION_APPROVED_PYTHON="${PYTHON_BIN:-}" \
 	--stdout "$STDOUT_LOG" \
@@ -126,4 +120,7 @@ if [[ -n "$AUTO_PROMPT" ]]; then
 fi
 if [[ -n "$AUTO_PROMPT_PRESET" ]]; then
 	echo "  prompt preset: $AUTO_PROMPT_PRESET"
+fi
+if [[ -n "$AUTO_STEPS" ]]; then
+	echo "  auto-steps: $AUTO_STEPS"
 fi

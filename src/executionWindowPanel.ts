@@ -48,6 +48,25 @@ function testWindowAutoPrompt(context: vscode.ExtensionContext): string | undefi
 	return prompt || undefined;
 }
 
+type TestWindowAutoStepMode = 'off' | 'plan' | 'execute';
+
+function testWindowAutoStepMode(
+	context: vscode.ExtensionContext
+): TestWindowAutoStepMode {
+	if (context.extensionMode !== vscode.ExtensionMode.Development) {
+		return 'off';
+	}
+
+	const mode = process.env.CORGI_TEST_WINDOW_AUTO_STEPS?.trim().toLowerCase();
+	if (mode === 'execute') {
+		return 'execute';
+	}
+	if (mode === 'plan' || mode === '1' || mode === 'true') {
+		return 'plan';
+	}
+	return 'off';
+}
+
 type WebviewMessage =
 	| { type: 'ready' }
 	| { type: 'refresh_state' }
@@ -140,7 +159,8 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		this.view.webview.html = getExecutionWindowHtml(
 			this.view.webview.cspSource,
 			getNonce(),
-			shouldResetDevelopmentWebviewState(this.context)
+			shouldResetDevelopmentWebviewState(this.context),
+			testWindowAutoStepMode(this.context)
 		);
 		this.webviewDisposables.push(
 			this.view.webview.onDidReceiveMessage((message) => {
@@ -848,7 +868,8 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 export function getExecutionWindowHtml(
 	cspSource: string,
 	nonce: string = getNonce(),
-	resetPersistedState: boolean = false
+	resetPersistedState: boolean = false,
+	testAutoStepMode: TestWindowAutoStepMode = 'off'
 ): string {
 		return `<!DOCTYPE html>
 <html lang="en">
@@ -1601,6 +1622,7 @@ export function getExecutionWindowHtml(
 	<script nonce="${nonce}">
 		const vscode = acquireVsCodeApi();
 		const shouldResetPersistedState = ${resetPersistedState ? 'true' : 'false'};
+		const testWindowAutoStepMode = ${JSON.stringify(testAutoStepMode)};
 		const defaultPersistedState = {
 			draft: '',
 			expandedIds: [],
@@ -1640,6 +1662,10 @@ export function getExecutionWindowHtml(
 			pendingPlanHiddenAt: undefined,
 			planRevisionMode: false,
 			lastRuntimeTimings: [],
+		};
+		const testWindowAutoStepState = {
+			timer: undefined,
+			appliedKeys: new Set(),
 		};
 
 		const app = document.getElementById('app');
@@ -1733,6 +1759,10 @@ export function getExecutionWindowHtml(
 					context: compactText(composerContext.innerText || composerContext.textContent || '', 300),
 					draftLength: ui.draft.length,
 				},
+				autoStep: {
+					mode: testWindowAutoStepMode,
+					appliedCount: testWindowAutoStepState.appliedKeys.size,
+				},
 				model: {
 					snapshot: cloneForSnapshot(snapshot),
 					activeForegroundRequestId: model?.activeForegroundRequestId || null,
@@ -1758,6 +1788,109 @@ export function getExecutionWindowHtml(
 					payload: collectWebviewSnapshot(reason),
 				});
 			}, 80);
+		}
+
+		function testWindowAutoStepsEnabled() {
+			return testWindowAutoStepMode === 'plan' || testWindowAutoStepMode === 'execute';
+		}
+
+		function scheduleTestWindowAutoStep(reason) {
+			if (!testWindowAutoStepsEnabled() || !model) {
+				return;
+			}
+
+			clearTimeout(testWindowAutoStepState.timer);
+			testWindowAutoStepState.timer = setTimeout(() => {
+				runTestWindowAutoStep(reason);
+			}, 350);
+		}
+
+		function clickTestWindowAutoButton(button, key, reason) {
+			if (!button || button.disabled || testWindowAutoStepState.appliedKeys.has(key)) {
+				return false;
+			}
+
+			testWindowAutoStepState.appliedKeys.add(key);
+			button.click();
+			scheduleWebviewSnapshot('auto_step_' + reason);
+			return true;
+		}
+
+		function chooseTestWindowClarificationButton() {
+			const buttons = Array.from(
+				composerActions.querySelectorAll('button[data-clarification-answer]')
+			);
+			return (
+				buttons.find((button) => /architecture/i.test(button.textContent || '')) ||
+				buttons[0]
+			);
+		}
+
+		function chooseTestWindowPermissionScope(permissionRequest) {
+			const allowedScopes = Array.isArray(permissionRequest?.allowedScopes)
+				? permissionRequest.allowedScopes
+				: ['observe', 'plan', 'execute'];
+			const recommendedScope = permissionRequest?.recommendedScope;
+			if (
+				testWindowAutoStepMode === 'execute' &&
+				recommendedScope === 'execute' &&
+				allowedScopes.includes('execute')
+			) {
+				return 'execute';
+			}
+			if (allowedScopes.includes('plan')) {
+				return 'plan';
+			}
+			if (recommendedScope && allowedScopes.includes(recommendedScope)) {
+				return recommendedScope;
+			}
+			return allowedScopes[0];
+		}
+
+		function runTestWindowAutoStep(reason) {
+			if (!testWindowAutoStepsEnabled() || !model) {
+				return;
+			}
+
+			const snapshot = model.snapshot || {};
+			if (model.activeClarification?.contextRef) {
+				const key = 'clarification:' + model.activeClarification.contextRef;
+				if (
+					clickTestWindowAutoButton(
+						chooseTestWindowClarificationButton(),
+						key,
+						'clarification'
+					)
+				) {
+					return;
+				}
+			}
+
+			const permissionRequest = snapshot.pendingPermissionRequest;
+			if (permissionRequest?.contextRef) {
+				const scope = chooseTestWindowPermissionScope(permissionRequest);
+				const key = 'permission:' + permissionRequest.contextRef + ':' + scope;
+				const button = composerActions.querySelector(
+					'button[data-action="set_permission_scope"][data-permission-scope="' + scope + '"]'
+				);
+				if (clickTestWindowAutoButton(button, key, 'permission_' + scope)) {
+					return;
+				}
+			}
+
+			if (
+				testWindowAutoStepMode === 'execute' &&
+				snapshot &&
+				isPlanReady(snapshot) &&
+				model.planReadyRequest?.contextRef
+			) {
+				const key = 'execute_plan:' + model.planReadyRequest.contextRef;
+				clickTestWindowAutoButton(
+					composerActions.querySelector('button[data-action="execute_plan"]'),
+					key,
+					'execute_plan'
+				);
+			}
 		}
 
 		function renderRevealPill(label, value, className) {
@@ -3889,6 +4022,7 @@ export function getExecutionWindowHtml(
 			renderFeed();
 			renderComposer();
 			scheduleWebviewSnapshot('render');
+			scheduleTestWindowAutoStep('render');
 		}
 
 		function handleSubmit(event) {
