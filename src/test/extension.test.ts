@@ -568,6 +568,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(promptScriptSource.includes('validateCatalog'));
 		assert.ok(statusScriptSource.includes('corgi_webview_snapshot.json'));
 		assert.ok(statusScriptSource.includes('relevantLogErrors'));
+		assert.ok(statusScriptSource.includes('isKnownBenignVsCodeLogLine'));
+		assert.ok(statusScriptSource.includes('GPU process exited unexpectedly: exit_code=15'));
+		assert.ok(statusScriptSource.includes('Render frame was disposed before WebFrameMain could be accessed'));
+		assert.ok(statusScriptSource.includes('Visual%20Studio%20Code'));
 		assert.ok(statusScriptSource.includes('processAlive'));
 		assert.ok(statusScriptSource.includes('feedHasError'));
 		assert.ok(statusScriptSource.includes('knownBlockingError'));

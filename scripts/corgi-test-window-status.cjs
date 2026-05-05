@@ -54,7 +54,20 @@ function relevantLogErrors(stderr) {
 		.split(/\r?\n/)
 		.filter(Boolean)
 		.filter((line) => /error|exception|traceback|fatal|failed/i.test(line))
-		.filter((line) => !line.includes('CrossAppIPC: Failed to get peer bundle ID.'));
+		.filter((line) => !isKnownBenignVsCodeLogLine(line));
+}
+
+function isKnownBenignVsCodeLogLine(line) {
+	return [
+		'CrossAppIPC: Failed to get peer bundle ID.',
+		'GPU process exited unexpectedly: exit_code=15',
+		'Network service crashed, restarting service.',
+		'Render frame was disposed before WebFrameMain could be accessed',
+		'mach_port_request_notification: (os/kern) invalid capability (20)',
+	].some((needle) => line.includes(needle)) ||
+		/^\s+at .*\/Applications\/Visual%20Studio%20Code\.app\/.*\/out\/main\.js/.test(
+			line
+		);
 }
 
 function snapshotAgeMs(snapshot) {
