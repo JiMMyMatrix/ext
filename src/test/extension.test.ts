@@ -560,7 +560,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(closeScriptSource.includes('assert_test_profile_path'));
 		assert.ok(closeScriptSource.includes('Refusing to close non-test VS Code profile'));
 		assert.ok(closeScriptSource.includes('$ROOT_DIR/.agent/test-window/'));
-		assert.ok(closeScriptSource.includes('pkill -f "$profile_dir"'));
+		assert.ok(closeScriptSource.includes('pkill -TERM -f "$profile_dir"'));
 		assert.ok(!closeScriptSource.includes('pkill -f "$APP_NAME"'));
 		assert.ok(!closeScriptSource.includes('pkill -f "Visual Studio Code"'));
 		assert.ok(autoScriptSource.includes('trap cleanup EXIT'));
@@ -1338,6 +1338,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(transportSource.includes('this.pythonExecutable'));
 		assert.ok(transportSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(transportSource.includes('--auto-consume-executor'));
+		assert.match(
+			transportSource,
+			/action\?\.type === 'execute_plan'[\s\S]{0,120}args\.push\('--auto-consume-executor'\)/
+		);
 	});
 
 	test('transport selection falls back to the development extension repo when no workspace is open', async () => {
@@ -2042,6 +2046,19 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(continuationModel.snapshot.currentStage, 'plan_executing');
 		assert.strictEqual(continuationModel.snapshot.runState, 'queued');
 		assert.strictEqual(continuationModel.snapshot.pendingPermissionRequest, undefined);
+		assert.ok(
+			!continuationModel.feed.some(
+				(item) =>
+					item.type === 'permission_request' &&
+					item.in_response_to_request_id === 'req-do-it'
+			)
+		);
+		assert.ok(
+			!continuationModel.feed.some((item) =>
+				item.in_response_to_request_id === 'req-do-it' &&
+				/permission needed|choose execute/i.test(`${item.title ?? ''}\n${item.body ?? ''}`)
+			)
+		);
 		assert.ok(continuationModel.acceptedIntakeSummary);
 		assert.strictEqual(continuationModel.planReadyRequest, undefined);
 		assert.ok(!continuationModel.feed.some((item) => item.type === 'clarification_request' && item.in_response_to_request_id === 'req-do-it'));

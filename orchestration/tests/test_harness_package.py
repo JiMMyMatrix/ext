@@ -1634,6 +1634,9 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["snapshot"]["currentActor"], "governor")
             self.assertEqual(model["snapshot"]["currentStage"], "governor_decision_recorded")
             self.assertEqual(model["snapshot"]["runState"], "idle")
+            self.assertEqual(model["snapshot"]["permissionScope"], "execute")
+            self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
+            self.assertIsNone(model["planReadyRequest"])
             self.assertIsNone(model["activeForegroundRequestId"])
             self.assertEqual(model["feed"][-1]["title"], "Governor decision recorded")
             self.assertEqual(

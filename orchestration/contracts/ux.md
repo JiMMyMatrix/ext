@@ -128,6 +128,7 @@ preconditions must fail closed and must not trigger route guessing.
   - should carry the current `session_ref` once a session exists
   - requires the plan-ready `context_ref`
   - is the explicit Execute authorization for the current validated plan
+  - must not create a second Execute permission request or permission card
   - must not start execution from any implicit or synthetic prompt
   - must create dispatch truth before
     surfacing a dispatch-queued handoff state
