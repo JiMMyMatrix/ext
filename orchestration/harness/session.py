@@ -1693,6 +1693,10 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 			"currentWorkRef": None,
 			"currentPlanVersion": None,
 			"currentAttemptNumber": None,
+			"latestReviewRef": None,
+			"latestReviewVerdict": None,
+			"latestGovernorDecisionRef": None,
+			"latestGovernorDecision": None,
 			"snapshotFreshness": {"receivedAt": now},
 		},
 		"feed": [
@@ -1711,6 +1715,10 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 		"currentWorkRef": None,
 		"currentPlanRef": None,
 		"currentAttemptNumber": 0,
+		"latestReviewRef": None,
+		"latestReviewVerdict": None,
+		"latestGovernorDecisionRef": None,
+		"latestGovernorDecision": None,
 		"planVersion": 0,
 	}
 
@@ -1751,6 +1759,10 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	snapshot.setdefault("currentWorkRef", model.get("currentWorkRef"))
 	snapshot.setdefault("currentPlanVersion", model.get("planVersion"))
 	snapshot.setdefault("currentAttemptNumber", model.get("currentAttemptNumber"))
+	snapshot.setdefault("latestReviewRef", model.get("latestReviewRef"))
+	snapshot.setdefault("latestReviewVerdict", model.get("latestReviewVerdict"))
+	snapshot.setdefault("latestGovernorDecisionRef", model.get("latestGovernorDecisionRef"))
+	snapshot.setdefault("latestGovernorDecision", model.get("latestGovernorDecision"))
 	snapshot.setdefault("snapshotFreshness", {"receivedAt": now})
 	model.setdefault("feed", [])
 	model.setdefault("activeClarification", None)
@@ -1760,6 +1772,10 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	model.setdefault("currentWorkRef", session["meta"].get("activeWorkRef"))
 	model.setdefault("currentPlanRef", None)
 	model.setdefault("currentAttemptNumber", 0)
+	model.setdefault("latestReviewRef", snapshot.get("latestReviewRef"))
+	model.setdefault("latestReviewVerdict", snapshot.get("latestReviewVerdict"))
+	model.setdefault("latestGovernorDecisionRef", snapshot.get("latestGovernorDecisionRef"))
+	model.setdefault("latestGovernorDecision", snapshot.get("latestGovernorDecision"))
 	model.setdefault("planVersion", 0)
 	if isinstance(model.get("activeClarification"), dict):
 		model["activeClarification"].setdefault(
@@ -2056,7 +2072,14 @@ def _accepted_intake_ref(session: dict[str, Any], repo_root: str | Path | None =
 def _reset_work_loop_state(session: dict[str, Any]) -> None:
 	model = session["model"]
 	session.setdefault("meta", {})["activeWorkRef"] = None
-	for key in ["currentPlanRevisionReason", "latestReviewRef", "revisionOfDispatchRef"]:
+	for key in [
+		"currentPlanRevisionReason",
+		"latestReviewRef",
+		"latestReviewVerdict",
+		"latestGovernorDecisionRef",
+		"latestGovernorDecision",
+		"revisionOfDispatchRef",
+	]:
 		model.pop(key, None)
 	model["currentWorkRef"] = None
 	model["currentPlanRef"] = None
@@ -2065,6 +2088,10 @@ def _reset_work_loop_state(session: dict[str, Any]) -> None:
 	model["snapshot"]["currentWorkRef"] = None
 	model["snapshot"]["currentPlanVersion"] = None
 	model["snapshot"]["currentAttemptNumber"] = None
+	model["snapshot"]["latestReviewRef"] = None
+	model["snapshot"]["latestReviewVerdict"] = None
+	model["snapshot"]["latestGovernorDecisionRef"] = None
+	model["snapshot"]["latestGovernorDecision"] = None
 
 
 def _work_index_path(work_ref: str, *, repo_root: str | Path | None = None) -> Path:
@@ -2181,6 +2208,7 @@ def _write_plan_artifact(
 	model["currentWorkRef"] = work_ref
 	model["snapshot"]["currentWorkRef"] = work_ref
 	model["snapshot"]["currentPlanVersion"] = plan_version
+	model["snapshot"]["latestReviewRef"] = latest_review_ref
 	model["snapshot"]["recentArtifacts"] = [
 		_artifact(plan_ref, summary=f"Governor plan v{plan_version}.", authoritative=True, status="plan_ready"),
 		*list(model["snapshot"].get("recentArtifacts") or []),
@@ -2225,6 +2253,30 @@ def _record_work_dispatch_attempt(
 	model["snapshot"]["currentAttemptNumber"] = attempt_number
 
 
+def _normalize_legacy_work_refs(
+	items: Any,
+	*,
+	ref_key: str,
+	migrated_at: str,
+) -> list[dict[str, Any]]:
+	normalized: list[dict[str, Any]] = []
+	for item in items if isinstance(items, list) else []:
+		if isinstance(item, dict):
+			normalized.append(item)
+			continue
+		if isinstance(item, str) and item.strip():
+			normalized.append(
+				{
+					"attempt_number": None,
+					"dispatch_ref": None,
+					ref_key: item,
+					"recorded_at": None,
+					"migrated_at": migrated_at,
+				}
+			)
+	return normalized
+
+
 def _record_work_review_and_decision(
 	session: dict[str, Any],
 	dispatch_refs: dict[str, Any] | None,
@@ -2250,13 +2302,75 @@ def _record_work_review_and_decision(
 			decision_ref = repo_relative(decision_path, repo_root)
 			decision_payload = load_json(decision_path)
 	review_ref = dispatch_refs.get("review_ref")
-	if isinstance(review_ref, str) and review_ref.strip() and review_ref not in index.get("reviews", []):
-		index.setdefault("reviews", []).append(review_ref)
-	if decision_ref and decision_ref not in index.get("decisions", []):
-		index.setdefault("decisions", []).append(decision_ref)
-	index["status"] = "completed" if decision_payload.get("decision") == "accept" else "needs_replan"
+	review_payload: dict[str, Any] = {}
+	if isinstance(review_ref, str) and review_ref.strip():
+		review_path = resolve_paths(repo_root).repo_root / review_ref
+		if review_path.exists():
+			review_payload = load_json(review_path)
+	review_verdict = trim_text(review_payload.get("verdict"))
+	attempt_number = dispatch_refs.get("attempt_number")
+	dispatch_ref = dispatch_refs.get("dispatch_ref")
+	reviews = _normalize_legacy_work_refs(
+		index.get("reviews", []),
+		ref_key="review_ref",
+		migrated_at=now,
+	)
+	if isinstance(review_ref, str) and review_ref.strip():
+		reviews = [
+			item
+			for item in reviews
+			if item.get("dispatch_ref") != dispatch_ref
+			or item.get("attempt_number") != attempt_number
+		]
+		reviews.append(
+			{
+				"attempt_number": attempt_number,
+				"dispatch_ref": dispatch_ref,
+				"review_ref": review_ref,
+				"verdict": review_verdict or None,
+				"recorded_at": now,
+			}
+		)
+	index["reviews"] = reviews
+	decision_value = trim_text(decision_payload.get("decision"))
+	decisions = _normalize_legacy_work_refs(
+		index.get("decisions", []),
+		ref_key="decision_ref",
+		migrated_at=now,
+	)
+	if decision_ref:
+		decisions = [
+			item
+			for item in decisions
+			if item.get("dispatch_ref") != dispatch_ref
+			or item.get("attempt_number") != attempt_number
+		]
+		decisions.append(
+			{
+				"attempt_number": attempt_number,
+				"dispatch_ref": dispatch_ref,
+				"decision_ref": decision_ref,
+				"decision": decision_value or None,
+				"recommended_next_action": trim_text(
+					decision_payload.get("recommended_next_action")
+				)
+				or None,
+				"recorded_at": now,
+			}
+		)
+	index["decisions"] = decisions
+	index["status"] = "completed" if decision_value == "accept" else "needs_replan"
 	index["updated_at"] = now
 	_save_work_index(work_ref, index, repo_root=repo_root)
+	model = session["model"]
+	model["latestReviewRef"] = review_ref if isinstance(review_ref, str) and review_ref.strip() else None
+	model["latestReviewVerdict"] = review_verdict or None
+	model["latestGovernorDecisionRef"] = decision_ref
+	model["latestGovernorDecision"] = decision_value or None
+	model["snapshot"]["latestReviewRef"] = model["latestReviewRef"]
+	model["snapshot"]["latestReviewVerdict"] = model["latestReviewVerdict"]
+	model["snapshot"]["latestGovernorDecisionRef"] = decision_ref
+	model["snapshot"]["latestGovernorDecision"] = model["latestGovernorDecision"]
 	return decision_payload or None
 
 
@@ -2264,9 +2378,16 @@ def _decision_needs_replan(decision_payload: dict[str, Any] | None) -> bool:
 	if not isinstance(decision_payload, dict):
 		return False
 	next_action = trim_text(decision_payload.get("recommended_next_action"))
-	return decision_payload.get("decision") == "reject" and next_action in {
-		"redispatch_or_reject",
-		"redispatch_or_escalate",
+	decision = decision_payload.get("decision")
+	if decision == "reject":
+		return next_action in {
+			"redispatch_or_reject",
+			"redispatch_or_escalate",
+			"replan",
+		}
+	return decision == "needs_verification" and next_action in {
+		"bounded_verification_or_reviewer_subagent",
+		"bounded_verification",
 		"replan",
 	}
 
@@ -2287,7 +2408,10 @@ def _auto_execute_revised_plan(
 		return False
 	if model["snapshot"].get("currentStage") != "plan_ready":
 		return False
-	if model.get("currentPlanRevisionReason") != "review_requested_changes":
+	if model.get("currentPlanRevisionReason") not in {
+		"review_requested_changes",
+		"review_inconclusive",
+	}:
 		return False
 	if not _scope_satisfies(model["snapshot"].get("permissionScope"), "execute"):
 		return False
@@ -2334,6 +2458,10 @@ def _maybe_replan_after_review(
 		return False
 	index = _load_work_index(work_ref, repo_root=repo_root)
 	if int(index.get("revision_count") or 0) >= 2:
+		index["status"] = "blocked"
+		index["blocked_reason"] = "revision_limit_reached"
+		index["updated_at"] = now
+		_save_work_index(work_ref, index, repo_root=repo_root)
 		_append_error(
 			model,
 			"Revision limit reached",
@@ -2356,10 +2484,16 @@ def _maybe_replan_after_review(
 		model["activeForegroundRequestId"] = None
 		return True
 	review_ref = dispatch_refs.get("review_ref") if isinstance(dispatch_refs, dict) else None
+	decision_value = trim_text(decision_payload.get("decision"))
+	revision_reason = (
+		"review_inconclusive"
+		if decision_value == "needs_verification"
+		else "review_requested_changes"
+	)
 	model["currentWorkRef"] = work_ref
 	model["snapshot"]["currentWorkRef"] = work_ref
 	model["latestReviewRef"] = review_ref
-	model["currentPlanRevisionReason"] = "review_requested_changes"
+	model["currentPlanRevisionReason"] = revision_reason
 	model["revisionOfDispatchRef"] = dispatch_refs.get("dispatch_ref") if isinstance(dispatch_refs, dict) else None
 	prompt = (
 		"Revise the current plan for the same accepted intake. "

@@ -539,6 +539,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(extensionSource.includes('scheduleDevelopmentExecutionWindowOpen'));
 		assert.ok(extensionSource.includes('void provider.openView().catch'));
 		assert.ok(extensionSource.includes('resetDevelopmentSessionState(context);'));
+		assert.ok(webviewSource.includes('didResetDevelopmentSessionState'));
+		assert.ok(webviewSource.includes('resetDevelopmentSessionStateOnce'));
 		assert.ok(webviewSource.includes('resetDevelopmentSessionState(this.context);'));
 		assert.ok(webviewSource.includes('testWindowAutoPrompt'));
 		assert.ok(webviewSource.includes('testWindowAutoStepMode'));
@@ -565,6 +567,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(autoScriptSource.includes('close-corgi-test-window.sh'));
 		assert.ok(autoScriptSource.includes('corgi-test-window-status.cjs'));
 		assert.ok(autoScriptSource.includes('CORGI_TEST_WINDOW_SNAPSHOT_GRACE_SECONDS'));
+		assert.ok(autoScriptSource.includes('governor_decision_recorded'));
+		assert.ok(autoScriptSource.includes('executor_completed'));
+		assert.ok(autoScriptSource.includes('exited before reaching the expected checkpoint'));
+		assert.ok(!autoScriptSource.includes('run_state'));
 		assert.ok(promptScriptSource.includes('validateCatalog'));
 		assert.ok(statusScriptSource.includes('corgi_webview_snapshot.json'));
 		assert.ok(statusScriptSource.includes('relevantLogErrors'));

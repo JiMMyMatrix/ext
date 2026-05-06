@@ -180,6 +180,13 @@ export interface ContextSnapshot {
 	pendingPermissionRequest?: PermissionRequest;
 	pendingInterrupt?: RequestCard;
 	recentArtifacts: ArtifactReference[];
+	currentWorkRef?: string;
+	currentPlanVersion?: number;
+	currentAttemptNumber?: number;
+	latestReviewRef?: string;
+	latestReviewVerdict?: 'pass' | 'request_changes' | 'inconclusive';
+	latestGovernorDecisionRef?: string;
+	latestGovernorDecision?: 'accept' | 'reject' | 'needs_review' | 'needs_verification';
 	snapshotFreshness: SnapshotFreshness;
 }
 
@@ -438,6 +445,13 @@ export function createInitialModel(now = new Date().toISOString()): ExecutionWin
 			runState: 'idle',
 			transportState: 'connected',
 			recentArtifacts: [],
+			currentWorkRef: undefined,
+			currentPlanVersion: undefined,
+			currentAttemptNumber: undefined,
+			latestReviewRef: undefined,
+			latestReviewVerdict: undefined,
+			latestGovernorDecisionRef: undefined,
+			latestGovernorDecision: undefined,
 			snapshotFreshness: {
 				receivedAt: now,
 			},

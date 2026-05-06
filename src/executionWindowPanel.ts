@@ -130,6 +130,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private semanticLoopState: SemanticLoopState | undefined;
 	private hasAuthoritativeTransportState = false;
 	private didSubmitTestWindowAutoPrompt = false;
+	private didResetDevelopmentSessionState = false;
 
 	private constructor(context: vscode.ExtensionContext) {
 		this.context = context;
@@ -150,7 +151,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 	public resolveWebviewView(webviewView: vscode.WebviewView) {
 		this.disposeWebviewListeners();
-		resetDevelopmentSessionState(this.context);
+		this.resetDevelopmentSessionStateOnce();
 		this.view = webviewView;
 		this.view.title = 'Corgi';
 		this.view.webview.options = {
@@ -169,6 +170,14 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 		);
 		void this.initializeResolvedWebview();
 		this.transport.prewarm?.();
+	}
+
+	private resetDevelopmentSessionStateOnce() {
+		if (this.didResetDevelopmentSessionState) {
+			return;
+		}
+		this.didResetDevelopmentSessionState = true;
+		resetDevelopmentSessionState(this.context);
 	}
 
 	public async openView() {
@@ -2108,6 +2117,10 @@ export function getExecutionWindowHtml(
 		}
 
 		function goalStepLabel(snapshot) {
+			const attempt =
+				typeof snapshot.currentAttemptNumber === 'number' && snapshot.currentAttemptNumber > 0
+					? ' · Attempt ' + snapshot.currentAttemptNumber
+					: '';
 			if (model?.activeClarification) {
 				return 'Clarification needed';
 			}
@@ -2124,28 +2137,34 @@ export function getExecutionWindowHtml(
 				return 'Plan ready';
 			}
 			if (snapshot.currentStage === 'plan_executing') {
-				return 'Executor running';
+				return 'Executor running' + attempt;
 			}
 			if (isDispatchQueued(snapshot)) {
-				return 'Executor is ready';
+				return 'Executor is ready' + attempt;
 			}
 			if (isGovernorDecisionRecorded(snapshot)) {
-				return 'Final decision recorded';
+				if (snapshot.latestGovernorDecision) {
+					return 'Final decision ' + summarizeToken(snapshot.latestGovernorDecision, '') + attempt;
+				}
+				return 'Final decision recorded' + attempt;
 			}
 			if (isReviewerCompleted(snapshot)) {
-				return 'Reviewer checked the result';
+				if (snapshot.latestReviewVerdict) {
+					return 'Reviewer ' + summarizeToken(snapshot.latestReviewVerdict, '') + attempt;
+				}
+				return 'Reviewer checked the result' + attempt;
 			}
 			if (isExecutorCompleted(snapshot)) {
-				return 'Executor wrote the result';
+				return 'Executor wrote the result' + attempt;
 			}
 			if (snapshot.currentActor === 'governor' && snapshot.runState === 'running') {
 				return 'Governor is planning';
 			}
 			if (snapshot.currentActor === 'executor') {
-				return 'Executor is working';
+				return 'Executor is working' + attempt;
 			}
 			if (snapshot.currentActor === 'reviewer') {
-				return 'Reviewer is checking';
+				return 'Reviewer is checking' + attempt;
 			}
 			if (snapshot.runState === 'running') {
 				return 'Corgi is working';

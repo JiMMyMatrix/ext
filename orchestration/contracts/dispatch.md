@@ -17,6 +17,11 @@ Dispatch truth starts after intake acceptance.
   replace dispatch truth.
 - Optional `request.json` fields `work_ref`, `plan_ref`, `plan_version`,
   `attempt_number`, and `revision_of_dispatch_ref` are linkage metadata only.
+- A work bundle has exactly one accepted problem identity (`work_ref`) and may
+  contain up to three dispatch attempts for that problem before escalation.
+- Reviewer `request_changes` and material `inconclusive` verdicts return the
+  same `work_ref` to Governor planning; they must not create a new unrelated
+  intake by default.
 
 ## Ownership
 - Governor owns dispatch intent.
@@ -30,6 +35,14 @@ Dispatch truth starts after intake acceptance.
 - finalization must produce `governor_decision.json` before any human-facing
   pause unless a real blocker prevents finalization
 - reviewer output never overrides failed validators
+- `governor_decision.json` with `accept` is required before an attempt is
+  treated as accepted
+- retry attempts must increment `attempt_number`, target the latest validated
+  plan version, and link to the previous attempt through
+  `revision_of_dispatch_ref`
+- after the bounded retry limit is reached, the work bundle status must become
+  blocked with an explicit `revision_limit_reached` reason rather than staying
+  in a replan-ready state
 
 ## Current Orchestration Port Status
 - helper-runtime modes currently shipped:

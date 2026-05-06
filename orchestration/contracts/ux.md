@@ -17,6 +17,13 @@ The orchestration layer may provide:
 - `pendingInterrupt`
 - `recentArtifacts`
 - `snapshotFreshness`
+- `currentWorkRef`
+- `currentPlanVersion`
+- `currentAttemptNumber`
+- `latestReviewRef`
+- `latestReviewVerdict`
+- `latestGovernorDecisionRef`
+- `latestGovernorDecision`
 
 The public model may also expose `planReadyRequest` when Governor planning has
 completed for the current accepted intake. The Plan ready card must render from
@@ -130,6 +137,9 @@ preconditions must fail closed and must not trigger route guessing.
     started
   - keeps Executor as the only substantive writer and Reviewer as read-only
     advisory
+  - retry attempts must remain under the same current `workRef`
+  - reviewer `request_changes` or material `inconclusive` should route back to
+    Governor planning rather than ending the human-visible flow prematurely
 - `revise-plan`
   - requires a current `planReadyRequest`
   - should carry the current `session_ref` once a session exists

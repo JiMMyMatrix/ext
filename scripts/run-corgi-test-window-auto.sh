@@ -34,19 +34,18 @@ while (( SECONDS < deadline )); do
 		exit 1
 	fi
 	stage="$(node -e "const s=JSON.parse(process.argv[1]); console.log(s.stage || '')" "$status_json")"
-	run_state="$(node -e "const s=JSON.parse(process.argv[1]); console.log(s.runState || '')" "$status_json")"
 	process_alive="$(node -e "const s=JSON.parse(process.argv[1]); console.log(s.processAlive ? '1' : '0')" "$status_json")"
-	if [[ "$process_alive" != "1" && "$run_state" == "running" ]]; then
-		echo "Corgi test window is not running while the last snapshot is still active." >&2
-		exit 1
-	fi
 	if [[ "$AUTO_STEPS" == "plan" && "$stage" == "plan_ready" ]]; then
 		echo "Corgi test window reached plan_ready."
 		exit 0
 	fi
-	if [[ "$AUTO_STEPS" == "execute" && "$run_state" == "idle" && "$stage" != "waiting_for_governor" && "$stage" != "semantic_intake" ]]; then
-		echo "Corgi test window reached an idle post-execute checkpoint."
+	if [[ "$AUTO_STEPS" == "execute" && "$stage" =~ ^(governor_decision_recorded|reviewer_completed|executor_completed|executor_blocked|reviewer_blocked)$ ]]; then
+		echo "Corgi test window reached post-execute checkpoint: $stage."
 		exit 0
+	fi
+	if [[ "$process_alive" != "1" ]]; then
+		echo "Corgi test window exited before reaching the expected checkpoint." >&2
+		exit 1
 	fi
 	sleep 5
 done
