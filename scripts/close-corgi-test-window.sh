@@ -21,7 +21,32 @@ assert_test_profile_path() {
 close_profile() {
 	local profile_dir="$1"
 	assert_test_profile_path "$profile_dir"
-	pkill -f "$profile_dir" >/dev/null 2>&1 || true
+	local main_pids
+	main_pids="$(
+		ps -axo pid=,ppid=,command= |
+			awk -v profile="$profile_dir" '
+				index($0, profile) > 0 &&
+					(index($0, "Visual Studio Code.app") > 0 ||
+					 index($0, "Code Helper") > 0 ||
+					 index($0, "MacOS/Code") > 0) {
+					print $2
+				}
+			' |
+			sort -u
+	)"
+	if [[ -n "$main_pids" ]]; then
+		while IFS= read -r pid; do
+			[[ -n "$pid" ]] || continue
+			kill -TERM "$pid" >/dev/null 2>&1 || true
+		done <<< "$main_pids"
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			if ! pgrep -f "$profile_dir" >/dev/null 2>&1; then
+				return
+			fi
+			sleep 0.5
+		done
+	fi
+	pkill -TERM -f "$profile_dir" >/dev/null 2>&1 || true
 	for _ in 1 2 3 4 5; do
 		if ! pgrep -f "$profile_dir" >/dev/null 2>&1; then
 			return
