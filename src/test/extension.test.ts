@@ -1348,6 +1348,77 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!snapshot.composer.context.includes('Plan ready'));
 	});
 
+	test('webview snapshot keeps retry plan-ready state on the same goal and attempt', () => {
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			acceptedIntakeSummary: {
+				title: 'Analyze repo',
+				body: 'Analyze the repository architecture.',
+			},
+			planReadyRequest: {
+				id: 'plan-ready-retry',
+				contextRef: 'plan-context-2',
+				title: 'Plan ready',
+				body: 'The revised plan is ready.',
+				requestedAt: '2026-04-10T10:01:00.000Z',
+				foregroundRequestId: 'req-retry',
+				acceptedIntakeSummary: {
+					title: 'Analyze repo',
+					body: 'Analyze the repository architecture.',
+				},
+				allowedActions: ['execute_plan', 'revise_plan'],
+				planVersion: 2,
+				planContextRef: 'plan-context-2',
+				workRef: 'lane/main/work-123',
+				planRef: '.agent/work/lane/main/work-123/plans/plan-v2.md',
+				revisionReason: 'review_requested_changes',
+				latestReviewRef: '.agent/reviews/lane/main/dispatch-1/review.json',
+			},
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Analyze the repository architecture.',
+				currentActor: 'governor',
+				currentStage: 'plan_ready',
+				permissionScope: 'plan',
+				runState: 'idle',
+				currentWorkRef: 'lane/main/work-123',
+				currentPlanVersion: 2,
+				currentAttemptNumber: 1,
+				latestReviewRef: '.agent/reviews/lane/main/dispatch-1/review.json',
+				latestReviewVerdict: 'request_changes',
+			},
+			feed: [
+				{
+					id: 'governor-revised-plan',
+					type: 'actor_event',
+					title: 'Governor responded',
+					body: 'Objective: revise the same repository analysis plan.\n\nExecution readiness: retry plan-ready.',
+					timestamp: '2026-04-10T10:01:00.000Z',
+					authoritative: true,
+					source_actor: 'governor',
+				},
+			],
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+		const actionText = snapshot.actions.map((action) => action.text);
+		const visibleText = [
+			snapshot.goalStrip,
+			snapshot.composer.context,
+			...snapshot.messages.map((message) => message.text),
+			...actionText,
+		].join('\n');
+
+		assert.match(snapshot.goalStrip, /Goal: Analyze the repository architecture\./);
+		assert.match(snapshot.goalStrip, /Step: Plan ready · Attempt 2/);
+		assert.deepStrictEqual(actionText, ['Execute plan', 'Revise']);
+		assert.strictEqual(snapshot.composer.context, 'Scope: Plan');
+		assert.ok(!visibleText.includes('lane/main/work-123'));
+		assert.ok(!visibleText.includes('plan-context-2'));
+		assert.ok(!visibleText.includes('review_requested_changes'));
+		assert.ok(!visibleText.includes('dispatch-1/review.json'));
+	});
+
 	test('webview snapshot shows compact parallel goal status without exposing refs', () => {
 		const model: ExecutionWindowModel = {
 			...createInitialModel('2026-04-10T10:00:00.000Z'),

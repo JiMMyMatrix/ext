@@ -2147,6 +2147,10 @@ export function getExecutionWindowHtml(
 				typeof snapshot.currentAttemptNumber === 'number' && snapshot.currentAttemptNumber > 0
 					? ' · Attempt ' + snapshot.currentAttemptNumber
 					: '';
+			const nextAttempt =
+				typeof snapshot.currentAttemptNumber === 'number' && snapshot.currentAttemptNumber > 0
+					? ' · Attempt ' + (snapshot.currentAttemptNumber + 1)
+					: '';
 			if (model?.activeClarification) {
 				return 'Clarification needed';
 			}
@@ -2160,7 +2164,7 @@ export function getExecutionWindowHtml(
 				return 'Understanding request';
 			}
 			if (isPlanReady(snapshot)) {
-				return 'Plan ready';
+				return 'Plan ready' + nextAttempt;
 			}
 			if (snapshot.currentStage === 'plan_executing') {
 				return 'Executor running' + attempt;

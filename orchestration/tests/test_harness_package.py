@@ -2095,13 +2095,21 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertEqual(work_index["decisions"][1]["decision"], "accept")
                 self.assertEqual(model["snapshot"]["latestReviewVerdict"], "pass")
                 self.assertEqual(model["snapshot"]["latestGovernorDecision"], "accept")
+                self.assertEqual(model["snapshot"]["currentWorkRef"], initial_plan["workRef"])
+                self.assertEqual(model["snapshot"]["currentAttemptNumber"], 2)
+                self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
+                self.assertIsNone(model.get("activeClarification"))
                 revised_plan_entry = next(
                     plan for plan in work_index["plans"] if plan["plan_version"] == 2
                 )
                 self.assertEqual(revised_plan_entry["revision_reason"], "review_requested_changes")
+                self.assertEqual(revised_plan_entry["latest_review_ref"], work_index["reviews"][0]["review_ref"])
                 plan_v2 = repo_root / revised_plan_entry["plan_ref"]
                 self.assertTrue(plan_v2.exists())
                 self.assertEqual(plan_v1.parent, plan_v2.parent)
+                plan_v2_text = plan_v2.read_text(encoding="utf-8")
+                self.assertIn(f"- latest_review_ref: {work_index['reviews'][0]['review_ref']}", plan_v2_text)
+                self.assertIn("- revision_reason: review_requested_changes", plan_v2_text)
 
                 dispatch_requests = [
                     load_json(path)
@@ -2117,6 +2125,8 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertEqual(first_request["work_ref"], initial_plan["workRef"])
                 self.assertEqual(first_request["plan_ref"], initial_plan["planRef"])
                 self.assertEqual(first_request["plan_version"], 1)
+                self.assertNotIn("revision_of_dispatch_ref", first_request)
+                self.assertEqual(second_request["attempt_number"], 2)
                 self.assertEqual(second_request["work_ref"], initial_plan["workRef"])
                 self.assertEqual(second_request["plan_ref"], revised_plan_entry["plan_ref"])
                 self.assertEqual(second_request["plan_version"], 2)
@@ -2388,6 +2398,10 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertEqual(by_attempt[1]["plan_version"], 1)
                 self.assertEqual(by_attempt[2]["plan_version"], 2)
                 self.assertEqual(by_attempt[3]["plan_version"], 3)
+                self.assertEqual(by_attempt[1]["work_ref"], initial_plan["workRef"])
+                self.assertEqual(by_attempt[2]["work_ref"], initial_plan["workRef"])
+                self.assertEqual(by_attempt[3]["work_ref"], initial_plan["workRef"])
+                self.assertNotIn("revision_of_dispatch_ref", by_attempt[1])
                 self.assertEqual(by_attempt[2]["revision_of_dispatch_ref"], by_attempt[1]["dispatch_ref"])
                 self.assertEqual(by_attempt[3]["revision_of_dispatch_ref"], by_attempt[2]["dispatch_ref"])
 
