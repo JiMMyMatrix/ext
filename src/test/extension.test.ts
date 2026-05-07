@@ -92,9 +92,14 @@ const GOVERNOR_RUNTIME_CONFIG_PATH = path.resolve(
 	'../../orchestration/runtime/config.toml'
 );
 const MCP_SERVER_ENTRYPOINT_PATH = path.resolve(__dirname, '../../mcp_server.py');
+const DEV_MCP_SERVER_ENTRYPOINT_PATH = path.resolve(__dirname, '../../dev_mcp_server.py');
 const ADVISORY_MCP_LAUNCHER_PATH = path.resolve(
 	__dirname,
 	'../../orchestration/scripts/serve_advisory_mcp.py'
+);
+const DEVELOPMENT_CONSULTING_MCP_LAUNCHER_PATH = path.resolve(
+	__dirname,
+	'../../orchestration/scripts/serve_development_consulting_mcp.py'
 );
 const ADVISORY_MCP_SETUP_PATH = path.resolve(
 	__dirname,
@@ -104,6 +109,11 @@ const ADVISORY_MCP_REQUIREMENTS_PATH = path.resolve(
 	__dirname,
 	'../../orchestration/runtime/advisory/requirements.txt'
 );
+const ADVISORY_MCP_SERVER_PATH = path.resolve(
+	__dirname,
+	'../../orchestration/runtime/advisory/mcp_server.py'
+);
+const ADVISORY_DOC_PATH = path.resolve(__dirname, '../../orchestration/advisory.md');
 const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
 	__dirname,
 	'../../src/test/fixtures/semantic-routing.json'
@@ -955,7 +965,9 @@ suite('Corgi Webview UX', () => {
 	test('registers advisory MCP server through repo entrypoint with Python env handling', () => {
 		const configSource = fs.readFileSync(GOVERNOR_RUNTIME_CONFIG_PATH, 'utf8');
 		const entrypointSource = fs.readFileSync(MCP_SERVER_ENTRYPOINT_PATH, 'utf8');
+		const devEntrypointSource = fs.readFileSync(DEV_MCP_SERVER_ENTRYPOINT_PATH, 'utf8');
 		const launcherSource = fs.readFileSync(ADVISORY_MCP_LAUNCHER_PATH, 'utf8');
+		const devLauncherSource = fs.readFileSync(DEVELOPMENT_CONSULTING_MCP_LAUNCHER_PATH, 'utf8');
 		const setupSource = fs.readFileSync(ADVISORY_MCP_SETUP_PATH, 'utf8');
 		const requirementsSource = fs.readFileSync(ADVISORY_MCP_REQUIREMENTS_PATH, 'utf8');
 
@@ -963,12 +975,23 @@ suite('Corgi Webview UX', () => {
 		assert.ok(configSource.includes('command = "python3"'));
 		assert.ok(configSource.includes('args = ["mcp_server.py"]'));
 		assert.ok(!configSource.includes('args = ["orchestration/runtime/advisory/mcp_server.py"]'));
+		assert.ok(!configSource.includes('dev_mcp_server.py'));
 		assert.ok(entrypointSource.includes('serve_advisory_mcp.py'));
+		assert.ok(entrypointSource.includes('os.environ["CORGI_ADVISORY_CONTEXT"] = "corgi-governor-runtime"'));
+		assert.ok(devEntrypointSource.includes('serve_development_consulting_mcp.py'));
+		assert.ok(devLauncherSource.includes('CORGI_ADVISORY_LAUNCH_PROFILE'));
+		assert.ok(devLauncherSource.includes('corgi-development-consulting'));
+		assert.ok(devLauncherSource.includes('CORGI_ADVISORY_CALLER_ROLE'));
+		assert.ok(devLauncherSource.includes('.agent" / "development" / "advisory'));
 		assert.ok(launcherSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(launcherSource.includes('CORGI_ADVISORY_MCP_PYTHON'));
 		assert.ok(launcherSource.includes('CORGI_PYTHON'));
 		assert.ok(launcherSource.includes('/opt/homebrew/bin/python3'));
 		assert.ok(launcherSource.includes('ORCHESTRATION_REPO_ROOT'));
+		assert.ok(launcherSource.includes('ORCHESTRATION_SOURCE_ROOT'));
+		assert.ok(launcherSource.includes('CORGI_ADVISORY_CONTEXT'));
+		assert.ok(launcherSource.includes('corgi-governor-runtime'));
+		assert.ok(launcherSource.includes('CORGI_ADVISORY_STATE_DIR'));
 		assert.ok(launcherSource.includes('PYTHONPATH'));
 		assert.ok(launcherSource.includes('requirements.txt'));
 		assert.ok(launcherSource.includes('"runtime" / "advisory" / "mcp_server.py"'));
@@ -977,6 +1000,23 @@ suite('Corgi Webview UX', () => {
 		assert.ok(setupSource.includes('requirements.txt'));
 		assert.ok(requirementsSource.includes('anthropic'));
 		assert.ok(requirementsSource.includes('mcp'));
+	});
+
+	test('separates runtime Governor advisory from development consulting', () => {
+		const serverSource = fs.readFileSync(ADVISORY_MCP_SERVER_PATH, 'utf8');
+		const advisoryDoc = fs.readFileSync(ADVISORY_DOC_PATH, 'utf8');
+
+		assert.ok(serverSource.includes('CORGI_RUNTIME_CONTEXT'));
+		assert.ok(serverSource.includes('corgi-governor-runtime'));
+		assert.ok(serverSource.includes('corgi-development-consulting'));
+		assert.ok(serverSource.includes('Corgi_Governor_Advisor'));
+		assert.ok(serverSource.includes('Corgi_Development_Consulting'));
+		assert.ok(serverSource.includes('_authorize_tool_call'));
+		assert.ok(serverSource.includes('ADVISORY_CALLER_ROLE != "governor"'));
+		assert.ok(serverSource.includes('_runtime_prompt_boundary_error'));
+		assert.ok(serverSource.includes('_resolve_context_path'));
+		assert.ok(advisoryDoc.includes('Runtime advisor file access is target-workspace scoped'));
+		assert.ok(advisoryDoc.includes('for building Corgi itself'));
 	});
 
 	test('permission continuation collapses progress into a specific wait state', () => {
@@ -1238,6 +1278,32 @@ suite('Corgi Webview UX', () => {
 		assert.ok(reviseAction?.className.includes('secondary'));
 		assert.strictEqual(snapshot.composer.context, 'Scope: Plan');
 		assert.ok(!snapshot.composer.context.includes('Plan ready'));
+	});
+
+	test('webview snapshot shows compact parallel goal status without exposing refs', () => {
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			acceptedIntakeSummary: {
+				title: 'Build app',
+				body: 'Build the static pet diary app.',
+			},
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Build the static pet diary app.',
+				currentActor: 'executor',
+				currentStage: 'plan_executing',
+				permissionScope: 'execute',
+				runState: 'running',
+				activeParallelDispatchCount: 2,
+				currentParallelSetRef: 'lane/work/parallel-set-1',
+			},
+			feed: [],
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+
+		assert.match(snapshot.goalStrip, /Step: 2 tasks running/);
+		assert.ok(!snapshot.goalStrip.includes('parallel-set-1'));
 	});
 
 	test('webview snapshot condenses dispatch queued into the goal strip instead of transcript noise', () => {

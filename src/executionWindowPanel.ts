@@ -2117,6 +2117,14 @@ export function getExecutionWindowHtml(
 		}
 
 		function goalStepLabel(snapshot) {
+			const activeParallel =
+				typeof snapshot.activeParallelDispatchCount === 'number' &&
+				snapshot.activeParallelDispatchCount > 1
+					? snapshot.activeParallelDispatchCount
+					: 0;
+			if (activeParallel) {
+				return activeParallel + ' tasks running';
+			}
 			const attempt =
 				typeof snapshot.currentAttemptNumber === 'number' && snapshot.currentAttemptNumber > 0
 					? ' · Attempt ' + snapshot.currentAttemptNumber

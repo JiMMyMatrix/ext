@@ -18,6 +18,7 @@ from orchestration.harness import (
     dispatch_guards,
     executor_runtime,
     intake,
+    parallel_dispatch,
     reviewer,
     runtime_support,
     session,
@@ -71,6 +72,133 @@ class HarnessPackageTests(unittest.TestCase):
             "semantic_route_type": route_type,
             "semantic_confidence": "high",
         }
+
+    def _parallel_request(
+        self,
+        dispatch_ref: str,
+        *,
+        lane: str = "lane/test",
+        work_ref: str = "lane/test/work-001",
+        scope: str = "src/app.js",
+        parallel_set_ref: str | None = "lane/test/parallel-set-001",
+        pre_review: bool = True,
+        pre_review_path: str | None = None,
+        resource_hints: dict | None = None,
+        depends_on: list[str] | None = None,
+        overlap_isolation: dict | None = None,
+        execution_mode: str = "command_chain",
+        task_track: str = "patch",
+    ) -> dict:
+        request = {
+            "dispatch_ref": dispatch_ref,
+            "from_role": "agentA",
+            "to_role": "agentB",
+            "task_kind": "bounded_task",
+            "lane": lane,
+            "objective": f"Run {dispatch_ref}",
+            "scope": [scope],
+            "non_goals": [],
+            "inputs": [],
+            "required_outputs": [f"reports/{dispatch_ref.replace('/', '-')}.json"],
+            "acceptance_criteria": ["bounded result exists"],
+            "required_validators": ["manual verification"],
+            "stop_conditions": ["block on ambiguity"],
+            "report_format": ["summary"],
+            "work_ref": work_ref,
+            "plan_ref": f"{work_ref}/plans/plan-v1.md",
+            "plan_version": 1,
+            "attempt_number": 1,
+            "execution_mode": execution_mode,
+            "task_track": task_track,
+            "scope_reservations": [scope],
+        }
+        if parallel_set_ref is not None:
+            request["parallel_set_ref"] = parallel_set_ref
+            request["parallel_group"] = "group-a"
+            request["parallel_intent"] = "run independent bounded tasks in parallel"
+        if pre_review:
+            request["pre_dispatch_review_required"] = True
+            request["pre_dispatch_review_artifact_path"] = (
+                pre_review_path
+                or parallel_dispatch.default_pre_dispatch_review_artifact_path(dispatch_ref)
+            )
+        if resource_hints:
+            request["resource_hints"] = resource_hints
+        if depends_on:
+            request["depends_on_dispatches"] = depends_on
+        if overlap_isolation:
+            request["overlap_isolation"] = overlap_isolation
+        return request
+
+    def _write_dispatch_request(self, repo_root: Path, request: dict, *, state: str = "queued") -> Path:
+        dispatch_dir = repo_root / ".agent" / "dispatches" / request["dispatch_ref"]
+        write_json(dispatch_dir / "request.json", request)
+        write_json(
+            dispatch_dir / "state.json",
+            {
+                "dispatch_ref": request["dispatch_ref"],
+                "status": state,
+                "claimed_by": "agentB" if state in {"claimed", "running", "validated", "completed"} else None,
+                "claimed_at": "2026-04-10T10:00:00Z" if state in {"claimed", "running", "validated", "completed"} else None,
+                "run_ref": None,
+                "result_ref": None,
+                "last_transition_at": "2026-04-10T10:00:00Z",
+                "transition_history": [],
+                "notes": [],
+            },
+        )
+        return dispatch_dir
+
+    def _write_pre_dispatch_review(
+        self,
+        repo_root: Path,
+        dispatch_ref: str,
+        *,
+        verdict: str = "pass",
+        covered_dispatch_refs: list[str] | None = None,
+    ) -> Path:
+        review_path = repo_root / ".agent" / "reviews" / dispatch_ref / "pre_dispatch_review.json"
+        payload = {
+            "dispatch_ref": dispatch_ref,
+            "review_phase": "pre_dispatch",
+            "reviewer_role": "agentR-helper",
+            "verdict": verdict,
+            "validator_assessment": ["pre-dispatch scope reviewed"],
+            "scope_assessment": ["scope is bounded"],
+            "findings": [],
+            "residual_risks": [],
+            "recommendation": "parallel start is safe",
+        }
+        if covered_dispatch_refs is not None:
+            payload["covered_dispatch_refs"] = covered_dispatch_refs
+        write_json(review_path, payload)
+        return review_path
+
+    def _write_parallel_set(
+        self,
+        repo_root: Path,
+        parallel_set_ref: str,
+        dispatch_refs: list[str],
+        *,
+        lane: str = "lane/test",
+        work_ref: str = "lane/test/work-001",
+        max_active: int = 2,
+    ) -> Path:
+        set_path = parallel_dispatch.parallel_set_artifact_path(repo_root, parallel_set_ref)
+        write_json(
+            set_path,
+            {
+                "parallel_set_ref": parallel_set_ref,
+                "work_ref": work_ref,
+                "lane": lane,
+                "dispatch_refs": dispatch_refs,
+                "intent": "run independent bounded tasks in parallel",
+                "max_active": max_active,
+                "review_artifact_path": f".agent/reviews/{parallel_set_ref}/pre_dispatch_review.json",
+                "created_at": "2026-04-10T10:00:00Z",
+            },
+        )
+        return set_path
 
     def _assert_executor_readout(self, repo_root: Path, dispatch_dir: Path, model: dict) -> Path:
         request_payload = load_json(dispatch_dir / "request.json")
@@ -370,8 +498,12 @@ class HarnessPackageTests(unittest.TestCase):
     def test_advisory_mcp_entrypoints_handle_python_environment(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         root_entrypoint = (repo_root / "mcp_server.py").read_text(encoding="utf-8")
+        dev_entrypoint = (repo_root / "dev_mcp_server.py").read_text(encoding="utf-8")
         launcher_source = (
             repo_root / "orchestration" / "scripts" / "serve_advisory_mcp.py"
+        ).read_text(encoding="utf-8")
+        dev_launcher_source = (
+            repo_root / "orchestration" / "scripts" / "serve_development_consulting_mcp.py"
         ).read_text(encoding="utf-8")
         setup_source = (
             repo_root / "orchestration" / "scripts" / "setup_advisory_mcp_env.py"
@@ -381,6 +513,12 @@ class HarnessPackageTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("serve_advisory_mcp.py", root_entrypoint)
+        self.assertIn('os.environ["CORGI_ADVISORY_CONTEXT"] = "corgi-governor-runtime"', root_entrypoint)
+        self.assertIn("serve_development_consulting_mcp.py", dev_entrypoint)
+        self.assertIn("CORGI_ADVISORY_LAUNCH_PROFILE", dev_launcher_source)
+        self.assertIn("corgi-development-consulting", dev_launcher_source)
+        self.assertIn("CORGI_ADVISORY_CALLER_ROLE", dev_launcher_source)
+        self.assertIn(".agent\" / \"development\" / \"advisory", dev_launcher_source)
         for token in [
             "ORCHESTRATION_APPROVED_PYTHON",
             "CORGI_ADVISORY_MCP_PYTHON",
@@ -388,6 +526,10 @@ class HarnessPackageTests(unittest.TestCase):
             "/opt/homebrew/bin/python3",
             "PYTHONPATH",
             "ORCHESTRATION_REPO_ROOT",
+            "ORCHESTRATION_SOURCE_ROOT",
+            "CORGI_ADVISORY_CONTEXT",
+            "corgi-governor-runtime",
+            "CORGI_ADVISORY_STATE_DIR",
             "requirements.txt",
             "runtime\" / \"advisory\" / \"mcp_server.py",
         ]:
@@ -398,6 +540,31 @@ class HarnessPackageTests(unittest.TestCase):
         self.assertIn("anthropic", requirements_source)
         self.assertIn("mcp", requirements_source)
 
+    def test_advisory_mcp_runtime_and_development_surfaces_are_separate(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        config_source = (repo_root / "orchestration" / "runtime" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        server_source = (
+            repo_root / "orchestration" / "runtime" / "advisory" / "mcp_server.py"
+        ).read_text(encoding="utf-8")
+        advisory_doc = (repo_root / "orchestration" / "advisory.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("dev_mcp_server.py", config_source)
+        self.assertIn("CORGI_RUNTIME_CONTEXT", server_source)
+        self.assertIn("corgi-governor-runtime", server_source)
+        self.assertIn("corgi-development-consulting", server_source)
+        self.assertIn("Corgi_Governor_Advisor", server_source)
+        self.assertIn("Corgi_Development_Consulting", server_source)
+        self.assertIn("_authorize_tool_call", server_source)
+        self.assertIn("ADVISORY_CALLER_ROLE != \"governor\"", server_source)
+        self.assertIn("_runtime_prompt_boundary_error", server_source)
+        self.assertIn("_resolve_context_path", server_source)
+        self.assertIn("Runtime advisor file access is target-workspace scoped", advisory_doc)
+        self.assertIn("for building Corgi itself", advisory_doc)
+
     def test_cli_advisory_serve_routes_through_launcher(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         cli_source = (repo_root / "orchestration" / "harness" / "cli.py").read_text(
@@ -406,6 +573,9 @@ class HarnessPackageTests(unittest.TestCase):
 
         self.assertIn("serve_advisory_mcp.py", cli_source)
         self.assertIn("ORCHESTRATION_REPO_ROOT", cli_source)
+        self.assertIn("ORCHESTRATION_SOURCE_ROOT", cli_source)
+        self.assertIn("CORGI_ADVISORY_CONTEXT", cli_source)
+        self.assertIn("corgi-governor-runtime", cli_source)
         self.assertIn("PYTHONPATH", cli_source)
         self.assertNotIn('runtime_root / "advisory" / "mcp_server.py"', cli_source)
 
@@ -3067,3 +3237,299 @@ class HarnessPackageTests(unittest.TestCase):
 
             with self.assertRaises(artifacts.ArtifactContractError):
                 artifacts.load_review_artifact(review_path)
+
+    def test_parallel_request_metadata_requires_reviewed_scope(self) -> None:
+        failures: list[str] = []
+        request = self._parallel_request(
+            "cycle/test/parallel/task/a01",
+            scope="src/a.js",
+            pre_review=False,
+        )
+        request.pop("scope_reservations")
+
+        dispatch_contracts.validate_request(request, failures)
+
+        self.assertIn(
+            "request.json pre_dispatch_review_required must be true when parallel_set_ref is set",
+            failures,
+        )
+        self.assertIn("request.json parallel_set_ref requires non-empty scope_reservations", failures)
+
+    def test_parallel_set_start_guard_allows_reviewed_non_overlapping_second_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-001"
+            first_ref = "cycle/test/parallel/task/a01"
+            second_ref = "cycle/test/parallel/task/a02"
+            first = self._parallel_request(first_ref, scope="src/a.js", parallel_set_ref=parallel_set_ref)
+            second = self._parallel_request(second_ref, scope="src/b.js", parallel_set_ref=parallel_set_ref)
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_parallel_set(repo_root, parallel_set_ref, [first_ref, second_ref])
+            self._write_pre_dispatch_review(repo_root, first_ref)
+            self._write_pre_dispatch_review(repo_root, second_ref)
+            self._write_pre_dispatch_review(
+                repo_root,
+                parallel_set_ref,
+                covered_dispatch_refs=[first_ref, second_ref],
+            )
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertEqual(blockers, [])
+
+    def test_same_lane_parallel_start_requires_parallel_set_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            first_ref = "cycle/test/serial/task/a01"
+            second_ref = "cycle/test/serial/task/a02"
+            first = self._parallel_request(first_ref, scope="src/a.js", parallel_set_ref=None)
+            second = self._parallel_request(second_ref, scope="src/b.js", parallel_set_ref=None)
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_pre_dispatch_review(repo_root, second_ref)
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertIn("parallel_set_ref_required_for_same_lane_parallel_start", blockers)
+
+    def test_parallel_set_start_guard_enforces_set_max_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-001-max-one"
+            first_ref = "cycle/test/parallel/task/a01"
+            second_ref = "cycle/test/parallel/task/a02"
+            first = self._parallel_request(first_ref, scope="src/a.js", parallel_set_ref=parallel_set_ref)
+            second = self._parallel_request(second_ref, scope="src/b.js", parallel_set_ref=parallel_set_ref)
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_parallel_set(repo_root, parallel_set_ref, [first_ref, second_ref], max_active=1)
+            self._write_pre_dispatch_review(
+                repo_root,
+                parallel_set_ref,
+                covered_dispatch_refs=[first_ref, second_ref],
+            )
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertIn(f"parallel_set_limit_reached:{parallel_set_ref}:1", blockers)
+
+    def test_session_snapshot_reports_authoritative_parallel_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-001"
+            first_ref = "cycle/test/parallel/task/snapshot-a01"
+            second_ref = "cycle/test/parallel/task/snapshot-a02"
+            first = self._parallel_request(first_ref, scope="src/a.js", parallel_set_ref=parallel_set_ref)
+            second = self._parallel_request(second_ref, scope="src/b.js", parallel_set_ref=parallel_set_ref)
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="running")
+            payload = {
+                "meta": {},
+                "model": session._initial_model(
+                    "2026-04-10T10:00:00Z",
+                    repo_root=repo_root,
+                ),
+            }
+            payload["model"]["snapshot"]["lane"] = "lane/test"
+
+            session._normalize_session(
+                payload,
+                "2026-04-10T10:00:01Z",
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(payload["model"]["snapshot"]["activeParallelDispatchCount"], 2)
+            self.assertEqual(payload["model"]["snapshot"]["currentParallelSetRef"], parallel_set_ref)
+
+    def test_parallel_set_start_guard_blocks_missing_set_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-002"
+            first_ref = "cycle/test/parallel/task/b01"
+            second_ref = "cycle/test/parallel/task/b02"
+            first = self._parallel_request(first_ref, scope="src/a.js", parallel_set_ref=parallel_set_ref)
+            second = self._parallel_request(second_ref, scope="src/b.js", parallel_set_ref=parallel_set_ref)
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_parallel_set(repo_root, parallel_set_ref, [first_ref, second_ref])
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertTrue(any(blocker.startswith("pre_dispatch_review_missing:") for blocker in blockers))
+
+    def test_parallel_set_start_guard_blocks_missing_member_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-002-member-review"
+            first_ref = "cycle/test/parallel/task/member-review-a01"
+            second_ref = "cycle/test/parallel/task/member-review-a02"
+            first = self._parallel_request(first_ref, scope="src/a.js", parallel_set_ref=parallel_set_ref)
+            second = self._parallel_request(second_ref, scope="src/b.js", parallel_set_ref=parallel_set_ref)
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_parallel_set(repo_root, parallel_set_ref, [first_ref, second_ref])
+            self._write_pre_dispatch_review(
+                repo_root,
+                parallel_set_ref,
+                covered_dispatch_refs=[first_ref, second_ref],
+            )
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertIn(
+                f"pre_dispatch_review_missing:{second_ref}:"
+                f".agent/reviews/{second_ref}/pre_dispatch_review.json",
+                blockers,
+            )
+
+    def test_parallel_set_start_guard_blocks_overlapping_member_scopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-003"
+            first_ref = "cycle/test/parallel/task/c01"
+            second_ref = "cycle/test/parallel/task/c02"
+            first = self._parallel_request(first_ref, scope="src/app.js", parallel_set_ref=parallel_set_ref)
+            second = self._parallel_request(second_ref, scope="src", parallel_set_ref=parallel_set_ref)
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_parallel_set(repo_root, parallel_set_ref, [first_ref, second_ref])
+            self._write_pre_dispatch_review(repo_root, first_ref)
+            self._write_pre_dispatch_review(repo_root, second_ref)
+            self._write_pre_dispatch_review(
+                repo_root,
+                parallel_set_ref,
+                covered_dispatch_refs=[first_ref, second_ref],
+            )
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertIn(
+                f"parallel_set_scope_conflict:{first_ref}:{second_ref}",
+                blockers,
+            )
+            self.assertIn(f"scope_conflict:{first_ref}", blockers)
+
+    def test_parallel_set_start_guard_allows_matching_overlap_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-004"
+            first_ref = "cycle/test/parallel/task/d01"
+            second_ref = "cycle/test/parallel/task/d02"
+            overlap = {
+                "mode": "git_worktree",
+                "overlap_group": "app-overlap",
+                "integration_policy": "choose_one",
+            }
+            first = self._parallel_request(
+                first_ref,
+                scope="src/app.js",
+                parallel_set_ref=parallel_set_ref,
+                overlap_isolation=overlap,
+                execution_mode="guided_agent",
+            )
+            second = self._parallel_request(
+                second_ref,
+                scope="src",
+                parallel_set_ref=parallel_set_ref,
+                overlap_isolation=overlap,
+                execution_mode="guided_agent",
+            )
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_parallel_set(repo_root, parallel_set_ref, [first_ref, second_ref])
+            self._write_pre_dispatch_review(repo_root, first_ref)
+            self._write_pre_dispatch_review(repo_root, second_ref)
+            self._write_pre_dispatch_review(
+                repo_root,
+                parallel_set_ref,
+                covered_dispatch_refs=[first_ref, second_ref],
+            )
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertEqual(blockers, [])
+
+    def test_parallel_set_start_guard_blocks_gpu_exclusive_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-005"
+            first_ref = "cycle/test/parallel/task/e01"
+            second_ref = "cycle/test/parallel/task/e02"
+            first = self._parallel_request(
+                first_ref,
+                scope="src/a.js",
+                parallel_set_ref=parallel_set_ref,
+                resource_hints={"gpu": "exclusive"},
+            )
+            second = self._parallel_request(
+                second_ref,
+                scope="src/b.js",
+                parallel_set_ref=parallel_set_ref,
+                resource_hints={"gpu": "shared"},
+            )
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_parallel_set(repo_root, parallel_set_ref, [first_ref, second_ref])
+            self._write_pre_dispatch_review(
+                repo_root,
+                parallel_set_ref,
+                covered_dispatch_refs=[first_ref, second_ref],
+            )
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertIn(
+                f"parallel_set_resource_conflict:{first_ref}:{second_ref}:gpu_exclusive",
+                blockers,
+            )
+            self.assertIn(f"resource_conflict:{first_ref}:gpu_exclusive", blockers)
+
+    def test_parallel_set_start_guard_blocks_stale_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            parallel_set_ref = "lane/test/parallel-set-006"
+            first_ref = "cycle/test/parallel/task/f01"
+            second_ref = "cycle/test/parallel/task/f02"
+            stale_dependency = "cycle/test/parallel/task/upstream"
+            first = self._parallel_request(first_ref, scope="src/a.js", parallel_set_ref=parallel_set_ref)
+            second = self._parallel_request(
+                second_ref,
+                scope="src/b.js",
+                parallel_set_ref=parallel_set_ref,
+                depends_on=[stale_dependency],
+            )
+            self._write_dispatch_request(repo_root, first, state="claimed")
+            self._write_dispatch_request(repo_root, second, state="queued")
+            self._write_parallel_set(repo_root, parallel_set_ref, [first_ref, second_ref])
+            self._write_pre_dispatch_review(
+                repo_root,
+                parallel_set_ref,
+                covered_dispatch_refs=[first_ref, second_ref],
+            )
+
+            blockers = start_guard.find_start_blockers(repo_root, second)
+
+            self.assertIn(f"unsatisfied_dependency:{stale_dependency}", blockers)
+            self.assertIn(
+                f"parallel_set_unsatisfied_dependency:{second_ref}:{stale_dependency}",
+                blockers,
+            )
+
+    def test_parallel_set_contract_rejects_too_many_active_members(self) -> None:
+        failures: list[str] = []
+        parallel_dispatch.validate_parallel_set_payload(
+            {
+                "parallel_set_ref": "lane/test/parallel-set-007",
+                "work_ref": "lane/test/work-001",
+                "lane": "lane/test",
+                "dispatch_refs": ["cycle/test/parallel/task/g01", "cycle/test/parallel/task/g02"],
+                "intent": "unsafe wide fan-out",
+                "max_active": 3,
+                "review_artifact_path": ".agent/reviews/lane/test/parallel-set-007/pre_dispatch_review.json",
+                "created_at": "2026-04-10T10:00:00Z",
+            },
+            failures,
+        )
+
+        self.assertIn("parallel_dispatch_set.json max_active must be an integer between 1 and 2", failures)

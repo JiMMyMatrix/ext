@@ -10,11 +10,12 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SERVER_PATH = REPO_ROOT / "orchestration" / "runtime" / "advisory" / "mcp_server.py"
-REQUIREMENTS_PATH = REPO_ROOT / "orchestration" / "runtime" / "advisory" / "requirements.txt"
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+TARGET_REPO_ROOT = Path(os.environ.get("ORCHESTRATION_REPO_ROOT") or SOURCE_ROOT).resolve()
+SERVER_PATH = SOURCE_ROOT / "orchestration" / "runtime" / "advisory" / "mcp_server.py"
+REQUIREMENTS_PATH = SOURCE_ROOT / "orchestration" / "runtime" / "advisory" / "requirements.txt"
 ADVISORY_VENV_PYTHON = (
-	REPO_ROOT / ".agent" / "orchestration" / "advisory" / ".venv" / "bin" / "python"
+	SOURCE_ROOT / ".agent" / "orchestration" / "advisory" / ".venv" / "bin" / "python"
 )
 PYTHON_CANDIDATES = (
 	"CORGI_ADVISORY_MCP_PYTHON",
@@ -54,12 +55,26 @@ def _prepare_env(approved_python: Path) -> dict[str, str]:
 	env = os.environ.copy()
 	existing_pythonpath = env.get("PYTHONPATH")
 	env["PYTHONPATH"] = (
-		str(REPO_ROOT)
+		str(SOURCE_ROOT)
 		if not existing_pythonpath
-		else str(REPO_ROOT) + os.pathsep + existing_pythonpath
+		else str(SOURCE_ROOT) + os.pathsep + existing_pythonpath
 	)
-	env["ORCHESTRATION_REPO_ROOT"] = str(REPO_ROOT)
+	env["ORCHESTRATION_SOURCE_ROOT"] = str(SOURCE_ROOT)
+	env["ORCHESTRATION_REPO_ROOT"] = str(TARGET_REPO_ROOT)
 	env["ORCHESTRATION_APPROVED_PYTHON"] = str(approved_python)
+	if env.get("CORGI_ADVISORY_LAUNCH_PROFILE") == "development":
+		env["CORGI_ADVISORY_CONTEXT"] = "corgi-development-consulting"
+		env["CORGI_ADVISORY_CALLER_ROLE"] = "developer"
+		env.setdefault(
+			"CORGI_ADVISORY_STATE_DIR",
+			str(SOURCE_ROOT / ".agent" / "development" / "advisory"),
+		)
+	else:
+		env["CORGI_ADVISORY_CONTEXT"] = "corgi-governor-runtime"
+		env["CORGI_ADVISORY_CALLER_ROLE"] = "governor"
+		env["CORGI_ADVISORY_STATE_DIR"] = str(
+			TARGET_REPO_ROOT / ".agent" / "orchestration" / "advisory"
+		)
 	return env
 
 

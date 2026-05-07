@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create/update the repo-local Python environment for the advisory MCP server."""
+"""Create/update the shared Python environment for advisory MCP surfaces."""
 
 from __future__ import annotations
 

@@ -44,3 +44,12 @@ Important rules:
   did not authorize
 - reviewer output is advisory only
 - `request.json` remains dispatch truth only
+- default to serial dispatch; use parallel dispatch only when it is explicitly
+  useful and safe for the same accepted work family
+- conservative parallel starts must be reviewed before dispatch, stay at two or
+  fewer active same-lane tasks, declare non-overlapping `scope_reservations`
+  unless explicit overlap isolation is used, and share a validated
+  `parallel_set_ref`
+- parallel execution does not change authority: Executor writes only within
+  declared scope, Reviewer stays advisory, and you perform serial fan-in and
+  finalization through `governor_decision.json`

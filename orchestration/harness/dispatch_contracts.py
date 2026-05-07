@@ -18,6 +18,11 @@ from orchestration.harness.spawn_bridge import (
     LIVE_SUBAGENT_PATH,
 )
 from orchestration.harness.reviewer import ReviewerContractViolation, resolve_review_artifact_path
+from orchestration.harness.parallel_dispatch import (
+    validate_parallel_request_metadata,
+    validate_parallel_set_payload,
+    validate_pre_dispatch_review_payload,
+)
 from orchestration.scripts.overlap_worktree import INTEGRATION_POLICIES, OVERLAP_ISOLATION_MODE
 
 
@@ -480,6 +485,7 @@ def validate_request(payload: Dict, failures: List[str]) -> None:
         validate_retry_handoff(payload["retry_handoff"], failures)
     require_string_list(payload, "depends_on_dispatches", failures, prefix="request.json ")
     require_string_list(payload, "scope_reservations", failures, prefix="request.json ")
+    validate_parallel_request_metadata(payload, failures)
     validate_review_fields(payload, failures)
     validate_overlap_isolation_request(payload, failures)
     checkpoint_outputs = [
@@ -1008,9 +1014,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             validate_spawn_bridge(payload, failures)
         elif name == "proposed_transition.json":
             validate_proposed_transition(payload, failures)
+        elif name == "parallel_dispatch_set.json":
+            validate_parallel_set_payload(payload, failures)
+        elif name == "pre_dispatch_review.json":
+            validate_pre_dispatch_review_payload(
+                payload,
+                failures,
+                expected_dispatch_ref=payload.get("dispatch_ref", ""),
+                covered_dispatch_refs=payload.get("covered_dispatch_refs")
+                if isinstance(payload.get("covered_dispatch_refs"), list)
+                else None,
+            )
         else:
             failures.append(
-                "unsupported file type; use a dispatch dir or request/result/state/escalation/governor_decision/spawn_bridge/proposed_transition JSON"
+                "unsupported file type; use a dispatch dir or request/result/state/escalation/governor_decision/spawn_bridge/proposed_transition/parallel_dispatch_set/pre_dispatch_review JSON"
             )
 
     if failures:

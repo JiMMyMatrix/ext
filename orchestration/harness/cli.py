@@ -54,6 +54,9 @@ def _advisory_command(command: str, argv: list[str]) -> int:
 	)
 	env["ORCHESTRATION_REPO_ROOT"] = str(paths.repo_root)
 	env["ORCHESTRATION_SOURCE_ROOT"] = str(paths.source_root)
+	env["CORGI_ADVISORY_CONTEXT"] = "corgi-governor-runtime"
+	env["CORGI_ADVISORY_CALLER_ROLE"] = "governor"
+	env.pop("CORGI_ADVISORY_LAUNCH_PROFILE", None)
 	completed = subprocess.run(
 		[sys.executable, str(paths.scripts_root / "serve_advisory_mcp.py"), *argv],
 		cwd=paths.repo_root,

@@ -15,8 +15,6 @@ from typing import Deque, Dict, Set, Tuple
 from anthropic import AsyncAnthropic
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("Auto_Routing_Advisor")
-
 # ---------------------------------------------------------------------------
 # Policy knobs for the current governor/executor + advisor architecture
 # ---------------------------------------------------------------------------
@@ -32,16 +30,28 @@ _VALID_CYCLE_ID = re.compile(
     r"^(governor/[\w.-]+|[\w.-]+/[\w.-]+/[\w.-]+/[\w.-]+/[\w.-]+)$"
 )
 REPO_ROOT = Path(os.environ.get("ORCHESTRATION_REPO_ROOT") or os.getcwd()).resolve()
-STATE_DUMP_PATH = str(
-    REPO_ROOT / ".agent" / "orchestration" / "advisory" / "mcp_state.json"
+SOURCE_ROOT = Path(os.environ.get("ORCHESTRATION_SOURCE_ROOT") or REPO_ROOT).resolve()
+CORGI_RUNTIME_CONTEXT = "corgi-governor-runtime"
+CORGI_DEVELOPMENT_CONTEXT = "corgi-development-consulting"
+ADVISORY_CONTEXT = os.environ.get("CORGI_ADVISORY_CONTEXT") or CORGI_RUNTIME_CONTEXT
+ADVISORY_CALLER_ROLE = os.environ.get("CORGI_ADVISORY_CALLER_ROLE") or ""
+STATE_DIR = Path(
+    os.environ.get("CORGI_ADVISORY_STATE_DIR")
+    or REPO_ROOT / ".agent" / "orchestration" / "advisory"
+).resolve()
+STATE_DUMP_PATH = str(STATE_DIR / "mcp_state.json")
+MINIMAX_DEFAULT_API_KEY_FILE = Path(
+    os.environ.get("MINIMAX_API_KEY_FILE") or STATE_DIR / "minimax_api_key"
 )
 MINIMAX_DEFAULT_OPENAI_BASE_URL = "https://api.minimax.io/v1"
 MINIMAX_DEFAULT_MODEL = "MiniMax-M2.7"
-MINIMAX_DEFAULT_API_KEY_FILE = (
-    REPO_ROOT / ".agent" / "orchestration" / "advisory" / "minimax_api_key"
-)
 MINIMAX_GROK_NPM_PACKAGE = "@vibe-kit/grok-cli"
 MINIMAX_GROK_DOCS_URL = "https://platform.minimax.io/docs/token-plan/grok-cli"
+mcp = FastMCP(
+    "Corgi_Governor_Advisor"
+    if ADVISORY_CONTEXT == CORGI_RUNTIME_CONTEXT
+    else "Corgi_Development_Consulting"
+)
 
 # ---------------------------------------------------------------------------
 # Runtime state trackers
@@ -58,6 +68,94 @@ cycle_tool_tracker: Dict[str, Set[str]] = {}
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_runtime_context() -> bool:
+    return ADVISORY_CONTEXT == CORGI_RUNTIME_CONTEXT
+
+
+def _is_development_context() -> bool:
+    return ADVISORY_CONTEXT == CORGI_DEVELOPMENT_CONTEXT
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_context_path(raw_path: str, *, must_exist: bool = True) -> Path | str:
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = REPO_ROOT / candidate
+    resolved = candidate.resolve()
+    if _is_runtime_context() and not _path_is_within(resolved, REPO_ROOT):
+        return (
+            "POLICY_ERROR:"
+            " Corgi runtime advisor file access is constrained to the target "
+            f"workspace ({REPO_ROOT}). Requested: {resolved}"
+        )
+    if must_exist and not resolved.exists():
+        return f"Error: File not found at {raw_path}."
+    return resolved
+
+
+def _resolve_context_work_dir(work_dir: str | None) -> Path | str:
+    if not work_dir:
+        return REPO_ROOT
+    resolved = _resolve_context_path(work_dir)
+    if isinstance(resolved, str):
+        return resolved
+    if not resolved.is_dir():
+        return f"Error: The provided work_dir '{work_dir}' does not exist on the filesystem."
+    return resolved
+
+
+def _runtime_prompt_boundary_error(prompt: str) -> str | None:
+    if not _is_runtime_context():
+        return None
+    absolute_candidates = re.findall(r"(?<![\w:])/[^\s`'\"<>|;&]+", prompt)
+    relative_escape_candidates = re.findall(r"(?<!\S)[^\s`'\"<>|;&]*\.\./[^\s`'\"<>|;&]*", prompt)
+    for raw_candidate in [*absolute_candidates, *relative_escape_candidates]:
+        if raw_candidate.startswith("//"):
+            continue
+        candidate = Path(raw_candidate).expanduser()
+        if not candidate.is_absolute():
+            candidate = REPO_ROOT / candidate
+        resolved = candidate.resolve()
+        if not _path_is_within(resolved, REPO_ROOT):
+            return (
+                "POLICY_ERROR:"
+                " Corgi runtime advisor prompts may not request filesystem access "
+                f"outside the target workspace ({REPO_ROOT}). Requested: {resolved}"
+            )
+    return None
+
+
+async def _authorize_tool_call(tool_name: str) -> str | None:
+    if _is_runtime_context():
+        if ADVISORY_CALLER_ROLE != "governor":
+            return (
+                "POLICY_ERROR:"
+                f" {tool_name} is available only to the Corgi Governor in runtime "
+                f"context. caller_role={ADVISORY_CALLER_ROLE or 'unset'}"
+            )
+        return None
+    if _is_development_context():
+        if ADVISORY_CALLER_ROLE not in {"developer", "governor"}:
+            return (
+                "POLICY_ERROR:"
+                f" {tool_name} is available only to explicit development consulting "
+                f"callers in development context. caller_role={ADVISORY_CALLER_ROLE or 'unset'}"
+            )
+        return None
+    return (
+        "POLICY_ERROR:"
+        f" unknown advisory context {ADVISORY_CONTEXT!r}; expected "
+        f"{CORGI_RUNTIME_CONTEXT!r} or {CORGI_DEVELOPMENT_CONTEXT!r}."
+    )
 
 
 def get_api_key(env_var: str, fallback_path: str | None = None) -> str | None:
@@ -78,9 +176,10 @@ def get_api_key(env_var: str, fallback_path: str | None = None) -> str | None:
 
 def read_file_content(file_path: str) -> str:
     try:
-        if not os.path.exists(file_path):
-            return f"Error: File not found at {file_path}."
-        with open(file_path, "r", encoding="utf-8") as handle:
+        resolved = _resolve_context_path(file_path)
+        if isinstance(resolved, str):
+            return resolved
+        with open(resolved, "r", encoding="utf-8") as handle:
             return handle.read()
     except Exception as exc:
         return f"Error reading file: {exc}"
@@ -280,11 +379,9 @@ async def _reset_architect_counter(file_path: str, error_log: str) -> None:
 
 
 def _run_claude_code_sync(prompt: str, work_dir: str | None = None) -> str:
-    if work_dir and not os.path.isdir(work_dir):
-        return (
-            f"Error: The provided work_dir '{work_dir}' does not exist on the "
-            "filesystem."
-        )
+    resolved_work_dir = _resolve_context_work_dir(work_dir)
+    if isinstance(resolved_work_dir, str):
+        return resolved_work_dir
 
     cmd = [
         "claude",
@@ -302,7 +399,7 @@ def _run_claude_code_sync(prompt: str, work_dir: str | None = None) -> str:
             capture_output=True,
             text=True,
             timeout=300,
-            cwd=work_dir if work_dir else None,
+            cwd=str(resolved_work_dir),
             env={**os.environ},
             stdin=subprocess.DEVNULL,
         )
@@ -580,6 +677,10 @@ async def consult_claude_headless(
     - build/test execution
     - arbitrary shell commands
     """
+    auth_error = await _authorize_tool_call("consult_claude_headless")
+    if auth_error:
+        return await _persist_and_return(auth_error)
+
     aggregate_error = await _consume_aggregate_quota()
     if aggregate_error:
         return await _persist_and_return(aggregate_error)
@@ -594,6 +695,10 @@ async def consult_claude_headless(
 
     structured_prompt = (
         "Return structured text only.\n\n"
+        f"Runtime filesystem boundary: inspect only files under {REPO_ROOT}. "
+        "Do not read absolute paths, parent directories, symlink escapes, or "
+        "source-root files outside that target workspace. If the user task asks "
+        "for anything outside that boundary, return POLICY_ERROR.\n\n"
         "Use exactly these sections:\n"
         "SUMMARY:\n"
         "...\n\n"
@@ -607,6 +712,9 @@ async def consult_claude_headless(
         "- ...\n\n"
         f"User task:\n{prompt}"
     )
+    boundary_error = _runtime_prompt_boundary_error(prompt)
+    if boundary_error:
+        return await _persist_and_return(boundary_error)
 
     loop = asyncio.get_running_loop()
     response = await loop.run_in_executor(
@@ -637,6 +745,10 @@ async def consult_architect(
     Escalates from Haiku to Sonnet only after repeated failures on the same
     file and same normalized error signature.
     """
+    auth_error = await _authorize_tool_call("consult_architect")
+    if auth_error:
+        return await _persist_and_return(auth_error)
+
     aggregate_error = await _consume_aggregate_quota()
     if aggregate_error:
         return await _persist_and_return(aggregate_error)
@@ -715,6 +827,10 @@ async def routine_code_review(
     """
     One review per file per cycle. Lightweight sanity-check review only.
     """
+    auth_error = await _authorize_tool_call("routine_code_review")
+    if auth_error:
+        return await _persist_and_return(auth_error)
+
     aggregate_error = await _consume_aggregate_quota()
     if aggregate_error:
         return await _persist_and_return(aggregate_error)
@@ -781,6 +897,10 @@ async def consult_minimax(
     """
     Cost-effective general advisor with no project filesystem access.
     """
+    auth_error = await _authorize_tool_call("consult_minimax")
+    if auth_error:
+        return await _persist_and_return(auth_error)
+
     aggregate_error = await _consume_aggregate_quota()
     if aggregate_error:
         return await _persist_and_return(aggregate_error)

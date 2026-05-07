@@ -164,6 +164,27 @@ def build_coordination_fields(args: argparse.Namespace) -> Dict[str, Any]:
         payload["depends_on_dispatches"] = unique(args.depends_on_dispatch)
     if args.scope_reservation:
         payload["scope_reservations"] = unique(args.scope_reservation)
+    if args.parallel_set_ref:
+        payload["parallel_set_ref"] = args.parallel_set_ref.strip()
+    if args.parallel_group:
+        payload["parallel_group"] = args.parallel_group.strip()
+    if args.parallel_intent:
+        payload["parallel_intent"] = args.parallel_intent.strip()
+    if args.pre_dispatch_review_required:
+        payload["pre_dispatch_review_required"] = True
+    if args.pre_dispatch_review_artifact_path:
+        payload["pre_dispatch_review_artifact_path"] = args.pre_dispatch_review_artifact_path.strip()
+    resource_hints: Dict[str, Any] = {}
+    if args.resource_cpu:
+        resource_hints["cpu"] = args.resource_cpu
+    if args.resource_gpu:
+        resource_hints["gpu"] = args.resource_gpu
+    if args.resource_memory_gb is not None:
+        resource_hints["memory_gb"] = args.resource_memory_gb
+    if args.resource_storage_gb is not None:
+        resource_hints["storage_gb"] = args.resource_storage_gb
+    if resource_hints:
+        payload["resource_hints"] = resource_hints
     overlap_requested = bool(
         args.overlap_group or args.overlap_isolation_mode or args.integration_policy
     )
@@ -226,6 +247,15 @@ def build_emit_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-artifact-path")
     parser.add_argument("--depends-on-dispatch", action="append", default=[])
     parser.add_argument("--scope-reservation", action="append", default=[])
+    parser.add_argument("--parallel-set-ref")
+    parser.add_argument("--parallel-group")
+    parser.add_argument("--parallel-intent")
+    parser.add_argument("--pre-dispatch-review-required", action="store_true")
+    parser.add_argument("--pre-dispatch-review-artifact-path")
+    parser.add_argument("--resource-cpu", choices=["low", "medium", "high"])
+    parser.add_argument("--resource-gpu", choices=["none", "shared", "exclusive"])
+    parser.add_argument("--resource-memory-gb", type=float)
+    parser.add_argument("--resource-storage-gb", type=float)
     parser.add_argument("--overlap-isolation-mode")
     parser.add_argument("--overlap-group")
     parser.add_argument("--integration-policy")

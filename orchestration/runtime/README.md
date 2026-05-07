@@ -13,9 +13,14 @@ surface.
 `mcp_server.py` compatibility entrypoint. That shim delegates to
 `orchestration/scripts/serve_advisory_mcp.py`, which selects the approved
 Python interpreter, prefers the repo-local advisory virtualenv when present,
-falls back to Homebrew Python when appropriate, sets `ORCHESTRATION_REPO_ROOT`,
-and then launches
+falls back to Homebrew Python when appropriate, keeps
+`ORCHESTRATION_SOURCE_ROOT` for Corgi's orchestration code, keeps
+`ORCHESTRATION_REPO_ROOT` for the target workspace, marks the process as
+`corgi-governor-runtime` / `governor`, and then launches
 `orchestration/runtime/advisory/mcp_server.py`.
+
+Development consulting is separate. Use `dev_mcp_server.py` for developer/Codex
+advisor work; do not register that entrypoint in this runtime config.
 
 Prepare or refresh the repo-local advisory Python environment with:
 

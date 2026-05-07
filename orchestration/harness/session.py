@@ -36,6 +36,7 @@ from orchestration.harness.paths import (
 )
 from orchestration.harness import session_execution
 from orchestration.harness import session_state
+from orchestration.harness.start_guard import collect_active_dispatches
 from orchestration.harness.transition import load_transition
 
 
@@ -1700,6 +1701,8 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 			"pendingInterrupt": None,
 			"recentArtifacts": [],
 			"currentWorkRef": None,
+			"currentParallelSetRef": None,
+			"activeParallelDispatchCount": None,
 			"currentPlanVersion": None,
 			"currentAttemptNumber": None,
 			"latestReviewRef": None,
@@ -1722,6 +1725,8 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 		"acceptedIntakeSummary": None,
 		"planReadyRequest": None,
 		"currentWorkRef": None,
+		"currentParallelSetRef": None,
+		"activeParallelDispatchCount": None,
 		"currentPlanRef": None,
 		"currentAttemptNumber": 0,
 		"latestReviewRef": None,
@@ -1729,6 +1734,29 @@ def _initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str
 		"latestGovernorDecisionRef": None,
 		"latestGovernorDecision": None,
 		"planVersion": 0,
+	}
+
+
+def _active_parallel_snapshot(
+	repo_root: str | Path | None,
+	*,
+	lane: str | None,
+) -> dict[str, Any]:
+	try:
+		paths = resolve_paths(repo_root)
+		active = collect_active_dispatches(paths.repo_root, lane=lane)
+	except Exception:
+		return {"currentParallelSetRef": None, "activeParallelDispatchCount": None}
+	if len(active) < 2:
+		return {"currentParallelSetRef": None, "activeParallelDispatchCount": None}
+	set_refs = {
+		dispatch.get("parallel_set_ref")
+		for dispatch in active
+		if isinstance(dispatch.get("parallel_set_ref"), str) and dispatch.get("parallel_set_ref").strip()
+	}
+	return {
+		"currentParallelSetRef": next(iter(set_refs)) if len(set_refs) == 1 else None,
+		"activeParallelDispatchCount": len(active),
 	}
 
 
@@ -1766,6 +1794,9 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	snapshot.setdefault("pendingInterrupt", None)
 	snapshot.setdefault("recentArtifacts", [])
 	snapshot.setdefault("currentWorkRef", model.get("currentWorkRef"))
+	parallel_state = _active_parallel_snapshot(repo_root, lane=snapshot.get("lane"))
+	snapshot["currentParallelSetRef"] = parallel_state["currentParallelSetRef"]
+	snapshot["activeParallelDispatchCount"] = parallel_state["activeParallelDispatchCount"]
 	snapshot.setdefault("currentPlanVersion", model.get("planVersion"))
 	snapshot.setdefault("currentAttemptNumber", model.get("currentAttemptNumber"))
 	snapshot.setdefault("latestReviewRef", model.get("latestReviewRef"))
@@ -1779,6 +1810,8 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 	model.setdefault("acceptedIntakeSummary", None)
 	model.setdefault("planReadyRequest", None)
 	model.setdefault("currentWorkRef", session["meta"].get("activeWorkRef"))
+	model["currentParallelSetRef"] = snapshot.get("currentParallelSetRef")
+	model["activeParallelDispatchCount"] = snapshot.get("activeParallelDispatchCount")
 	model.setdefault("currentPlanRef", None)
 	model.setdefault("currentAttemptNumber", 0)
 	model.setdefault("latestReviewRef", snapshot.get("latestReviewRef"))

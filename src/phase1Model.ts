@@ -181,6 +181,8 @@ export interface ContextSnapshot {
 	pendingInterrupt?: RequestCard;
 	recentArtifacts: ArtifactReference[];
 	currentWorkRef?: string;
+	currentParallelSetRef?: string;
+	activeParallelDispatchCount?: number;
 	currentPlanVersion?: number;
 	currentAttemptNumber?: number;
 	latestReviewRef?: string;
@@ -446,6 +448,8 @@ export function createInitialModel(now = new Date().toISOString()): ExecutionWin
 			transportState: 'connected',
 			recentArtifacts: [],
 			currentWorkRef: undefined,
+			currentParallelSetRef: undefined,
+			activeParallelDispatchCount: undefined,
 			currentPlanVersion: undefined,
 			currentAttemptNumber: undefined,
 			latestReviewRef: undefined,

@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from orchestration.harness.paths import resolve_agent_root, unique_strings
+from orchestration.harness.parallel_dispatch import (
+    parallel_set_blockers,
+    parallel_set_max_active,
+    pre_dispatch_review_blockers,
+    resource_conflict,
+)
 from orchestration.scripts.overlap_worktree import OVERLAP_ISOLATION_MODE, requested_overlap_isolation
 
 MAX_ACTIVE_PARALLEL_DISPATCHES = 2
@@ -220,10 +226,12 @@ def collect_active_dispatches(
             {
                 "dispatch_ref": dispatch_ref,
                 "lane": request.get("lane"),
+                "parallel_set_ref": request.get("parallel_set_ref"),
                 "execution_mode": execution_mode_for_request(request),
                 "task_track": request.get("task_track"),
                 "scope_reservations": request_scope_reservations(request),
                 "overlap_isolation": request.get("overlap_isolation"),
+                "resource_hints": request.get("resource_hints"),
             }
         )
     return active
@@ -322,6 +330,16 @@ def worktree_coverage_blockers(
 
 def find_start_blockers(repo_root: Path, request: Dict[str, Any]) -> List[str]:
     blockers = dependency_blockers(repo_root, request)
+    if request.get("parallel_set_ref"):
+        blockers.extend(
+            parallel_set_blockers(
+                repo_root,
+                request,
+                dependency_checker=dependency_satisfied,
+            )
+        )
+    else:
+        blockers.extend(pre_dispatch_review_blockers(repo_root, request))
     active = collect_active_dispatches(
         repo_root,
         lane=request.get("lane"),
@@ -332,6 +350,23 @@ def find_start_blockers(repo_root: Path, request: Dict[str, Any]) -> List[str]:
 
     if len(active) >= MAX_ACTIVE_PARALLEL_DISPATCHES:
         blockers.append(f"parallel_limit_reached:{MAX_ACTIVE_PARALLEL_DISPATCHES}")
+
+    candidate_parallel_set_ref = request.get("parallel_set_ref")
+    if not candidate_parallel_set_ref:
+        blockers.append("parallel_set_ref_required_for_same_lane_parallel_start")
+    else:
+        active_in_set = 0
+        for active_dispatch in active:
+            if active_dispatch.get("parallel_set_ref") == candidate_parallel_set_ref:
+                active_in_set += 1
+            else:
+                blockers.append(f"parallel_set_mismatch:{active_dispatch['dispatch_ref']}")
+        set_max_active = parallel_set_max_active(repo_root, candidate_parallel_set_ref)
+        if set_max_active is not None and active_in_set >= set_max_active:
+            blockers.append(f"parallel_set_limit_reached:{candidate_parallel_set_ref}:{set_max_active}")
+
+    if request.get("pre_dispatch_review_required") is not True:
+        blockers.append("pre_dispatch_review_required_missing")
 
     candidate_scope = request_scope_reservations(request)
     if not candidate_scope:
@@ -349,6 +384,9 @@ def find_start_blockers(repo_root: Path, request: Dict[str, Any]) -> List[str]:
         if isolated_active >= MAX_ACTIVE_ISOLATED_OVERLAP_DISPATCHES:
             blockers.append(f"isolated_overlap_limit_reached:{MAX_ACTIVE_ISOLATED_OVERLAP_DISPATCHES}")
     for active_dispatch in active:
+        conflict = resource_conflict(request, active_dispatch)
+        if conflict:
+            blockers.append(f"resource_conflict:{active_dispatch['dispatch_ref']}:{conflict}")
         active_scope = active_dispatch.get("scope_reservations") or []
         if not active_scope:
             blockers.append(f"parallel_scope_unknown:{active_dispatch['dispatch_ref']}")

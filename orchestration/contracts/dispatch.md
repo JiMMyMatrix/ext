@@ -17,6 +17,10 @@ Dispatch truth starts after intake acceptance.
   replace dispatch truth.
 - Optional `request.json` fields `work_ref`, `plan_ref`, `plan_version`,
   `attempt_number`, and `revision_of_dispatch_ref` are linkage metadata only.
+- Parallel metadata such as `parallel_set_ref`, `parallel_group`,
+  `parallel_intent`, `scope_reservations`, `depends_on_dispatches`,
+  `resource_hints`, and `pre_dispatch_review_*` is scheduling/control metadata
+  only; it does not replace dispatch truth or create independent work truth.
 - A work bundle has exactly one accepted problem identity (`work_ref`) and may
   contain up to three dispatch attempts for that problem before escalation.
 - Reviewer `request_changes` and material `inconclusive` verdicts return the
@@ -43,6 +47,31 @@ Dispatch truth starts after intake acceptance.
 - after the bounded retry limit is reached, the work bundle status must become
   blocked with an explicit `revision_limit_reached` reason rather than staying
   in a replan-ready state
+- conservative parallelism is opt-in and must fail closed when scope,
+  dependency, pre-dispatch review, or resource safety is unclear
+
+## Conservative Parallelism
+- Default execution is serial.
+- V1 supports at most two active same-lane dispatches.
+- The Governor may split one accepted work family into a reviewed parallel set
+  only by writing member `request.json` artifacts that share the same
+  `work_ref`, `lane`, and `parallel_set_ref`.
+- The reviewed set artifact lives at
+  `.agent/parallel_sets/<parallel_set_ref>/parallel_dispatch_set.json` and must
+  declare `parallel_set_ref`, `work_ref`, `lane`, `dispatch_refs`, `intent`,
+  `max_active`, `review_artifact_path`, and `created_at`.
+- Every member dispatch must declare non-empty `scope_reservations`,
+  `pre_dispatch_review_required = true`, and a repo-local
+  `pre_dispatch_review_artifact_path`.
+- Set-level review lives at
+  `.agent/reviews/<parallel_set_ref>/pre_dispatch_review.json` and must have
+  `review_phase = pre_dispatch`, `verdict = pass`, and
+  `covered_dispatch_refs` matching the set members.
+- Non-overlapping scopes use the normal dispatch path.
+- Overlapping patch candidates may run in parallel only with explicit
+  `overlap_isolation` metadata and the existing git-worktree isolation path.
+- Executor integration remains forbidden; Governor fan-in and integration are
+  serial even when execution was parallel.
 
 ## Current Orchestration Port Status
 - helper-runtime modes currently shipped:
