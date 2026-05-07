@@ -606,13 +606,18 @@ def _resume_governor_plan_prompt(context_prompt: str) -> str:
 def _run_governor_exec(
 	command: list[str], *, repo_root: str | Path | None = None
 ) -> tuple[str, str]:
-	root = resolve_paths(repo_root).repo_root
+	paths = resolve_paths(repo_root)
+	root = paths.repo_root
 	with tempfile.TemporaryDirectory(prefix="corgi-governor-") as temp_dir:
 		output_path = Path(temp_dir) / "last_message.txt"
 		completed = subprocess.run(
 			[*command, "--json", "-o", str(output_path)],
 			cwd=root,
-			env={**os.environ, "ORCHESTRATION_REPO_ROOT": str(root)},
+			env={
+				**os.environ,
+				"ORCHESTRATION_REPO_ROOT": str(root),
+				"ORCHESTRATION_SOURCE_ROOT": str(paths.source_root),
+			},
 			stdin=subprocess.DEVNULL,
 			capture_output=True,
 			text=True,
@@ -1190,15 +1195,10 @@ def _apply_governor_semantic_work_intent(
 	if initial_scope == "none":
 		initial_scope = _recommended_permission_scope(normalized)
 	if initial_scope == "execute":
-		_reject_governor_semantic_proposal(
-			session,
-			pending,
-			now,
-			"semantic_intake_execute_without_plan_context",
-			body=reply,
-			proposal=proposal,
-		)
-		return
+		# Free-text governed work still starts at planning. The Governor may
+		# recommend execute for an obvious build request, but orchestration must
+		# create a plan checkpoint before any execute permission can be requested.
+		initial_scope = "plan"
 	_supersede_pending_permission_request(model, now, request_id=pending.get("requestId"))
 	envelope = start_intake(prompt, normalized_text=normalized, repo_root=repo_root)
 	_reset_work_loop_state(session)
@@ -1497,6 +1497,15 @@ def _complete_governor_semantic_intake(
 				app_server_thread_id=app_server_thread_id,
 				app_server_turn_id=app_server_turn_id,
 				app_server_item_id=app_server_item_id,
+			)
+		elif recommended == "execute":
+			_reject_governor_semantic_proposal(
+				session,
+				pending,
+				now,
+				"semantic_intake_execute_without_plan_context",
+				body=reply,
+				proposal=proposal,
 			)
 		else:
 			_apply_governor_semantic_work_intent(

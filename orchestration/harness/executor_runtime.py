@@ -11,7 +11,13 @@ from typing import Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-from orchestration.harness.paths import contract_ref, prompt_ref, resolve_agent_root, script_ref
+from orchestration.harness.paths import (
+    contract_ref,
+    prompt_ref,
+    resolve_agent_root,
+    resolve_source_root,
+    script_ref,
+)
 from orchestration.harness.dispatch_guards import artifact_only_executor_readout_request
 from orchestration.harness.start_guard import (
     ensure_dispatch_startable,
@@ -193,19 +199,26 @@ def discover_queued_dispatch(queue_root: Path, repo_root: Optional[Path] = None)
     return matches[0] if matches else None
 
 
-def run_command(cmd: List[str], repo_root: Path) -> None:
+def subprocess_env_for_source_root(repo_root: Path) -> Dict[str, str]:
     env = os.environ.copy()
     python_path = env.get("PYTHONPATH")
+    source_root = resolve_source_root(repo_root)
     env["PYTHONPATH"] = (
-        str(repo_root)
+        str(source_root)
         if not python_path
-        else str(repo_root) + os.pathsep + python_path
+        else str(source_root) + os.pathsep + python_path
     )
+    env["ORCHESTRATION_SOURCE_ROOT"] = str(source_root)
+    env.setdefault("ORCHESTRATION_REPO_ROOT", str(repo_root))
+    return env
+
+
+def run_command(cmd: List[str], repo_root: Path) -> None:
     subprocess.run(
         cmd,
         check=True,
         cwd=str(repo_root),
-        env=env,
+        env=subprocess_env_for_source_root(repo_root),
         capture_output=True,
         text=True,
     )
@@ -288,6 +301,7 @@ def run_payload_validators(repo_root: Path, request: Dict) -> List[str]:
             command["argv"],
             check=True,
             cwd=str(cwd.resolve()),
+            env=subprocess_env_for_source_root(repo_root),
             timeout=command["timeout_sec"],
         )
         executed.append("validator: " + " ".join(command["argv"]))
@@ -327,6 +341,7 @@ def execute_command_chain(repo_root: Path, dispatch_dir: Path, request: Dict, ru
         proc = subprocess.run(
             command["argv"],
             cwd=str(cwd.resolve()),
+            env=subprocess_env_for_source_root(repo_root),
             text=True,
             capture_output=True,
             timeout=command["timeout_sec"],

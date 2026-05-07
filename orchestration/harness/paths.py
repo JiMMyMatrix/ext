@@ -16,6 +16,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 @dataclass(frozen=True)
 class HarnessPaths:
 	repo_root: Path
+	source_root: Path
 	orchestration_root: Path
 	prompts_root: Path
 	contracts_root: Path
@@ -34,6 +35,16 @@ def resolve_repo_root(repo_root: str | Path | None = None) -> Path:
 	return Path(os.environ.get("ORCHESTRATION_REPO_ROOT") or _PACKAGE_ROOT).resolve()
 
 
+def resolve_source_root(repo_root: str | Path | None = None) -> Path:
+	configured = os.environ.get("ORCHESTRATION_SOURCE_ROOT")
+	if configured:
+		return Path(configured).resolve()
+	root = resolve_repo_root(repo_root)
+	if (root / "orchestration" / "scripts" / "orchestrate.py").exists():
+		return root
+	return _PACKAGE_ROOT.resolve()
+
+
 def resolve_agent_root(root: Path) -> Path:
 	configured = os.environ.get("ORCHESTRATION_AGENT_ROOT")
 	if not configured:
@@ -46,11 +57,13 @@ def resolve_agent_root(root: Path) -> Path:
 
 def resolve_paths(repo_root: str | Path | None = None) -> HarnessPaths:
 	root = resolve_repo_root(repo_root)
-	orchestration_root = root / "orchestration"
+	source_root = resolve_source_root(root)
+	orchestration_root = source_root / "orchestration"
 	agent_root = resolve_agent_root(root)
 	orchestration_state_root = agent_root / "orchestration"
 	return HarnessPaths(
 		repo_root=root,
+		source_root=source_root,
 		orchestration_root=orchestration_root,
 		prompts_root=orchestration_root / "prompts",
 		contracts_root=orchestration_root / "contracts",
@@ -105,6 +118,15 @@ def write_text(path: Path, text: str) -> None:
 def repo_relative(path: Path, repo_root: str | Path | None = None) -> str:
 	root = resolve_repo_root(repo_root)
 	return str(path.resolve().relative_to(root))
+
+
+def source_or_repo_ref(path: Path, repo_root: str | Path | None = None) -> str:
+	resolved = path.resolve()
+	root = resolve_repo_root(repo_root)
+	try:
+		return str(resolved.relative_to(root))
+	except ValueError:
+		return str(resolved)
 
 
 def trim_text(text: str | None) -> str:
@@ -200,7 +222,7 @@ def prompt_path(name: str, repo_root: str | Path | None = None) -> Path:
 
 
 def prompt_ref(name: str, repo_root: str | Path | None = None) -> str:
-	return repo_relative(prompt_path(name, repo_root), repo_root)
+	return source_or_repo_ref(prompt_path(name, repo_root), repo_root)
 
 
 def contract_path(name: str, repo_root: str | Path | None = None) -> Path:
@@ -208,7 +230,7 @@ def contract_path(name: str, repo_root: str | Path | None = None) -> Path:
 
 
 def contract_ref(name: str, repo_root: str | Path | None = None) -> str:
-	return repo_relative(contract_path(name, repo_root), repo_root)
+	return source_or_repo_ref(contract_path(name, repo_root), repo_root)
 
 
 def script_path(name: str, repo_root: str | Path | None = None) -> Path:
@@ -216,7 +238,7 @@ def script_path(name: str, repo_root: str | Path | None = None) -> Path:
 
 
 def script_ref(name: str, repo_root: str | Path | None = None) -> str:
-	return repo_relative(script_path(name, repo_root), repo_root)
+	return source_or_repo_ref(script_path(name, repo_root), repo_root)
 
 
 def actor_config_path(name: str, repo_root: str | Path | None = None) -> Path:
@@ -224,4 +246,4 @@ def actor_config_path(name: str, repo_root: str | Path | None = None) -> Path:
 
 
 def actor_config_ref(name: str, repo_root: str | Path | None = None) -> str:
-	return repo_relative(actor_config_path(name, repo_root), repo_root)
+	return source_or_repo_ref(actor_config_path(name, repo_root), repo_root)

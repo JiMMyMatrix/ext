@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vm from 'vm';
 import * as vscode from 'vscode';
@@ -553,6 +554,14 @@ suite('Corgi Webview UX', () => {
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_PROMPT'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_STEPS'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_PROMPT_PRESET'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_WORKSPACE_MODE'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCRATCH_ID'));
+		assert.ok(launchScriptSource.includes('Unsafe Corgi scratch workspace id'));
+		assert.ok(launchScriptSource.includes('ORCHESTRATION_TARGET_WORKSPACE_MODE'));
+		assert.ok(launchScriptSource.includes('ORCHESTRATION_TEST_PROMPT_PRESET'));
+		assert.ok(launchScriptSource.includes('scratch-workspaces'));
+		assert.ok(launchScriptSource.includes('current-run.json'));
+		assert.ok(launchScriptSource.includes('ORCHESTRATION_SOURCE_ROOT'));
 		assert.ok(launchScriptSource.includes('corgi-test-prompt.cjs'));
 		assert.ok(launchScriptSource.includes('"$CLOSE_SCRIPT"'));
 		assert.ok(!launchScriptSource.includes('pkill -f "$USER_DATA_DIR"'));
@@ -573,6 +582,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!autoScriptSource.includes('run_state'));
 		assert.ok(promptScriptSource.includes('validateCatalog'));
 		assert.ok(statusScriptSource.includes('corgi_webview_snapshot.json'));
+		assert.ok(statusScriptSource.includes('current-run.json'));
+		assert.ok(statusScriptSource.includes('workspaceMode'));
+		assert.ok(statusScriptSource.includes('workspaceRoot'));
+		assert.ok(statusScriptSource.includes('agentRoot'));
 		assert.ok(statusScriptSource.includes('relevantLogErrors'));
 		assert.ok(statusScriptSource.includes('isKnownBenignVsCodeLogLine'));
 		assert.ok(statusScriptSource.includes('GPU process exited unexpectedly: exit_code=15'));
@@ -583,6 +596,12 @@ suite('Corgi Webview UX', () => {
 		assert.ok(statusScriptSource.includes('knownBlockingError'));
 		assert.ok(!statusScriptSource.includes('visibleError'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_AGENT_ROOT'));
+		assert.ok(processTestSource.includes('ORCHESTRATION_SOURCE_ROOT'));
+		assert.ok(processTestSource.includes('ORCHESTRATION_TARGET_WORKSPACE_MODE'));
+		assert.ok(processTestSource.includes('ORCHESTRATION_TEST_PROMPT_PRESET'));
+		assert.ok(processTestSource.includes('createScratchTestEnv'));
+		assert.ok(processTestSource.includes('scratch-static-app'));
+		assert.ok(processTestSource.includes('pet-life-diary-static'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(processTestSource.includes('--auto-consume-executor'));
 		assert.ok(processTestSource.includes('--module'));
@@ -605,6 +624,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'analyze-repo'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'architecture'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'develop-internet'));
+		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-static'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'progress'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'mixed-stop-work'));
 		assert.strictEqual(
@@ -630,6 +650,10 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:process:reviewer'],
 			'node scripts/corgi-process-test.cjs --module reviewer'
+		);
+		assert.strictEqual(
+			scripts['test:process:scratch'],
+			'node scripts/corgi-process-test.cjs --module scratch-static-app'
 		);
 		assert.strictEqual(scripts['test:prompts'], 'node scripts/corgi-test-prompt.cjs validate');
 		assert.strictEqual(scripts['test:prompts:list'], 'node scripts/corgi-test-prompt.cjs list');
@@ -680,6 +704,14 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:window:reviewer-ready'],
 			'CORGI_TEST_WINDOW_SCENARIO=reviewer-ready bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:scratch'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-static bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:scratch:auto'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-static CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:close'],
@@ -1363,6 +1395,26 @@ suite('Corgi Webview UX', () => {
 		await assert.doesNotReject(() => transport.load());
 	});
 
+	test('development transport can run source orchestration against a scratch workspace', async () => {
+		const scratchWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'corgi-scratch-workspace-'));
+		try {
+			const target = resolveExecutionTransportTarget(
+				vscode.ExtensionMode.Development,
+				vscode.Uri.file(scratchWorkspace),
+				vscode.Uri.file(path.resolve(__dirname, '../..'))
+			);
+			assert.strictEqual(target.kind, 'orchestration');
+			if (target.kind === 'orchestration') {
+				assert.strictEqual(target.source, 'extension_dev');
+				assert.strictEqual(target.cwd, scratchWorkspace);
+				assert.strictEqual(target.sourceRoot, path.resolve(__dirname, '../..'));
+				assert.ok(target.scriptPath.endsWith('orchestration/scripts/orchestrate.py'));
+			}
+		} finally {
+			fs.rmSync(scratchWorkspace, { recursive: true, force: true });
+		}
+	});
+
 	test('transport selection fails closed in production when no workspace is open', async () => {
 		const target = resolveExecutionTransportTarget(
 			vscode.ExtensionMode.Production,
@@ -1385,6 +1437,23 @@ suite('Corgi Webview UX', () => {
 				error instanceof TransportUnavailableError &&
 				error.title === 'Real orchestration workspace required'
 		);
+	});
+
+	test('transport selection fails closed in production when workspace lacks orchestration support', () => {
+		const scratchWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'corgi-prod-workspace-'));
+		try {
+			const target = resolveExecutionTransportTarget(
+				vscode.ExtensionMode.Production,
+				vscode.Uri.file(scratchWorkspace),
+				vscode.Uri.file(path.resolve(__dirname, '../..'))
+			);
+			assert.strictEqual(target.kind, 'unavailable');
+			if (target.kind === 'unavailable') {
+				assert.strictEqual(target.title, 'Orchestration CLI not found');
+			}
+		} finally {
+			fs.rmSync(scratchWorkspace, { recursive: true, force: true });
+		}
 	});
 
 	test('transport selection fails closed when neither workspace nor development repo contains orchestrate', async () => {

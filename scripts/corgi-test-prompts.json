@@ -64,6 +64,30 @@
       "tags": ["feature", "implementation", "permission"]
     },
     {
+      "id": "pet-life-diary-static",
+      "label": "Pet life diary app",
+      "prompt": "Build a simple static pet life diary app from scratch. Include a minimal UI, sample data, and README.",
+      "category": "scratch_implementation",
+      "requiresScenario": "fresh-session",
+      "purpose": "Real-world scratch-workspace E2E that proves Executor can create project files outside the Corgi source repo.",
+      "expectedFlow": [
+        "understanding_request",
+        "clarification_if_needed",
+        "plan_permission",
+        "governor_plan",
+        "execute_permission",
+        "executor_writes_files",
+        "reviewer_checks",
+        "governor_decision_recorded"
+      ],
+      "assertions": [
+        "Target workspace is a clean scratch folder, not the Corgi source repo.",
+        "Executor writes README.md, index.html, src/app.js, src/styles.css, and data/sample-pets.json.",
+        "Reviewer and Governor decision artifacts are recorded before completion."
+      ],
+      "tags": ["scratch", "static-app", "e2e", "executor"]
+    },
+    {
       "id": "question-work",
       "label": "Question-shaped work",
       "prompt": "can we develop the internet feature?",

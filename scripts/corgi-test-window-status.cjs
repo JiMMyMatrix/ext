@@ -6,15 +6,19 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const testRoot = path.join(root, '.agent', 'test-window');
-const userDataDir = path.join(testRoot, 'vscode-profile', 'user-data');
+const currentRunPath = path.join(testRoot, 'current-run.json');
+const currentRun = readJson(currentRunPath) || {};
+const userDataDir = currentRun.userDataDir || path.join(testRoot, 'vscode-profile', 'user-data');
 const legacyUserDataDir = path.join(root, '.agent', 'vscode-governor-first-test-user-data');
-const snapshotPath = path.join(
-	testRoot,
-	'runtime-agent',
-	'orchestration',
-	'corgi_webview_snapshot.json'
-);
-const stderrPath = path.join(testRoot, 'logs', 'vscode.stderr.log');
+const snapshotPath =
+	currentRun.snapshotPath ||
+	path.join(
+		testRoot,
+		'runtime-agent',
+		'orchestration',
+		'corgi_webview_snapshot.json'
+	);
+const stderrPath = currentRun.stderrPath || path.join(testRoot, 'logs', 'vscode.stderr.log');
 
 function readJson(filePath) {
 	if (!fs.existsSync(filePath)) {
@@ -122,6 +126,9 @@ function summarize() {
 		actor: state.currentActor || '',
 		runState: state.runState || '',
 		permissionScope: state.permissionScope || '',
+		workspaceMode: currentRun.workspaceMode || 'repo',
+		workspaceRoot: currentRun.workspaceRoot || null,
+		agentRoot: currentRun.agentRoot || null,
 		autoStep: payload.autoStep || null,
 		actions: actions.map((action) => action.text).filter(Boolean),
 		composer: payload.composer || null,
@@ -143,6 +150,7 @@ if (process.argv.includes('--json')) {
 			`Corgi test window: ${summary.ok ? 'healthy' : 'attention needed'}`,
 			`Snapshot: ${summary.snapshot}${summary.ageMs === null ? '' : ` (${Math.round(summary.ageMs / 1000)}s old)`}`,
 			`Process: ${summary.processAlive ? 'live' : 'not running'}`,
+			`Workspace: ${summary.workspaceMode}${summary.workspaceRoot ? ` (${summary.workspaceRoot})` : ''}`,
 			`Goal: ${summary.goalStrip || '(none)'}`,
 			`State: actor=${summary.actor || '(none)'} stage=${summary.stage || '(none)'} run=${summary.runState || '(none)'} scope=${summary.permissionScope || '(none)'}`,
 			`Auto-step: ${summary.autoStep?.mode || 'off'} (${summary.autoStep?.appliedCount ?? 0} applied)`,

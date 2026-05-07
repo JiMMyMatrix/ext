@@ -21,12 +21,13 @@ from orchestration.harness import (
     reviewer,
     runtime_support,
     session,
+    session_execution,
     session_state,
     spawn_bridge,
     start_guard,
     transition,
 )
-from orchestration.harness.paths import load_json, script_ref, write_json
+from orchestration.harness.paths import load_json, prompt_ref, resolve_paths, script_ref, write_json
 from orchestration.harness.scenario_fixtures import (
     list_scenarios,
     materialize_scenario,
@@ -305,6 +306,52 @@ class HarnessPackageTests(unittest.TestCase):
                     review_path,
                     runtime_agent_root / "reviews" / Path(dispatch_ref) / "review.json",
                 )
+
+    def test_source_root_can_differ_from_target_repo_root_for_scratch_workspace(self) -> None:
+        source_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(target_root),
+                    "ORCHESTRATION_SOURCE_ROOT": str(source_root),
+                },
+            ):
+                paths = resolve_paths(target_root)
+
+                self.assertEqual(paths.repo_root, target_root)
+                self.assertEqual(paths.source_root, source_root)
+                self.assertEqual(paths.orchestration_root, source_root / "orchestration")
+                self.assertEqual(paths.agent_root, target_root / ".agent")
+                self.assertTrue(Path(script_ref("orchestrate.py", target_root)).is_absolute())
+                self.assertIn("orchestration/scripts/orchestrate.py", script_ref("orchestrate.py", target_root))
+                self.assertIn("orchestration/prompts/governor.txt", prompt_ref("governor.txt", target_root))
+
+    def test_static_pet_diary_executor_requires_explicit_scratch_test_metadata(self) -> None:
+        objective = "Build a simple static pet life diary app from scratch."
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(
+                session_execution.is_pet_diary_static_test_dispatch(
+                    objective,
+                    ".agent/intakes/20260507-pet-life-diary-static/accepted_intake.json",
+                )
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-static",
+            },
+            clear=True,
+        ):
+            self.assertTrue(
+                session_execution.is_pet_diary_static_test_dispatch(
+                    objective,
+                    ".agent/intakes/20260507-pet-life-diary-static/accepted_intake.json",
+                )
+            )
 
     def test_advisory_mcp_runtime_config_uses_repo_entrypoint(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -853,6 +900,36 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertIsNone(model["snapshot"]["pendingPermissionRequest"])
             self.assertEqual(model["snapshot"]["permissionScope"], "unset")
             self.assertEqual(model["snapshot"]["runState"], "idle")
+
+    def test_governor_first_governed_work_execute_recommendation_downgrades_to_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_governor_prompt(repo_root)
+
+            prepared = self._governor_first_submit(repo_root, "build a static app")
+            model = session.dispatch_session_action(
+                "complete_governor_turn",
+                runtime_request_id=prepared["request"]["runtimeRequestId"],
+                runtime_body=self._governor_semantic_body(
+                    "governed_work_intent",
+                    reply="I can prepare a bounded plan.",
+                    recommended_permission="execute",
+                    extra={
+                        "normalized_intent": "Build a simple static app.",
+                        "internal_reason": "Obvious work request, but execution still needs a plan.",
+                    },
+                ),
+                repo_root=repo_root,
+            )
+
+            self.assertIn(model["feed"][-1]["type"], {"clarification_request", "permission_request"})
+            if model["snapshot"].get("pendingPermissionRequest"):
+                self.assertEqual(model["snapshot"]["pendingPermissionRequest"]["recommendedScope"], "plan")
+            else:
+                self.assertIsNotNone(model["activeClarification"])
+            self.assertEqual(model["snapshot"]["permissionScope"], "unset")
+            self.assertIsNone(model["planReadyRequest"])
+            self.assertFalse((repo_root / ".agent" / "dispatches").exists())
 
     def test_governor_first_state_changing_dialogue_proposal_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

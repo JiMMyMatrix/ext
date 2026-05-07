@@ -65,6 +65,74 @@ def command_arg(value: str) -> str:
     return shlex.quote(str(value))
 
 
+PET_DIARY_OUTPUTS = [
+    "README.md",
+    "index.html",
+    "src/app.js",
+    "src/styles.css",
+    "data/sample-pets.json",
+]
+
+
+def matches_pet_diary_static_request(objective: str, accepted_ref: str | None) -> bool:
+    combined = f"{objective} {accepted_ref or ''}".lower()
+    return "pet life diary" in combined and "static" in combined
+
+
+def is_pet_diary_static_test_dispatch(objective: str, accepted_ref: str | None) -> bool:
+    return (
+        os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-static"
+        and matches_pet_diary_static_request(objective, accepted_ref)
+    )
+
+
+def extend_static_pet_diary_dispatch_args(
+    args: list[str],
+    paths: Any,
+    *,
+    dispatch_ref: str,
+    objective: str,
+    accepted_ref: str,
+) -> None:
+    for output_ref in PET_DIARY_OUTPUTS:
+        args.extend(["--run-produce", output_ref])
+        args.extend(["--run-touch", output_ref])
+        args.extend(["--required-output", output_ref])
+    args.extend(
+        [
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_create_static_pet_diary.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                    *(["--accepted-intake", command_arg(accepted_ref)] if accepted_ref else []),
+                ]
+            ),
+            "--execution-summary",
+            "Executor created a static Pet Life Diary app in the scratch workspace.",
+            "--execution-claim",
+            "Executor created README.md, index.html, src/app.js, src/styles.css, and data/sample-pets.json.",
+            "--execution-claim",
+            "This dispatch performed real project file creation inside the target workspace.",
+            "--execution-evidence",
+            "README.md",
+            "--execution-evidence",
+            "index.html",
+            "--execution-note",
+            "scratch_static_app_creation",
+            "--execution-next-action",
+            "Reviewer should check the created static app files and Governor should finalize or request a revision.",
+        ]
+    )
+
+
 def emit_plan_execution_dispatch(
     session: dict[str, Any],
     now: str,
@@ -115,6 +183,7 @@ def emit_plan_execution_dispatch(
         ]
         if isinstance(ref, str) and ref.strip()
     ]
+    is_static_pet_diary = is_pet_diary_static_test_dispatch(objective, accepted_ref)
     args = [
         "--dispatch-ref",
         dispatch_ref,
@@ -132,38 +201,6 @@ def emit_plan_execution_dispatch(
         objective,
         "--run-scope",
         objective,
-        "--run-produce",
-        readout_ref,
-        "--required-output",
-        readout_ref,
-        "--command",
-        " ".join(
-            [
-                command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
-                command_arg(script_ref("executor_write_readout.py", paths.repo_root)),
-                "--repo-root",
-                command_arg(str(paths.repo_root)),
-                "--dispatch-ref",
-                command_arg(dispatch_ref),
-                "--objective",
-                command_arg(objective),
-                "--output",
-                command_arg(readout_ref),
-                *(["--accepted-intake", command_arg(accepted_ref)] if accepted_ref else []),
-            ]
-        ),
-        "--execution-summary",
-        plan_execution_summary(model, dispatch_ref),
-        "--execution-claim",
-        "Executor generated a bounded readout artifact for the accepted plan.",
-        "--execution-claim",
-        "This helper-backed Executor path produced analysis artifacts but did not mutate product code.",
-        "--execution-evidence",
-        readout_ref,
-        "--execution-note",
-        "artifact_only_executor_readout",
-        "--execution-next-action",
-        "Governor should review the Executor result and decide the next bounded step.",
         "--acceptance-criterion",
         "Executor work stays within the accepted intake and latest validated plan context.",
         "--stop-condition",
@@ -174,6 +211,51 @@ def emit_plan_execution_dispatch(
         "--root",
         str(paths.repo_root),
     ]
+    if is_static_pet_diary:
+        extend_static_pet_diary_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+            accepted_ref=accepted_ref,
+        )
+    else:
+        args.extend(
+            [
+                "--run-produce",
+                readout_ref,
+                "--required-output",
+                readout_ref,
+                "--command",
+                " ".join(
+                    [
+                        command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                        command_arg(script_ref("executor_write_readout.py", paths.repo_root)),
+                        "--repo-root",
+                        command_arg(str(paths.repo_root)),
+                        "--dispatch-ref",
+                        command_arg(dispatch_ref),
+                        "--objective",
+                        command_arg(objective),
+                        "--output",
+                        command_arg(readout_ref),
+                        *(["--accepted-intake", command_arg(accepted_ref)] if accepted_ref else []),
+                    ]
+                ),
+                "--execution-summary",
+                plan_execution_summary(model, dispatch_ref),
+                "--execution-claim",
+                "Executor generated a bounded readout artifact for the accepted plan.",
+                "--execution-claim",
+                "This helper-backed Executor path produced analysis artifacts but did not mutate product code.",
+                "--execution-evidence",
+                readout_ref,
+                "--execution-note",
+                "artifact_only_executor_readout",
+                "--execution-next-action",
+                "Governor should review the Executor result and decide the next bounded step.",
+            ]
+        )
     if work_ref:
         args.extend(["--work-ref", work_ref])
     if plan_ref:

@@ -48,11 +48,12 @@ def _advisory_command(command: str, argv: list[str]) -> int:
 	env = os.environ.copy()
 	existing_pythonpath = env.get("PYTHONPATH")
 	env["PYTHONPATH"] = (
-		str(paths.repo_root)
+		str(paths.source_root)
 		if not existing_pythonpath
-		else str(paths.repo_root) + os.pathsep + existing_pythonpath
+		else str(paths.source_root) + os.pathsep + existing_pythonpath
 	)
 	env["ORCHESTRATION_REPO_ROOT"] = str(paths.repo_root)
+	env["ORCHESTRATION_SOURCE_ROOT"] = str(paths.source_root)
 	completed = subprocess.run(
 		[sys.executable, str(paths.scripts_root / "serve_advisory_mcp.py"), *argv],
 		cwd=paths.repo_root,

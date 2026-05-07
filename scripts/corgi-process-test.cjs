@@ -56,7 +56,7 @@ function printUsage() {
 			'',
 			'Runs phase-1 command-only process tests without opening VS Code.',
 			'',
-			'Modules: executor, reviewer, review-replan, all',
+			'Modules: executor, reviewer, review-replan, scratch-static-app, all',
 		].join('\n') + '\n'
 	);
 }
@@ -566,6 +566,44 @@ function createTestEnv(runName, extraEnv = {}) {
 	};
 }
 
+function createScratchTestEnv(runName) {
+	const runDir = path.join(repoRoot, '.agent', 'command-test', runName);
+	const scratchRoot = path.join(runDir, 'scratch-workspace');
+	const agentRoot = path.join(scratchRoot, '.agent');
+	fs.rmSync(runDir, { recursive: true, force: true });
+	fs.mkdirSync(scratchRoot, { recursive: true });
+	spawnSync('git', ['init', '-b', 'main'], {
+		cwd: scratchRoot,
+		stdio: 'ignore',
+	});
+	if (!fs.existsSync(path.join(scratchRoot, '.git'))) {
+		spawnSync('git', ['init'], {
+			cwd: scratchRoot,
+			stdio: 'ignore',
+		});
+	}
+	const gitExclude = path.join(scratchRoot, '.git', 'info', 'exclude');
+	if (fs.existsSync(gitExclude)) {
+		fs.appendFileSync(gitExclude, '\n.agent/\n');
+	}
+	fs.mkdirSync(agentRoot, { recursive: true });
+
+	return {
+		agentRoot,
+		runDir,
+		scratchRoot,
+		env: {
+			...process.env,
+			ORCHESTRATION_REPO_ROOT: scratchRoot,
+			ORCHESTRATION_SOURCE_ROOT: repoRoot,
+			ORCHESTRATION_AGENT_ROOT: agentRoot,
+			ORCHESTRATION_TARGET_WORKSPACE_MODE: 'scratch',
+			ORCHESTRATION_TEST_PROMPT_PRESET: 'pet-life-diary-static',
+			ORCHESTRATION_APPROVED_PYTHON: approvedPython(),
+		},
+	};
+}
+
 function runPrompt(prompt, options) {
 	const safeName = prompt.id.replace(/[^a-z0-9-]+/gi, '-');
 	const runName = options.all ? safeName : `${safeName}-${runId}`;
@@ -638,9 +676,10 @@ function assertExecutorArtifacts(moduleName, model, agentRoot, options = {}) {
 
 function assertReviewerArtifacts(moduleName, model, dispatchInfo, options = {}) {
 	const expectFeed = options.expectFeed !== false;
+	const rootForRefs = options.repoRoot ?? repoRoot;
 	const reviewRef = dispatchInfo.request.review_artifact_path;
 	assertCondition(typeof reviewRef === 'string' && reviewRef.length > 0, `${moduleName}: review ref missing`);
-	const reviewPath = repoPath(reviewRef);
+	const reviewPath = path.join(rootForRefs, reviewRef);
 	assertCondition(fs.existsSync(reviewPath), `${moduleName}: reviewer artifact missing`);
 	const review = readJson(reviewPath);
 	assertCondition(review.dispatch_ref === dispatchInfo.request.dispatch_ref, `${moduleName}: review dispatch mismatch`);
@@ -716,9 +755,9 @@ function latestDispatchInfo(agentRoot) {
 	};
 }
 
-function consumeExecutor(dispatchInfo, env) {
+function consumeExecutor(dispatchInfo, env, root = repoRoot) {
 	runCommand(
-		['dispatch', 'consume-executor', '--dispatch-dir', dispatchInfo.dispatchDir, '--root', repoRoot],
+		['dispatch', 'consume-executor', '--dispatch-dir', dispatchInfo.dispatchDir, '--root', root],
 		env
 	);
 }
@@ -826,6 +865,80 @@ function runReviewReplanModule(options) {
 	};
 }
 
+function runScratchStaticAppModule(options) {
+	const prompt = promptById('pet-life-diary-static');
+	assertCondition(prompt, 'scratch-static-app: prompt preset missing');
+	const runName = `module-scratch-static-app-${runId}`;
+	const { agentRoot, runDir, scratchRoot, env } = createScratchTestEnv(runName);
+	const model = runGovernedWorkFlow(prompt, env, true);
+	const dispatchInfo = latestDispatchInfo(agentRoot);
+	const request = readJson(dispatchInfo.requestPath);
+	const state = readJson(path.join(dispatchInfo.dispatchDir, 'state.json'));
+	const result = readJson(path.join(dispatchInfo.dispatchDir, 'result.json'));
+	const expectedFiles = [
+		'README.md',
+		'index.html',
+		'src/app.js',
+		'src/styles.css',
+		'data/sample-pets.json',
+	];
+	for (const fileRef of expectedFiles) {
+		const filePath = path.join(scratchRoot, fileRef);
+		assertCondition(fs.existsSync(filePath), `scratch-static-app: missing ${fileRef}`);
+		assertCondition(
+			request.required_outputs.includes(fileRef),
+			`scratch-static-app: ${fileRef} missing from required_outputs`
+		);
+		assertCondition(
+			result.written_or_updated.includes(fileRef),
+			`scratch-static-app: ${fileRef} missing from executor result`
+		);
+	}
+	assertCondition(
+		fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8').includes('Pet Life Diary'),
+		'scratch-static-app: index.html missing app title'
+	);
+	const samplePets = JSON.parse(
+		fs.readFileSync(path.join(scratchRoot, 'data/sample-pets.json'), 'utf8')
+	);
+	assertCondition(
+		Array.isArray(samplePets) && samplePets.length >= 3,
+		'scratch-static-app: sample data invalid'
+	);
+	assertCondition(
+		request.execution_mode === 'command_chain',
+		'scratch-static-app: unexpected execution mode'
+	);
+	assertCondition(
+		request.execution_payload.notes.includes('scratch_static_app_creation'),
+		'scratch-static-app: missing scratch execution note'
+	);
+	assertCondition(
+		state.status === 'completed' || state.status === 'validated',
+		'scratch-static-app: executor state did not complete'
+	);
+	assertReviewerArtifacts('scratch-static-app', model, dispatchInfo, {
+		expectFeed: false,
+		repoRoot: scratchRoot,
+	});
+	assertGovernorDecision('scratch-static-app', model, dispatchInfo, { expectFeed: false });
+	for (const devRef of ['index.html', path.join('data', 'sample-pets.json')]) {
+		assertCondition(
+			!fs.existsSync(path.join(repoRoot, devRef)),
+			`scratch-static-app: wrote ${devRef} to Corgi source repo`
+		);
+	}
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: 'module:scratch-static-app',
+		stage: model.snapshot.currentStage,
+		permissionScope: model.snapshot.permissionScope,
+		dispatchRef: dispatchInfo.request.dispatch_ref,
+	};
+}
+
 function runModule(moduleName, options) {
 	switch (moduleName) {
 		case 'executor':
@@ -834,6 +947,8 @@ function runModule(moduleName, options) {
 			return [runReviewerModule(options)];
 		case 'review-replan':
 			return [runReviewReplanModule(options)];
+		case 'scratch-static-app':
+			return [runScratchStaticAppModule(options)];
 		case 'all':
 			return [
 				runExecutorModule(options),

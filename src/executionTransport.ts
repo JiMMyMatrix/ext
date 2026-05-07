@@ -72,6 +72,7 @@ export type ExecutionTransportTarget =
 			kind: 'orchestration';
 			cwd: string;
 			scriptPath: string;
+			sourceRoot: string;
 			source: 'workspace' | 'extension_dev';
 	  }
 	| {
@@ -114,7 +115,22 @@ function orchestrationTarget(
 		kind: 'orchestration',
 		cwd: rootPath,
 		scriptPath: path.join(rootPath, 'orchestration', 'scripts', 'orchestrate.py'),
+		sourceRoot: rootPath,
 		source,
+	};
+}
+
+function developmentScratchTarget(
+	workspaceRoot: vscode.Uri,
+	extensionUri: vscode.Uri
+): Extract<ExecutionTransportTarget, { kind: 'orchestration' }> | undefined {
+	const extensionTarget = orchestrationTarget(extensionUri.fsPath, 'extension_dev');
+	if (!fs.existsSync(extensionTarget.scriptPath)) {
+		return undefined;
+	}
+	return {
+		...extensionTarget,
+		cwd: workspaceRoot.fsPath,
 	};
 }
 
@@ -151,6 +167,12 @@ export function resolveExecutionTransportTarget(
 		const workspaceTarget = orchestrationTarget(workspaceRoot.fsPath, 'workspace');
 		if (fs.existsSync(workspaceTarget.scriptPath)) {
 			return workspaceTarget;
+		}
+		if (extensionMode === vscode.ExtensionMode.Development && extensionUri) {
+			const scratchTarget = developmentScratchTarget(workspaceRoot, extensionUri);
+			if (scratchTarget) {
+				return scratchTarget;
+			}
 		}
 		return missingOrchestrationTarget(workspaceRoot);
 	}
@@ -194,6 +216,7 @@ class UnavailableExecutionTransport implements ExecutionTransport {
 class OrchestrationExecutionTransport implements ExecutionTransport {
 	private readonly scriptPath: string;
 	private readonly cwd: string;
+	private readonly sourceRoot: string;
 	private readonly pythonExecutable: string;
 	private readonly governorRuntimeMode: GovernorRuntimeMode;
 	private readonly useEphemeralAppServerThreads: boolean;
@@ -216,6 +239,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 	) {
 		this.cwd = target.cwd;
 		this.scriptPath = target.scriptPath;
+		this.sourceRoot = target.sourceRoot;
 		this.pythonExecutable = resolvePythonExecutable();
 		this.governorRuntimeMode = resolveGovernorRuntimeMode();
 		this.useEphemeralAppServerThreads =
@@ -416,6 +440,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 					env: {
 						...process.env,
 						ORCHESTRATION_REPO_ROOT: this.cwd,
+						ORCHESTRATION_SOURCE_ROOT: this.sourceRoot,
 						ORCHESTRATION_APPROVED_PYTHON: approvedPythonExecutable(this.pythonExecutable),
 					},
 					maxBuffer: 1024 * 1024,
