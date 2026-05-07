@@ -596,6 +596,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_STEPS'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_PROMPT_PRESET'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_WORKSPACE_MODE'));
+		assert.ok(launchScriptSource.includes('WORKSPACE_MODE="${CORGI_TEST_WINDOW_WORKSPACE_MODE:-scratch}"'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCRATCH_ID'));
 		assert.ok(launchScriptSource.includes('Unsafe Corgi scratch workspace id'));
 		assert.ok(launchScriptSource.includes('ORCHESTRATION_TARGET_WORKSPACE_MODE'));
@@ -605,6 +606,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(launchScriptSource.includes('ORCHESTRATION_SOURCE_ROOT'));
 		assert.ok(launchScriptSource.includes('corgi-test-prompt.cjs'));
 		assert.ok(launchScriptSource.includes('"$CLOSE_SCRIPT"'));
+		assert.ok(launchScriptSource.includes('CORGI_SEMANTIC_MODE="${CORGI_SEMANTIC_MODE:-sidecar-first}"'));
+		assert.ok(launchScriptSource.includes('CORGI_SEMANTIC_SIDECAR_RUNTIME="${CORGI_SEMANTIC_SIDECAR_RUNTIME:-app-server}"'));
 		assert.ok(!launchScriptSource.includes('pkill -f "$USER_DATA_DIR"'));
 		assert.ok(!launchScriptSource.includes('pkill -9 -f "$USER_DATA_DIR"'));
 		assert.ok(closeScriptSource.includes('assert_test_profile_path'));
@@ -617,6 +620,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(autoScriptSource.includes('close-corgi-test-window.sh'));
 		assert.ok(autoScriptSource.includes('corgi-test-window-status.cjs'));
 		assert.ok(autoScriptSource.includes('CORGI_TEST_WINDOW_SNAPSHOT_GRACE_SECONDS'));
+		assert.ok(autoScriptSource.includes('PROMPT_PRESET="${CORGI_TEST_WINDOW_PROMPT_PRESET:-pet-life-diary-static}"'));
+		assert.ok(autoScriptSource.includes('AUTO_STEPS="${CORGI_TEST_WINDOW_AUTO_STEPS:-execute}"'));
+		assert.ok(autoScriptSource.includes('WORKSPACE_MODE="${CORGI_TEST_WINDOW_WORKSPACE_MODE:-scratch}"'));
 		assert.ok(autoScriptSource.includes('governor_decision_recorded'));
 		assert.ok(autoScriptSource.includes('executor_completed'));
 		assert.ok(autoScriptSource.includes('exited before reaching the expected checkpoint'));
@@ -699,52 +705,56 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(scripts['test:prompts'], 'node scripts/corgi-test-prompt.cjs validate');
 		assert.strictEqual(scripts['test:prompts:list'], 'node scripts/corgi-test-prompt.cjs list');
 		assert.strictEqual(
+			scripts['test:window'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-static bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
 			scripts['test:window:architecture'],
-			'CORGI_TEST_WINDOW_PROMPT_PRESET=architecture bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_PROMPT_PRESET=architecture bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:architecture:auto'],
-			'CORGI_TEST_WINDOW_PROMPT_PRESET=architecture CORGI_TEST_WINDOW_AUTO_STEPS=plan bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_PROMPT_PRESET=architecture CORGI_TEST_WINDOW_AUTO_STEPS=plan bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:architecture:e2e'],
-			'CORGI_TEST_WINDOW_PROMPT_PRESET=architecture CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_PROMPT_PRESET=architecture CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:feature'],
-			'CORGI_TEST_WINDOW_PROMPT_PRESET=develop-internet bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_PROMPT_PRESET=develop-internet bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:greeting'],
-			'CORGI_TEST_WINDOW_PROMPT_PRESET=greeting bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_PROMPT_PRESET=greeting bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:mixed'],
-			'CORGI_TEST_WINDOW_PROMPT_PRESET=mixed-stop-work bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_PROMPT_PRESET=mixed-stop-work bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:progress'],
-			'CORGI_TEST_WINDOW_PROMPT_PRESET=progress bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_PROMPT_PRESET=progress bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:question-work'],
-			'CORGI_TEST_WINDOW_PROMPT_PRESET=question-work bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_PROMPT_PRESET=question-work bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:executor'],
-			'CORGI_TEST_WINDOW_SCENARIO=execute-permission bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_SCENARIO=execute-permission bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:plan-ready'],
-			'CORGI_TEST_WINDOW_SCENARIO=plan-ready bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_SCENARIO=plan-ready bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:reviewer'],
-			'CORGI_TEST_WINDOW_SCENARIO=reviewer-completed bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_SCENARIO=reviewer-completed bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:reviewer-ready'],
-			'CORGI_TEST_WINDOW_SCENARIO=reviewer-ready bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=repo CORGI_TEST_WINDOW_SCENARIO=reviewer-ready bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:scratch'],
@@ -760,7 +770,7 @@ suite('Corgi Webview UX', () => {
 		);
 		assert.strictEqual(
 			scripts['test:window:auto'],
-			'bash scripts/run-corgi-test-window-auto.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-static CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:status'],
