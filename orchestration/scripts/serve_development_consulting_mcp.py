@@ -25,10 +25,12 @@ def main() -> None:
 	env["ORCHESTRATION_REPO_ROOT"] = str(
 		Path(env.get("ORCHESTRATION_REPO_ROOT") or source_root).resolve()
 	)
+	dev_state_dir = source_root / ".agent" / "development" / "advisory"
 	env.setdefault(
 		"CORGI_ADVISORY_STATE_DIR",
-		str(source_root / ".agent" / "development" / "advisory"),
+		str(dev_state_dir),
 	)
+	env.setdefault("MINIMAX_API_KEY_FILE", str(dev_state_dir / "minimax_api_key"))
 	sys.argv = [str(launcher), *sys.argv[1:]]
 	runpy.run_path(str(launcher), run_name="__main__")
 

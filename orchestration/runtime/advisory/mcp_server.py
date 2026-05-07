@@ -2,8 +2,6 @@ import asyncio
 import json
 import os
 import re
-import shlex
-import shutil
 import subprocess
 import time
 import urllib.error
@@ -45,8 +43,9 @@ MINIMAX_DEFAULT_API_KEY_FILE = Path(
 )
 MINIMAX_DEFAULT_OPENAI_BASE_URL = "https://api.minimax.io/v1"
 MINIMAX_DEFAULT_MODEL = "MiniMax-M2.7"
-MINIMAX_GROK_NPM_PACKAGE = "@vibe-kit/grok-cli"
-MINIMAX_GROK_DOCS_URL = "https://platform.minimax.io/docs/token-plan/grok-cli"
+CLAUDE_HEADLESS_MODEL = os.environ.get("CLAUDE_HEADLESS_MODEL") or "claude-opus-4-7"
+# Previous Claude headless baseline retained for traceability: claude-sonnet-4-6.
+CLAUDE_HEADLESS_PREVIOUS_MODEL_ANNOTATION = "claude-sonnet-4-6"
 mcp = FastMCP(
     "Corgi_Governor_Advisor"
     if ADVISORY_CONTEXT == CORGI_RUNTIME_CONTEXT
@@ -387,6 +386,8 @@ def _run_claude_code_sync(prompt: str, work_dir: str | None = None) -> str:
         "claude",
         prompt,
         "-p",
+        "--model",
+        CLAUDE_HEADLESS_MODEL,
         "--output-format",
         "text",
         "--tools",
@@ -483,10 +484,13 @@ def _minimax_message_content(payload: dict) -> str:
     return ""
 
 
-def _run_minimax_openai_sync(prompt: str, system_hint: str | None = None) -> str | None:
+def _run_minimax_openai_sync(prompt: str, system_hint: str | None = None) -> str:
     api_key = _minimax_api_key()
     if not api_key:
-        return None
+        return (
+            "MiniMax API configuration error: missing MINIMAX_API_KEY or "
+            "MINIMAX_API_KEY_FILE."
+        )
 
     messages: list[dict[str, str]] = []
     if system_hint:
@@ -527,129 +531,8 @@ def _run_minimax_openai_sync(prompt: str, system_hint: str | None = None) -> str
     return content if content else "Warning: Empty response from MiniMax API."
 
 
-def _minimax_grok_command() -> list[str]:
-    configured = os.environ.get("MINIMAX_GROK_COMMAND")
-    if configured:
-        return shlex.split(configured)
-    return ["grok"]
-
-
-def _minimax_grok_env() -> dict[str, str]:
-    custom_env = os.environ.copy()
-    custom_env.pop("OPENAI_API_KEY", None)
-    custom_env.pop("OPENAI_BASE_URL", None)
-    custom_env.pop("OPENAI_ORG_ID", None)
-    custom_env.setdefault(
-        "GROK_BASE_URL",
-        os.environ.get("MINIMAX_OPENAI_BASE_URL")
-        or os.environ.get("MINIMAX_BASE_URL")
-        or MINIMAX_DEFAULT_OPENAI_BASE_URL,
-    )
-    if not custom_env.get("GROK_API_KEY"):
-        api_key = _minimax_api_key()
-        if api_key:
-            custom_env["GROK_API_KEY"] = api_key
-    return custom_env
-
-
-def _minimax_grok_unsupported_message(command: list[str], details: str) -> str:
-    rendered_command = " ".join(shlex.quote(part) for part in command)
-    return (
-        "Error: MiniMax Grok CLI fallback is unavailable.\n"
-        f"Command checked: {rendered_command}\n"
-        f"{details}\n"
-        "This environment appears to have a different `grok` binary than the "
-        "MiniMax-documented CLI.\n"
-        f"Install the official CLI with `npm install -g {MINIMAX_GROK_NPM_PACKAGE}` "
-        "and point `MINIMAX_GROK_COMMAND` at that binary if needed, or set "
-        "`MINIMAX_API_KEY` / `MINIMAX_API_KEY_FILE` to use the direct MiniMax API path.\n"
-        f"Docs: {MINIMAX_GROK_DOCS_URL}"
-    )
-
-
-def _minimax_grok_supports_headless(command: list[str], env: dict[str, str]) -> str | None:
-    executable = command[0] if command else "grok"
-    if not shutil.which(executable):
-        return _minimax_grok_unsupported_message(
-            command,
-            f"`{executable}` was not found on PATH.",
-        )
-
-    try:
-        result = subprocess.run(
-            [*command, "--help"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env=env,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        return _minimax_grok_unsupported_message(
-            command,
-            "`--help` exceeded 15s timeout.",
-        )
-    except Exception as exc:
-        return _minimax_grok_unsupported_message(command, f"`--help` failed: {exc}")
-
-    help_text = f"{result.stdout}\n{result.stderr}"
-    if "--model" in help_text and ("--prompt" in help_text or "-p" in help_text):
-        return None
-
-    preview = "\n".join(line for line in help_text.strip().splitlines()[:8])
-    if not preview:
-        preview = f"`--help` exited with code {result.returncode} and no output."
-    return _minimax_grok_unsupported_message(
-        command,
-        "The binary does not advertise the required `--model` and `--prompt`/`-p` flags.\n"
-        f"Help preview:\n{preview}",
-    )
-
-
-def _run_minimax_grok_sync(prompt: str, system_hint: str | None = None) -> str:
-    base_cmd = _minimax_grok_command()
-    custom_env = _minimax_grok_env()
-    unsupported = _minimax_grok_supports_headless(base_cmd, custom_env)
-    if unsupported:
-        return unsupported
-
-    cmd = [*base_cmd, "--model", "MiniMax-M2.7"]
-    final_prompt = prompt
-    if system_hint:
-        final_prompt = f"System hint:\n{system_hint}\n\nUser prompt:\n{prompt}"
-    cmd.extend(["-p", final_prompt])
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            env=custom_env,
-            stdin=subprocess.DEVNULL,
-        )
-
-        if result.returncode != 0:
-            return (
-                f"Error: Grok CLI exited with code {result.returncode}\n"
-                f"Stderr: {result.stderr}\n"
-                "Set MINIMAX_API_KEY / MINIMAX_API_KEY_FILE to use the direct "
-                "MiniMax API path."
-            )
-
-        return result.stdout.strip() if result.stdout else "Warning: Empty response."
-    except subprocess.TimeoutExpired:
-        return "Error: Grok CLI exceeded 300s timeout."
-    except Exception as exc:
-        return f"Unexpected Error: {exc}"
-
-
-
 def _run_minimax_sync(prompt: str, system_hint: str | None = None) -> str:
-    response = _run_minimax_openai_sync(prompt, system_hint)
-    if response is not None:
-        return response
-    return _run_minimax_grok_sync(prompt, system_hint)
+    return _run_minimax_openai_sync(prompt, system_hint)
 
 
 # ---------------------------------------------------------------------------
@@ -926,22 +809,6 @@ async def consult_minimax(
             response,
             ["SUMMARY:", "REASONING:", "RECOMMENDED_ACTIONS:"],
         )
-    )
-
-
-@mcp.tool()
-async def consult_grok_advisor(
-    prompt: str,
-    system_hint: str | None = None,
-    cycle_id: str | None = None,
-) -> str:
-    """
-    Backward-compatible alias for consult_minimax.
-    """
-    return await consult_minimax(
-        prompt=prompt,
-        system_hint=system_hint,
-        cycle_id=cycle_id,
     )
 
 

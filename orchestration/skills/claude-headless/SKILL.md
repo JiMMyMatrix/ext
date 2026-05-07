@@ -10,6 +10,10 @@ Use this only in Governor context.
 ## MCP Tool
 `consult_claude_headless(prompt, work_dir, cycle_id)`
 
+## Model
+Uses Claude Opus 4.7 by default for headless repo analysis.
+Previous baseline annotation retained in server code: Claude Sonnet 4.6.
+
 ## Use When
 - The Governor needs code-aware multi-file tracing or subsystem analysis.
 - Architecture, integration seams, or design choices need repo context.

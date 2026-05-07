@@ -58,6 +58,8 @@ Use the routing skill first when choosing an advisor:
 - `consult_minimax` for bounded general reasoning or option comparison without
   repo file access
 - `consult_claude_headless` for read-only multi-file repo/code analysis
+  using Claude Opus 4.7 by default. The previous Claude headless baseline was
+  Sonnet 4.6, retained in code annotations for traceability.
 - `consult_architect` for repeated or non-trivial debugging with a likely
   root-cause file
 - `routine_code_review` for one completed file after a bounded change
@@ -88,17 +90,14 @@ python3 orchestration/scripts/setup_advisory_mcp_env.py
 
 For MiniMax consultations, set `MINIMAX_API_KEY` in the Governor/advisory
 process environment. The server uses MiniMax's OpenAI-compatible endpoint by
-default (`https://api.minimax.io/v1`) and keeps `consult_grok_advisor` only as
-a backward-compatible alias.
+default (`https://api.minimax.io/v1`).
 
 For runtime Governor use, the advisory server may read an ignored token file at
 the target workspace's `.agent/orchestration/advisory/minimax_api_key`, or a
 custom `MINIMAX_API_KEY_FILE`. For development consulting, prefer a separate
-ignored token file under `.agent/development/advisory/minimax_api_key` or set
-`MINIMAX_API_KEY` explicitly. The Grok fallback is only compatible with MiniMax's
-documented npm Grok CLI (`@vibe-kit/grok-cli`); if another `grok` executable is
-on PATH, set `MINIMAX_GROK_COMMAND` to the compatible binary or use the direct
-MiniMax API path.
+ignored token file under `.agent/development/advisory/minimax_api_key`.
+`dev_mcp_server.py` points MiniMax there automatically, so development use does
+not require exporting `MINIMAX_API_KEY`.
 
 The canonical manual command is:
 

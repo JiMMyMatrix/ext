@@ -15,9 +15,6 @@ Read:
 - `routine_code_review`
 - `consult_minimax`
 
-`consult_grok_advisor` exists only as a backward-compatible alias for
-`consult_minimax`. New Governor usage should prefer `consult_minimax`.
-
 ## Core rules
 - only the Governor may use advisor tools
 - this advisory path is cost-gated

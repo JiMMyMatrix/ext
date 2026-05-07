@@ -519,6 +519,8 @@ class HarnessPackageTests(unittest.TestCase):
         self.assertIn("corgi-development-consulting", dev_launcher_source)
         self.assertIn("CORGI_ADVISORY_CALLER_ROLE", dev_launcher_source)
         self.assertIn(".agent\" / \"development\" / \"advisory", dev_launcher_source)
+        self.assertIn("MINIMAX_API_KEY_FILE", dev_launcher_source)
+        self.assertIn("minimax_api_key", dev_launcher_source)
         for token in [
             "ORCHESTRATION_APPROVED_PYTHON",
             "CORGI_ADVISORY_MCP_PYTHON",
@@ -605,9 +607,30 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertIn(tool_name, skill_source)
                 self.assertIn(tool_name, routing_source)
 
-        self.assertIn("async def consult_grok_advisor(", server_source)
-        self.assertIn("consult_grok_advisor", routing_source)
-        self.assertIn("backward-compatible alias", routing_source)
+        self.assertNotIn("consult_grok_advisor", server_source)
+        self.assertNotIn("consult_grok_advisor", routing_source)
+
+    def test_claude_headless_uses_opus_with_sonnet_annotation(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        server_source = (
+            repo_root / "orchestration" / "runtime" / "advisory" / "mcp_server.py"
+        ).read_text(encoding="utf-8")
+        skill_source = (
+            repo_root / "orchestration" / "skills" / "claude-headless" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        advisory_doc = (repo_root / "orchestration" / "advisory.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("CLAUDE_HEADLESS_MODEL", server_source)
+        self.assertIn("claude-opus-4-7", server_source)
+        self.assertIn("--model", server_source)
+        self.assertIn("CLAUDE_HEADLESS_PREVIOUS_MODEL_ANNOTATION", server_source)
+        self.assertIn("claude-sonnet-4-6", server_source)
+        self.assertIn("Opus 4.7", skill_source)
+        self.assertIn("Sonnet 4.6", skill_source)
+        self.assertIn("Opus 4.7", advisory_doc)
+        self.assertIn("Sonnet 4.6", advisory_doc)
 
     def test_minimax_advisor_prefers_direct_openai_compatible_api(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -625,15 +648,16 @@ class HarnessPackageTests(unittest.TestCase):
         self.assertIn("https://api.minimax.io/v1", server_source)
         self.assertIn("urllib.request", server_source)
         self.assertIn("reasoning_split", server_source)
-        self.assertIn("Set MINIMAX_API_KEY", server_source)
+        self.assertIn("missing MINIMAX_API_KEY", server_source)
         self.assertIn("MINIMAX_API_KEY_FILE", server_source)
         self.assertIn("MINIMAX_DEFAULT_API_KEY_FILE", server_source)
-        self.assertIn("MINIMAX_GROK_COMMAND", server_source)
-        self.assertIn("@vibe-kit/grok-cli", server_source)
-        self.assertIn("https://platform.minimax.io/docs/token-plan/grok-cli", server_source)
-        self.assertIn("does not advertise the required", server_source)
+        self.assertNotIn("MINIMAX_GROK_COMMAND", server_source)
+        self.assertNotIn("@vibe-kit/grok-cli", server_source)
+        self.assertNotIn("Grok CLI", server_source)
         self.assertIn("MINIMAX_API_KEY", skill_source)
         self.assertIn("MINIMAX_API_KEY", advisory_doc)
+        self.assertNotIn("Grok", skill_source)
+        self.assertNotIn("Grok", advisory_doc)
 
     def test_advisory_mcp_is_regular_but_cost_gated_governor_feature(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
