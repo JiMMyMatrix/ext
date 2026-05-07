@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { CodexAppServerClient } from './codexAppServerClient';
 import type {
 	ExecutionWindowModel,
 	ModelAction,
@@ -94,9 +95,25 @@ interface SemanticRunnerInput {
 	summary: SemanticSummaryPayload;
 }
 
-interface SemanticRunner {
+export interface SemanticRunner {
 	classify(input: SemanticRunnerInput): Promise<SemanticDecision>;
+	shutdown?(): void;
 }
+
+export type SemanticSidecarRuntime = 'app-server' | 'exec';
+
+type SemanticAppServerClient = Pick<
+	CodexAppServerClient,
+	'startTurn' | 'shutdown' | 'health'
+>;
+
+export type SemanticSidecarOptions = {
+	runtime?: SemanticSidecarRuntime;
+	runner?: SemanticRunner;
+	appServerClient?: SemanticAppServerClient;
+	fallbackRunner?: SemanticRunner;
+	cwd?: string;
+};
 
 const semanticSchema = {
 	type: 'object',
@@ -305,7 +322,60 @@ function normalizeDecision(raw: unknown, rawText: string): SemanticDecision {
 	};
 }
 
-class CodexSemanticRunner implements SemanticRunner {
+function semanticSidecarModel(): string {
+	return (
+		process.env.CORGI_SEMANTIC_SIDECAR_MODEL?.trim() ||
+		DEFAULT_SEMANTIC_SIDECAR_MODEL
+	);
+}
+
+function blockSemanticDecision(rawText: string, reason: string): SemanticDecision {
+	return {
+		route_type: 'block',
+		action_name: 'none',
+		normalized_text: rawText.trim(),
+		paraphrase: '',
+		confidence: 'low',
+		reason,
+	};
+}
+
+function parseSemanticDecisionPayload(payload: string, rawText: string): SemanticDecision {
+	const trimmed = payload.trim();
+	if (!trimmed) {
+		return blockSemanticDecision(rawText, 'semantic_sidecar_error');
+	}
+	for (const candidate of [
+		trimmed,
+		trimmed.slice(trimmed.indexOf('{'), trimmed.lastIndexOf('}') + 1),
+	]) {
+		if (!candidate || !candidate.startsWith('{') || !candidate.endsWith('}')) {
+			continue;
+		}
+		try {
+			return normalizeDecision(JSON.parse(candidate), rawText);
+		} catch {
+			// Try the next extraction strategy before failing closed.
+		}
+	}
+	return blockSemanticDecision(rawText, 'semantic_sidecar_error');
+}
+
+function shouldFallbackFromAppServerError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	if (/timed out|turn already in progress/i.test(message)) {
+		return false;
+	}
+	return true;
+}
+
+function createSemanticAppServerWorkspace(): string {
+	const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'corgi-semantic-appserver-'));
+	fs.mkdirSync(workspace, { recursive: true });
+	return workspace;
+}
+
+export class CodexSemanticRunner implements SemanticRunner {
 	public async classify(input: SemanticRunnerInput): Promise<SemanticDecision> {
 		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corgi-semantic-'));
 		const schemaPath = path.join(tempRoot, 'semantic-schema.json');
@@ -330,9 +400,7 @@ class CodexSemanticRunner implements SemanticRunner {
 			semanticPrompt(input),
 		];
 
-		const modelOverride =
-			process.env.CORGI_SEMANTIC_SIDECAR_MODEL?.trim() ||
-			DEFAULT_SEMANTIC_SIDECAR_MODEL;
+		const modelOverride = semanticSidecarModel();
 		args.splice(1, 0, '--model', modelOverride);
 
 		try {
@@ -427,21 +495,103 @@ class CodexSemanticRunner implements SemanticRunner {
 			const payload = fs.existsSync(outputPath)
 				? fs.readFileSync(outputPath, 'utf8')
 				: stdout;
-			return normalizeDecision(JSON.parse(payload), input.rawText);
+			return parseSemanticDecisionPayload(payload, input.rawText);
 		} catch (error) {
 			console.error('Corgi semantic sidecar failed', error);
-			return {
-				route_type: 'block',
-				action_name: 'none',
-				normalized_text: input.rawText.trim(),
-				paraphrase: '',
-				confidence: 'low',
-				reason: 'semantic_sidecar_unavailable',
-			};
+			return blockSemanticDecision(input.rawText, 'semantic_sidecar_unavailable');
 		} finally {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
 	}
+}
+
+export class AppServerSemanticRunner implements SemanticRunner {
+	private readonly client: SemanticAppServerClient;
+	private readonly fallbackRunner: SemanticRunner;
+	private readonly cwd: string;
+	private readonly ownedCwd: string | undefined;
+
+	constructor(options: {
+		client?: SemanticAppServerClient;
+		fallbackRunner?: SemanticRunner;
+		cwd?: string;
+	} = {}) {
+		this.client = options.client ?? new CodexAppServerClient();
+		this.fallbackRunner = options.fallbackRunner ?? new CodexSemanticRunner();
+		this.ownedCwd = options.cwd ? undefined : createSemanticAppServerWorkspace();
+		this.cwd = options.cwd ?? this.ownedCwd ?? process.cwd();
+	}
+
+	public async classify(input: SemanticRunnerInput): Promise<SemanticDecision> {
+		const startedAt = Date.now();
+		const model = semanticSidecarModel();
+		try {
+			const result = await this.client.startTurn({
+				runtimeKind: 'semantic_intake',
+				previewEnabled: false,
+				prompt: semanticPrompt(input),
+				model,
+				reasoning: 'low',
+				cwd: this.cwd,
+				ephemeralThread: true,
+				timeoutMs: SEMANTIC_TIMEOUT_MS,
+			});
+			console.info(
+				`Corgi semantic sidecar runtime=app-server model=${model} elapsedMs=${Date.now() - startedAt}`
+			);
+			return parseSemanticDecisionPayload(result.message, input.rawText);
+		} catch (error) {
+			console.error('Corgi app-server semantic sidecar failed', error);
+			if (!shouldFallbackFromAppServerError(error)) {
+				console.info(
+					`Corgi semantic sidecar runtime=app-server outcome=blocked model=${model} elapsedMs=${Date.now() - startedAt}`
+				);
+				return blockSemanticDecision(input.rawText, 'semantic_sidecar_unavailable');
+			}
+			console.info(
+				`Corgi semantic sidecar runtime=exec-fallback model=${model} elapsedMs=${Date.now() - startedAt}`
+			);
+			return this.fallbackRunner.classify(input);
+		}
+	}
+
+	public shutdown(): void {
+		this.client.shutdown();
+		if (this.ownedCwd) {
+			fs.rmSync(this.ownedCwd, { recursive: true, force: true });
+		}
+	}
+}
+
+function runtimeFromEnvironment(): SemanticSidecarRuntime {
+	const configured = process.env.CORGI_SEMANTIC_SIDECAR_RUNTIME?.trim();
+	return configured === 'exec' ? 'exec' : 'app-server';
+}
+
+function isSemanticRunner(value: unknown): value is SemanticRunner {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		'classify' in value &&
+		typeof (value as { classify?: unknown }).classify === 'function'
+	);
+}
+
+export function createSemanticRunner(
+	options: SemanticSidecarOptions = {}
+): SemanticRunner {
+	if (options.runner) {
+		return options.runner;
+	}
+	const runtime = options.runtime ?? runtimeFromEnvironment();
+	if (runtime === 'exec') {
+		return new CodexSemanticRunner();
+	}
+	return new AppServerSemanticRunner({
+		client: options.appServerClient,
+		fallbackRunner: options.fallbackRunner,
+		cwd: options.cwd,
+	});
 }
 
 function semanticMetadata(
@@ -602,8 +752,14 @@ export function resolveSemanticRouting(
 export class SemanticSidecar {
 	private readonly runner: SemanticRunner;
 
-	constructor(runner: SemanticRunner = new CodexSemanticRunner()) {
-		this.runner = runner;
+	constructor(runnerOrOptions: SemanticRunner | SemanticSidecarOptions = {}) {
+		this.runner = isSemanticRunner(runnerOrOptions)
+			? runnerOrOptions
+			: createSemanticRunner(runnerOrOptions);
+	}
+
+	public shutdown(): void {
+		this.runner.shutdown?.();
 	}
 
 	public async route(

@@ -23,6 +23,7 @@ import {
 	SemanticSidecar,
 	type SemanticBlockKind,
 	type SemanticLoopState,
+	type SemanticSidecarRuntime,
 } from './semanticSidecar';
 
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
@@ -37,6 +38,20 @@ function semanticMode(): 'sidecar-first' | 'governor-first' {
 	return process.env.CORGI_SEMANTIC_MODE?.trim() === 'governor-first'
 		? 'governor-first'
 		: 'sidecar-first';
+}
+
+function semanticSidecarRuntime(): SemanticSidecarRuntime {
+	const envMode = process.env.CORGI_SEMANTIC_SIDECAR_RUNTIME?.trim();
+	if (envMode === 'app-server' || envMode === 'exec') {
+		return envMode;
+	}
+	if (typeof vscode.workspace.getConfiguration !== 'function') {
+		return 'app-server';
+	}
+	const configured = vscode.workspace
+		.getConfiguration('corgi')
+		.get<string>('semanticSidecarRuntime');
+	return configured === 'exec' ? 'exec' : 'app-server';
 }
 
 function testWindowAutoPrompt(context: vscode.ExtensionContext): string | undefined {
@@ -146,7 +161,9 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 				this.transport.onRuntimeEvent((event) => this.handleRuntimeEvent(event))
 			);
 		}
-		this.semanticSidecar = new SemanticSidecar();
+		this.semanticSidecar = new SemanticSidecar({
+			runtime: semanticSidecarRuntime(),
+		});
 	}
 
 	public resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -189,6 +206,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 	public dispose() {
 		this.disposeWebviewListeners();
+		this.semanticSidecar.shutdown();
 		this.transport.dispose?.();
 
 		while (this.disposables.length) {

@@ -101,6 +101,8 @@ preconditions must fail closed and must not trigger route guessing.
 - `submit-prompt`
   - requires non-empty prompt text
   - requires semantic classification to have completed for free-text routing
+  - default semantic classification is sidecar-first and may use the persistent
+    app-server sidecar runtime; `codex exec` is the explicit legacy fallback
   - requires explicit route metadata such as `turn_type` or a compatible
     `semantic_route_type`
   - must not infer routing from raw prompt keywords when route metadata is absent

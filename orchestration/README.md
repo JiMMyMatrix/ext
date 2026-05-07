@@ -48,6 +48,11 @@ Free-text semantic routing remains sidecar-first by default. Set
 `CORGI_SEMANTIC_MODE=governor-first` to try the experimental Governor semantic
 intake path, where Governor proposes route/control intent and orchestration
 validates the proposal before any state change.
+The sidecar-first runtime uses a persistent Codex app-server sidecar by default
+(`CORGI_SEMANTIC_SIDECAR_RUNTIME=app-server`, or the VS Code
+`corgi.semanticSidecarRuntime` setting). Set it to `exec` to use the legacy
+per-turn `codex exec` classifier. The sidecar runtime is still advisory-only:
+orchestration validates all route, permission, session, and context outcomes.
 
 The Markdown files in this directory are supporting spec and explanation.
 They are not the primary runtime substrate.

@@ -20,10 +20,14 @@ import {
 	TransportUnavailableError,
 } from '../executionTransport';
 import {
+	AppServerSemanticRunner,
+	createSemanticRunner,
+	CodexSemanticRunner,
 	DEFAULT_SEMANTIC_SIDECAR_MODEL,
 	resolveSemanticRouting,
 	SemanticSidecar,
 	type SemanticDecision,
+	type SemanticRunner,
 } from '../semanticSidecar';
 import {
 	EXECUTION_WINDOW_CONTAINER_ID,
@@ -145,6 +149,33 @@ function semanticDecision(
 		confidence: 'high',
 		reason: 'clear_work_intent',
 		...overrides,
+	};
+}
+
+function semanticRunnerInput(
+	rawText: string
+): Parameters<AppServerSemanticRunner['classify']>[0] {
+	return {
+		rawText,
+		summary: {
+			current_turn: rawText,
+			controller_state: {
+				permission_scope: 'unset',
+				run_state: 'idle',
+			},
+			active_clarification: null,
+			pending_permission_request: null,
+			pending_interrupt: null,
+			accepted_intake_summary: null,
+			recent_dialogue_summary: [],
+			semantic_clarification_state: null,
+		},
+	};
+}
+
+function semanticFallbackRunner(decision: SemanticDecision): SemanticRunner {
+	return {
+		classify: async () => decision,
 	};
 }
 
@@ -748,9 +779,14 @@ suite('Corgi Webview UX', () => {
 		const configuration = contributes.configuration as Record<string, unknown>;
 		const properties = configuration.properties as Record<string, unknown>;
 		const runtimeSetting = properties['corgi.governorRuntime'] as Record<string, unknown>;
+		const semanticRuntimeSetting = properties[
+			'corgi.semanticSidecarRuntime'
+		] as Record<string, unknown>;
 
 		assert.strictEqual(runtimeSetting.default, 'app-server');
 		assert.deepStrictEqual(runtimeSetting.enum, ['exec', 'app-server']);
+		assert.strictEqual(semanticRuntimeSetting.default, 'app-server');
+		assert.deepStrictEqual(semanticRuntimeSetting.enum, ['exec', 'app-server']);
 	});
 
 	test('transport gates app-server runtime behind selector and completes or falls back internally', () => {
@@ -776,6 +812,28 @@ suite('Corgi Webview UX', () => {
 		assert.ok(transportSource.includes("'fail-governor-turn'"));
 		assert.ok(transportSource.includes('isAppServerShutdownReason'));
 		assert.ok(transportSource.includes('isGovernorRuntimeResponse'));
+	});
+
+	test('semantic sidecar runtime defaults to app-server while keeping exec selectable', () => {
+		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const semanticSource = fs.readFileSync(
+			path.resolve(__dirname, '../../src/semanticSidecar.ts'),
+			'utf8'
+		);
+
+		assert.ok(webviewSource.includes('CORGI_SEMANTIC_SIDECAR_RUNTIME'));
+		assert.ok(webviewSource.includes("get<string>('semanticSidecarRuntime')"));
+		assert.ok(webviewSource.includes('runtime: semanticSidecarRuntime()'));
+		assert.ok(webviewSource.includes('this.semanticSidecar.shutdown()'));
+		assert.ok(semanticSource.includes("runtimeKind: 'semantic_intake'"));
+		assert.ok(semanticSource.includes('ephemeralThread: true'));
+		assert.ok(semanticSource.includes('previewEnabled: false'));
+		assert.ok(semanticSource.includes("reasoning: 'low'"));
+		assert.ok(semanticSource.includes('new CodexAppServerClient()'));
+		assert.ok(semanticSource.includes('new CodexSemanticRunner()'));
+		assert.ok(semanticSource.includes('corgi-semantic-appserver-'));
+		assert.ok(semanticSource.includes('runtime=app-server'));
+		assert.ok(semanticSource.includes('elapsedMs='));
 	});
 
 	test('Governor runtime route resolution is explicit and action-bound', () => {
@@ -1689,6 +1747,163 @@ suite('Corgi Webview UX', () => {
 		].join('\n');
 
 		assert.ok(!runtimeSources.includes('semantic-routing.json'));
+	});
+
+	test('app-server semantic runner sends read-only ephemeral semantic intake turns', async () => {
+		let capturedRequest: Record<string, unknown> | undefined;
+		const previousModel = process.env.CORGI_SEMANTIC_SIDECAR_MODEL;
+		process.env.CORGI_SEMANTIC_SIDECAR_MODEL = 'gpt-test-semantic';
+		try {
+			const runner = new AppServerSemanticRunner({
+				client: {
+					startTurn: async (request) => {
+						capturedRequest = request as unknown as Record<string, unknown>;
+						return {
+							threadId: 'thread-semantic',
+							message: JSON.stringify(
+								semanticDecision({
+									route_type: 'governed_work_intent',
+									normalized_text: 'analyze the repo',
+								})
+							),
+						};
+					},
+					health: () => 'ready',
+					shutdown: () => undefined,
+				},
+				fallbackRunner: semanticFallbackRunner(
+					semanticDecision({ reason: 'should_not_fallback' })
+				),
+				cwd: '/tmp/corgi-semantic-test',
+			});
+
+			const decision = await runner.classify(semanticRunnerInput('analyze the repo'));
+
+			assert.strictEqual(decision.route_type, 'governed_work_intent');
+			assert.ok(capturedRequest);
+			assert.strictEqual(capturedRequest?.runtimeKind, 'semantic_intake');
+			assert.strictEqual(capturedRequest?.previewEnabled, false);
+			assert.strictEqual(capturedRequest?.ephemeralThread, true);
+			assert.strictEqual(capturedRequest?.model, 'gpt-test-semantic');
+			assert.strictEqual(capturedRequest?.reasoning, 'low');
+			assert.strictEqual(capturedRequest?.cwd, '/tmp/corgi-semantic-test');
+		} finally {
+			if (previousModel === undefined) {
+				delete process.env.CORGI_SEMANTIC_SIDECAR_MODEL;
+			} else {
+				process.env.CORGI_SEMANTIC_SIDECAR_MODEL = previousModel;
+			}
+		}
+	});
+
+	test('app-server semantic runner extracts embedded JSON and fails closed on malformed output', async () => {
+		const runner = new AppServerSemanticRunner({
+			client: {
+				startTurn: async () => ({
+					threadId: 'thread-semantic',
+					message: `Here is the classification:\n${JSON.stringify(
+						semanticDecision({
+							route_type: 'governor_dialogue',
+							normalized_text: 'what happened?',
+						})
+					)}`,
+				}),
+				health: () => 'ready',
+				shutdown: () => undefined,
+			},
+		});
+
+		const decision = await runner.classify(semanticRunnerInput('what happened?'));
+		assert.strictEqual(decision.route_type, 'governor_dialogue');
+
+		const malformedRunner = new AppServerSemanticRunner({
+			client: {
+				startTurn: async () => ({
+					threadId: 'thread-semantic',
+					message: 'not json',
+				}),
+				health: () => 'ready',
+				shutdown: () => undefined,
+			},
+			fallbackRunner: semanticFallbackRunner(
+				semanticDecision({ reason: 'should_not_fallback' })
+			),
+		});
+		const malformedDecision = await malformedRunner.classify(
+			semanticRunnerInput('do something')
+		);
+		assert.strictEqual(malformedDecision.route_type, 'block');
+		assert.strictEqual(malformedDecision.confidence, 'low');
+		assert.strictEqual(malformedDecision.reason, 'semantic_sidecar_error');
+	});
+
+	test('app-server semantic runner falls back only for startup failures, not semantic timeouts', async () => {
+		let fallbackCalls = 0;
+		const fallbackRunner: SemanticRunner = {
+			classify: async () => {
+				fallbackCalls += 1;
+				return semanticDecision({
+					route_type: 'governed_work_intent',
+					normalized_text: 'analyze the repo',
+					reason: 'exec_fallback',
+				});
+			},
+		};
+
+		const startupFailureRunner = new AppServerSemanticRunner({
+			client: {
+				startTurn: async () => {
+					throw new Error('app-server initialize failed');
+				},
+				health: () => 'exited',
+				shutdown: () => undefined,
+			},
+			fallbackRunner,
+		});
+		const fallbackDecision = await startupFailureRunner.classify(
+			semanticRunnerInput('analyze the repo')
+		);
+		assert.strictEqual(fallbackDecision.reason, 'exec_fallback');
+		assert.strictEqual(fallbackCalls, 1);
+
+		const timeoutRunner = new AppServerSemanticRunner({
+			client: {
+				startTurn: async () => {
+					throw new Error('app-server Governor turn timed out');
+				},
+				health: () => 'ready',
+				shutdown: () => undefined,
+			},
+			fallbackRunner,
+		});
+		const timeoutDecision = await timeoutRunner.classify(
+			semanticRunnerInput('analyze the repo')
+		);
+		assert.strictEqual(timeoutDecision.route_type, 'block');
+		assert.strictEqual(timeoutDecision.reason, 'semantic_sidecar_unavailable');
+		assert.strictEqual(fallbackCalls, 1);
+
+		const busyRunner = new AppServerSemanticRunner({
+			client: {
+				startTurn: async () => {
+					throw new Error('app-server turn already in progress');
+				},
+				health: () => 'ready',
+				shutdown: () => undefined,
+			},
+			fallbackRunner,
+		});
+		const busyDecision = await busyRunner.classify(
+			semanticRunnerInput('analyze the repo')
+		);
+		assert.strictEqual(busyDecision.route_type, 'block');
+		assert.strictEqual(busyDecision.reason, 'semantic_sidecar_unavailable');
+		assert.strictEqual(fallbackCalls, 1);
+	});
+
+	test('semantic runner factory defaults to app-server and explicit exec preserves legacy runner', () => {
+		assert.ok(createSemanticRunner({ runtime: 'app-server' }) instanceof AppServerSemanticRunner);
+		assert.ok(createSemanticRunner({ runtime: 'exec' }) instanceof CodexSemanticRunner);
 	});
 
 	test('semantic sidecar uses the model runner for obvious governed work requests', async () => {

@@ -51,6 +51,15 @@
           ],
           "default": "app-server",
           "description": "Governor runtime. App-server is the default for Governor dialogue and Plan generation; exec remains available as fallback."
+        },
+        "corgi.semanticSidecarRuntime": {
+          "type": "string",
+          "enum": [
+            "exec",
+            "app-server"
+          ],
+          "default": "app-server",
+          "description": "Semantic sidecar runtime. App-server is the default for free-text classification; exec remains available as the legacy per-turn path."
         }
       }
     }
