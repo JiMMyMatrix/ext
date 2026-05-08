@@ -2,13 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-USER_DATA_DIR="$ROOT_DIR/.agent/test-window/vscode-profile/user-data"
+DEFAULT_TEST_ROOT="${HOME:-/tmp}/.corgi/test-window/extension-ext"
+TEST_ROOT="${CORGI_TEST_WINDOW_ROOT:-$DEFAULT_TEST_ROOT}"
+USER_DATA_DIR="$TEST_ROOT/vscode-profile/user-data"
+OLD_USER_DATA_DIR="$ROOT_DIR/.agent/test-window/vscode-profile/user-data"
 LEGACY_USER_DATA_DIR="$ROOT_DIR/.agent/vscode-governor-first-test-user-data"
 
 assert_test_profile_path() {
 	local profile_dir="$1"
 	case "$profile_dir" in
-		"$ROOT_DIR/.agent/test-window/"*|"$ROOT_DIR/.agent/vscode-governor-first-test-user-data")
+		"$TEST_ROOT/"*|"$ROOT_DIR/.agent/test-window/"*|"$ROOT_DIR/.agent/vscode-governor-first-test-user-data")
 			return
 			;;
 		*)
@@ -57,9 +60,10 @@ close_profile() {
 }
 
 close_profile "$USER_DATA_DIR"
+close_profile "$OLD_USER_DATA_DIR"
 close_profile "$LEGACY_USER_DATA_DIR"
 
-if pgrep -f "$USER_DATA_DIR|$LEGACY_USER_DATA_DIR" >/dev/null 2>&1; then
+if pgrep -f "$USER_DATA_DIR|$OLD_USER_DATA_DIR|$LEGACY_USER_DATA_DIR" >/dev/null 2>&1; then
 	echo "Corgi test window still has live processes." >&2
 	exit 1
 fi

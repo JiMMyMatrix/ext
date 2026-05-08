@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -42,6 +43,7 @@ import {
 } from '../runtimeErgonomicsKernel';
 
 const PACKAGE_JSON_PATH = path.resolve(__dirname, '../../package.json');
+const REPO_ROOT = path.resolve(__dirname, '../..');
 const LAUNCH_JSON_PATH = path.resolve(__dirname, '../../.vscode/launch.json');
 const EXTENSION_TS_PATH = path.resolve(__dirname, '../../src/extension.ts');
 const DEVELOPMENT_SESSION_TS_PATH = path.resolve(
@@ -564,6 +566,187 @@ suite('Corgi Webview UX', () => {
 		);
 	});
 
+	test('test-window launcher refuses roots inside the development repo', () => {
+		const forbiddenRoot = path.join(REPO_ROOT, '.agent', 'forbidden-test-window-root');
+		fs.rmSync(forbiddenRoot, { recursive: true, force: true });
+		const result = spawnSync('bash', [TEST_WINDOW_SCRIPT_PATH], {
+			cwd: REPO_ROOT,
+			encoding: 'utf8',
+			env: {
+				...process.env,
+				CORGI_TEST_WINDOW_AUTO_PROMPT: '',
+				CORGI_TEST_WINDOW_ROOT: forbiddenRoot,
+				CORGI_TEST_WINDOW_WORKSPACE_MODE: 'empty',
+			},
+		});
+		fs.rmSync(forbiddenRoot, { recursive: true, force: true });
+
+		assert.strictEqual(result.status, 2);
+		assert.match(
+			result.stderr,
+			/Refusing to keep Corgi test-window state inside the development repo/
+		);
+		assert.doesNotMatch(result.stdout + result.stderr, /Launched Corgi test window/);
+	});
+
+	test('test-window status reports development-workspace isolation failures', () => {
+		const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corgi-status-isolation-'));
+		try {
+			fs.writeFileSync(
+				path.join(testRoot, 'current-run.json'),
+				JSON.stringify(
+					{
+						workspaceMode: 'repo',
+						workspaceRoot: REPO_ROOT,
+						sourceRoot: REPO_ROOT,
+						agentRoot: path.join(REPO_ROOT, '.agent'),
+						userDataDir: path.join(testRoot, 'profile'),
+						stderrPath: path.join(testRoot, 'stderr.log'),
+					},
+					null,
+					2
+				) + '\n'
+			);
+			const result = spawnSync('node', [TEST_WINDOW_STATUS_SCRIPT_PATH, '--json'], {
+				cwd: REPO_ROOT,
+				encoding: 'utf8',
+				env: {
+					...process.env,
+					CORGI_TEST_WINDOW_ROOT: testRoot,
+				},
+			});
+
+			assert.strictEqual(result.status, 1);
+			const status = JSON.parse(result.stdout) as { isolationError?: string; ok?: boolean };
+			assert.strictEqual(status.ok, false);
+			assert.match(
+				status.isolationError ?? '',
+				/development repo|development \.agent|outside/
+			);
+		} finally {
+			fs.rmSync(testRoot, { recursive: true, force: true });
+		}
+	});
+
+	test('test-window status reports workspace writeability failures', () => {
+		const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corgi-status-write-'));
+		const workspaceRoot = path.join(testRoot, 'empty-workspaces', 'write-blocked');
+		const agentRoot = path.join(testRoot, 'empty-agent');
+		const snapshotPath = path.join(agentRoot, 'orchestration', 'corgi_webview_snapshot.json');
+		try {
+			fs.mkdirSync(workspaceRoot, { recursive: true });
+			fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+			fs.writeFileSync(
+				snapshotPath,
+				JSON.stringify({
+					recordedAt: new Date().toISOString(),
+					payload: {
+						state: { runState: 'idle', currentStage: 'idle' },
+						messages: [],
+						progress: [],
+						actions: [],
+					},
+				})
+			);
+			fs.writeFileSync(
+				path.join(testRoot, 'current-run.json'),
+				JSON.stringify(
+					{
+						workspaceMode: 'empty',
+						workspaceRoot,
+						sourceRoot: REPO_ROOT,
+						agentRoot,
+						snapshotPath,
+						userDataDir: path.join(testRoot, 'profile'),
+						stderrPath: path.join(testRoot, 'stderr.log'),
+					},
+					null,
+					2
+				) + '\n'
+			);
+			fs.chmodSync(workspaceRoot, 0o555);
+			const result = spawnSync('node', [TEST_WINDOW_STATUS_SCRIPT_PATH, '--json'], {
+				cwd: REPO_ROOT,
+				encoding: 'utf8',
+				env: {
+					...process.env,
+					CORGI_TEST_WINDOW_ROOT: testRoot,
+				},
+			});
+
+			assert.strictEqual(result.status, 1);
+			const status = JSON.parse(result.stdout) as { ok?: boolean; writeError?: string };
+			assert.strictEqual(status.ok, false);
+			assert.match(status.writeError ?? '', /Test workspace is not writable/);
+		} finally {
+			try {
+				fs.chmodSync(workspaceRoot, 0o755);
+			} catch {
+				// The directory may not exist if setup failed early.
+			}
+			fs.rmSync(testRoot, { recursive: true, force: true });
+		}
+	});
+
+	test('test-window status requires the current test profile process', () => {
+		const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corgi-status-dead-'));
+		const workspaceRoot = path.join(testRoot, 'empty-workspaces', 'dead-window');
+		const agentRoot = path.join(testRoot, 'empty-agent');
+		const snapshotPath = path.join(agentRoot, 'orchestration', 'corgi_webview_snapshot.json');
+		try {
+			fs.mkdirSync(workspaceRoot, { recursive: true });
+			fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+			fs.writeFileSync(
+				snapshotPath,
+				JSON.stringify({
+					recordedAt: new Date().toISOString(),
+					payload: {
+						state: { runState: 'idle', currentStage: 'idle' },
+						messages: [],
+						progress: [],
+						actions: [],
+					},
+				})
+			);
+			fs.writeFileSync(
+				path.join(testRoot, 'current-run.json'),
+				JSON.stringify(
+					{
+						workspaceMode: 'empty',
+						workspaceRoot,
+						sourceRoot: REPO_ROOT,
+						agentRoot,
+						snapshotPath,
+						userDataDir: path.join(testRoot, 'definitely-not-running-profile'),
+						stderrPath: path.join(testRoot, 'stderr.log'),
+					},
+					null,
+					2
+				) + '\n'
+			);
+			const result = spawnSync('node', [TEST_WINDOW_STATUS_SCRIPT_PATH, '--json'], {
+				cwd: REPO_ROOT,
+				encoding: 'utf8',
+				env: {
+					...process.env,
+					CORGI_TEST_WINDOW_ROOT: testRoot,
+				},
+			});
+
+			assert.strictEqual(result.status, 1);
+			const status = JSON.parse(result.stdout) as {
+				ok?: boolean;
+				processAlive?: boolean;
+				processError?: string;
+			};
+			assert.strictEqual(status.ok, false);
+			assert.strictEqual(status.processAlive, false);
+			assert.match(status.processError ?? '', /Current Corgi test window process is not running/);
+		} finally {
+			fs.rmSync(testRoot, { recursive: true, force: true });
+		}
+	});
+
 	test('development resets no longer depend on launch env flags', () => {
 		const extensionSource = fs.readFileSync(EXTENSION_TS_PATH, 'utf8');
 		const developmentSessionSource = fs.readFileSync(
@@ -619,7 +802,30 @@ suite('Corgi Webview UX', () => {
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_STEPS'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_PROMPT_PRESET'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_WORKSPACE_MODE'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_ROOT'));
+		assert.ok(launchScriptSource.includes('.corgi/test-window/extension-ext'));
+		assert.ok(launchScriptSource.includes('corgi-ui-test-workspace'));
+		assert.ok(launchScriptSource.includes('THIS_IS_A_CORGI_TEST_WORKSPACE.md'));
+		assert.ok(launchScriptSource.includes('Corgi Test Workspace.code-workspace'));
+		assert.ok(launchScriptSource.includes("name: 'Corgi Test Workspace'"));
+		assert.ok(launchScriptSource.includes('workspaceFile'));
+		assert.ok(launchScriptSource.includes('assert_writable_dir "$WORKSPACE_ROOT" "workspace"'));
+		assert.ok(launchScriptSource.includes('assert_writable_dir "$AGENT_ROOT" "agent root"'));
+		assert.ok(launchScriptSource.includes('Refusing to keep Corgi test-window state inside the development repo'));
 		assert.ok(launchScriptSource.includes('WORKSPACE_MODE="${CORGI_TEST_WINDOW_WORKSPACE_MODE:-scratch}"'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_EMPTY_ID'));
+		assert.ok(launchScriptSource.includes('empty-workspaces'));
+		assert.ok(launchScriptSource.includes('Empty workspace mode does not support seeded scenarios yet'));
+		assert.ok(launchScriptSource.includes('Unsafe Corgi empty workspace id'));
+		assert.ok(launchScriptSource.includes('WORKSPACE_MODE" != "empty"'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_REPO_ID'));
+		assert.ok(launchScriptSource.includes('repo-workspaces'));
+		assert.ok(launchScriptSource.includes('Unsafe Corgi repo workspace id'));
+		assert.ok(launchScriptSource.includes('rsync -a --delete'));
+		assert.ok(!launchScriptSource.includes('WORKSPACE_ROOT="$ROOT_DIR"'));
+		assert.ok(launchScriptSource.includes('Refusing to launch Corgi test window against the development repo'));
+		assert.ok(launchScriptSource.includes('Refusing to launch Corgi test window outside the configured test root'));
+		assert.ok(launchScriptSource.includes('Refusing to use the development .agent folder'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCRATCH_ID'));
 		assert.ok(launchScriptSource.includes('Unsafe Corgi scratch workspace id'));
 		assert.ok(launchScriptSource.includes('ORCHESTRATION_TARGET_WORKSPACE_MODE'));
@@ -635,6 +841,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(!launchScriptSource.includes('pkill -9 -f "$USER_DATA_DIR"'));
 		assert.ok(closeScriptSource.includes('assert_test_profile_path'));
 		assert.ok(closeScriptSource.includes('Refusing to close non-test VS Code profile'));
+		assert.ok(closeScriptSource.includes('CORGI_TEST_WINDOW_ROOT'));
+		assert.ok(closeScriptSource.includes('$TEST_ROOT/'));
 		assert.ok(closeScriptSource.includes('$ROOT_DIR/.agent/test-window/'));
 		assert.ok(closeScriptSource.includes('pkill -TERM -f "$profile_dir"'));
 		assert.ok(!closeScriptSource.includes('pkill -f "$APP_NAME"'));
@@ -653,9 +861,26 @@ suite('Corgi Webview UX', () => {
 		assert.ok(promptScriptSource.includes('validateCatalog'));
 		assert.ok(statusScriptSource.includes('corgi_webview_snapshot.json'));
 		assert.ok(statusScriptSource.includes('current-run.json'));
+		assert.ok(statusScriptSource.includes('CORGI_TEST_WINDOW_ROOT'));
+		assert.ok(statusScriptSource.includes('.corgi'));
 		assert.ok(statusScriptSource.includes('workspaceMode'));
 		assert.ok(statusScriptSource.includes('workspaceRoot'));
+		assert.ok(statusScriptSource.includes('workspaceFile'));
 		assert.ok(statusScriptSource.includes('agentRoot'));
+		assert.ok(statusScriptSource.includes('workspaceIsolationError'));
+		assert.ok(statusScriptSource.includes('Test root is inside the development repo'));
+		assert.ok(statusScriptSource.includes('development repo as its workspace'));
+		assert.ok(statusScriptSource.includes('repo-workspaces isolation'));
+		assert.ok(statusScriptSource.includes('scratch-workspaces isolation'));
+		assert.ok(statusScriptSource.includes('empty-workspaces isolation'));
+		assert.ok(statusScriptSource.includes('workspaceWriteError'));
+		assert.ok(statusScriptSource.includes('${label} is not writable'));
+		assert.ok(statusScriptSource.includes('Write error: none'));
+		assert.ok(statusScriptSource.includes('processState'));
+		assert.ok(statusScriptSource.includes('oldProfileProcessAlive'));
+		assert.ok(statusScriptSource.includes('legacyProfileProcessAlive'));
+		assert.ok(statusScriptSource.includes('Current Corgi test window process is not running'));
+		assert.ok(statusScriptSource.includes('Process error: none'));
 		assert.ok(statusScriptSource.includes('relevantLogErrors'));
 		assert.ok(statusScriptSource.includes('isKnownBenignVsCodeLogLine'));
 		assert.ok(statusScriptSource.includes('GPU process exited unexpectedly: exit_code=15'));
@@ -730,6 +955,10 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:window'],
 			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-static bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:empty'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=empty CORGI_TEST_WINDOW_AUTO_PROMPT= bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:architecture'],

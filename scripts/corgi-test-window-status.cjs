@@ -2,13 +2,16 @@
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const testRoot = path.join(root, '.agent', 'test-window');
+const defaultTestRoot = path.join(os.homedir(), '.corgi', 'test-window', 'extension-ext');
+const testRoot = process.env.CORGI_TEST_WINDOW_ROOT || defaultTestRoot;
 const currentRunPath = path.join(testRoot, 'current-run.json');
 const currentRun = readJson(currentRunPath) || {};
 const userDataDir = currentRun.userDataDir || path.join(testRoot, 'vscode-profile', 'user-data');
+const oldUserDataDir = path.join(root, '.agent', 'test-window', 'vscode-profile', 'user-data');
 const legacyUserDataDir = path.join(root, '.agent', 'vscode-governor-first-test-user-data');
 const snapshotPath =
 	currentRun.snapshotPath ||
@@ -39,11 +42,16 @@ function commandSucceeds(command, args) {
 	return result.status === 0;
 }
 
-function processAlive() {
-	return (
-		commandSucceeds('pgrep', ['-f', userDataDir]) ||
-		commandSucceeds('pgrep', ['-f', legacyUserDataDir])
-	);
+function profileProcessAlive(profileDir) {
+	return commandSucceeds('pgrep', ['-f', profileDir]);
+}
+
+function processState() {
+	return {
+		current: profileProcessAlive(userDataDir),
+		oldProfile: profileProcessAlive(oldUserDataDir),
+		legacyProfile: profileProcessAlive(legacyUserDataDir),
+	};
 }
 
 function compact(value, limit = 240) {
@@ -84,6 +92,104 @@ function snapshotAgeMs(snapshot) {
 	return Date.now() - timestamp;
 }
 
+function realpathIfExists(filePath) {
+	if (!filePath || !fs.existsSync(filePath)) {
+		return undefined;
+	}
+	return fs.realpathSync(filePath);
+}
+
+function pathInside(childPath, parentPath) {
+	if (!childPath || !parentPath) {
+		return false;
+	}
+	const relative = path.relative(parentPath, childPath);
+	return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function workspaceIsolationError() {
+	const workspaceRoot = realpathIfExists(currentRun.workspaceRoot);
+	const sourceRoot = realpathIfExists(currentRun.sourceRoot || root);
+	const agentRoot = realpathIfExists(currentRun.agentRoot);
+	const testRootReal = realpathIfExists(testRoot);
+	if (!currentRun.workspaceRoot) {
+		return '';
+	}
+	if (!workspaceRoot || !sourceRoot || !testRootReal) {
+		return 'Test workspace isolation metadata is incomplete.';
+	}
+	if (testRootReal === sourceRoot || pathInside(testRootReal, sourceRoot)) {
+		return 'Test root is inside the development repo.';
+	}
+	if (workspaceRoot === sourceRoot) {
+		return 'Test window is using the development repo as its workspace.';
+	}
+	if (!pathInside(workspaceRoot, testRootReal)) {
+		return 'Test window workspace is outside the configured test root.';
+	}
+	if (agentRoot && agentRoot === path.join(sourceRoot, '.agent')) {
+		return 'Test window is using the development .agent folder.';
+	}
+	if (agentRoot && !pathInside(agentRoot, testRootReal)) {
+		return 'Test window agent root is outside the configured test root.';
+	}
+	if (
+		currentRun.workspaceMode === 'repo' &&
+		!pathInside(workspaceRoot, path.join(testRootReal, 'repo-workspaces'))
+	) {
+		return 'Repo-mode test window is not using repo-workspaces isolation.';
+	}
+	if (
+		currentRun.workspaceMode === 'scratch' &&
+		!pathInside(workspaceRoot, path.join(testRootReal, 'scratch-workspaces'))
+	) {
+		return 'Scratch-mode test window is not using scratch-workspaces isolation.';
+	}
+	if (
+		currentRun.workspaceMode === 'empty' &&
+		!pathInside(workspaceRoot, path.join(testRootReal, 'empty-workspaces'))
+	) {
+		return 'Empty-mode test window is not using empty-workspaces isolation.';
+	}
+	return '';
+}
+
+function writableDirError(dirPath, label) {
+	const realDir = realpathIfExists(dirPath);
+	if (!realDir) {
+		return `${label} is missing.`;
+	}
+	const probePath = path.join(
+		realDir,
+		`.corgi-write-check-${process.pid}-${Date.now()}-${Math.random()
+			.toString(16)
+			.slice(2)}`
+	);
+	try {
+		fs.writeFileSync(probePath, 'ok\n', { flag: 'wx' });
+		fs.rmSync(probePath, { force: true });
+		return '';
+	} catch (error) {
+		try {
+			fs.rmSync(probePath, { force: true });
+		} catch {
+			// Best effort cleanup only; report the original writeability issue.
+		}
+		const message = error instanceof Error ? error.message : String(error);
+		return `${label} is not writable: ${message}`;
+	}
+}
+
+function workspaceWriteError() {
+	if (!currentRun.workspaceRoot) {
+		return '';
+	}
+	return (
+		writableDirError(currentRun.workspaceRoot, 'Test workspace') ||
+		writableDirError(currentRun.agentRoot, 'Test agent root')
+	);
+}
+
 function summarize() {
 	const snapshot = readJson(snapshotPath);
 	const payload = snapshot?.payload || {};
@@ -108,17 +214,28 @@ function summarize() {
 	const stale =
 		typeof ageMs === 'number' &&
 		ageMs > 20_000 &&
-		(state.runState === 'running' || state.currentStage === 'governor_running');
+			(state.runState === 'running' || state.currentStage === 'governor_running');
+	const isolationError = workspaceIsolationError();
+	const writeError = workspaceWriteError();
+	const processes = processState();
+	const processError = currentRun.userDataDir && !processes.current
+		? 'Current Corgi test window process is not running.'
+		: '';
 
 	return {
 		ok:
 			Boolean(snapshot) &&
+			!processError &&
 			logErrors.length === 0 &&
 			!feedHasError &&
 			!knownBlockingError &&
-			!stale,
+			!stale &&
+			!isolationError &&
+			!writeError,
 		snapshot: snapshot ? 'present' : 'missing',
-		processAlive: processAlive(),
+		processAlive: processes.current,
+		oldProfileProcessAlive: processes.oldProfile,
+		legacyProfileProcessAlive: processes.legacyProfile,
 		recordedAt: snapshot?.recordedAt || null,
 		ageMs: ageMs ?? null,
 		goalStrip: payload.goalStrip || payload.header || '',
@@ -128,6 +245,7 @@ function summarize() {
 		permissionScope: state.permissionScope || '',
 		workspaceMode: currentRun.workspaceMode || 'repo',
 		workspaceRoot: currentRun.workspaceRoot || null,
+		workspaceFile: currentRun.workspaceFile || null,
 		agentRoot: currentRun.agentRoot || null,
 		autoStep: payload.autoStep || null,
 		actions: actions.map((action) => action.text).filter(Boolean),
@@ -138,6 +256,9 @@ function summarize() {
 		feedHasError,
 		knownBlockingError,
 		stale,
+		isolationError,
+		writeError,
+		processError,
 	};
 }
 
@@ -148,13 +269,22 @@ if (process.argv.includes('--json')) {
 	process.stdout.write(
 		[
 			`Corgi test window: ${summary.ok ? 'healthy' : 'attention needed'}`,
-			`Snapshot: ${summary.snapshot}${summary.ageMs === null ? '' : ` (${Math.round(summary.ageMs / 1000)}s old)`}`,
-			`Process: ${summary.processAlive ? 'live' : 'not running'}`,
-			`Workspace: ${summary.workspaceMode}${summary.workspaceRoot ? ` (${summary.workspaceRoot})` : ''}`,
+				`Snapshot: ${summary.snapshot}${summary.ageMs === null ? '' : ` (${Math.round(summary.ageMs / 1000)}s old)`}`,
+				`Process: ${summary.processAlive ? 'live' : 'not running'}`,
+				summary.oldProfileProcessAlive || summary.legacyProfileProcessAlive
+					? `Legacy processes: old=${summary.oldProfileProcessAlive ? 'live' : 'none'} legacy=${summary.legacyProfileProcessAlive ? 'live' : 'none'}`
+					: 'Legacy processes: none',
+				`Workspace: ${summary.workspaceMode}${summary.workspaceRoot ? ` (${summary.workspaceRoot})` : ''}`,
+			`Workspace file: ${summary.workspaceFile || '(none)'}`,
 			`Goal: ${summary.goalStrip || '(none)'}`,
 			`State: actor=${summary.actor || '(none)'} stage=${summary.stage || '(none)'} run=${summary.runState || '(none)'} scope=${summary.permissionScope || '(none)'}`,
 			`Auto-step: ${summary.autoStep?.mode || 'off'} (${summary.autoStep?.appliedCount ?? 0} applied)`,
 			`Actions: ${summary.actions.length ? summary.actions.join(', ') : '(none)'}`,
+			summary.isolationError
+				? `Isolation error: ${summary.isolationError}`
+				: 'Isolation error: none',
+			summary.writeError ? `Write error: ${summary.writeError}` : 'Write error: none',
+			summary.processError ? `Process error: ${summary.processError}` : 'Process error: none',
 			summary.logErrors.length
 				? `Log errors:\n${summary.logErrors.join('\n')}`
 				: 'Log errors: none',
