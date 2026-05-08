@@ -70,6 +70,26 @@ only when the issue is truly difficult and a wrong decision would cost more
 than two consultations. Do not surface advisor output as a human-facing stop
 unless a legal interrupt condition also exists.
 
+## Runtime Capability Registry
+Corgi may expose advisor capability metadata to the Governor and UI as
+presentation/configuration data. The registry is descriptive only: it does not
+grant authority, bypass routing, or make advisor output workflow truth.
+
+The machine-readable seed registry lives at
+`orchestration/runtime/advisory/capabilities.json`.
+
+Initial runtime capabilities:
+
+| Capability | Provider | Role access | File access | Cost posture | Intended use |
+| --- | --- | --- | --- | --- | --- |
+| MiniMax | `consult_minimax` | Governor only | none | low/medium | bounded reasoning, option comparison, external perspective |
+| Claude Headless | `consult_claude_headless` | Governor only | read-only target workspace | medium/high | multi-file code inspection and design review |
+| Consult Architect | `consult_architect` | Governor only | root-cause file context | high | repeated or non-trivial debugging on a likely root-cause file |
+
+Development consulting may use similar capabilities through
+`dev_mcp_server.py`, but that is a separate surface for building Corgi itself
+and must not be treated as runtime Governor access.
+
 ## Registration
 The shipped runtime registers only the Governor advisory MCP server through
 `mcp_server.py`, which is a compatibility shim for

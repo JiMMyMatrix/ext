@@ -1148,7 +1148,10 @@ def _apply_governor_semantic_dialogue(
 				now=now,
 				in_response_to_request_id=pending.get("requestId"),
 				presentation_key="permission.needed",
-				presentation_args={"scope": "observe"},
+				presentation_args={
+					"scope": "observe",
+					"contextRef": permission_request["contextRef"],
+				},
 			)
 		)
 		_refresh_snapshot(
@@ -1227,6 +1230,7 @@ def _apply_governor_semantic_work_intent(
 				now=now,
 				in_response_to_request_id=pending.get("requestId"),
 				presentation_key="clarification.requested",
+				presentation_args={"contextRef": clarification["contextRef"]},
 			)
 		)
 		_refresh_snapshot(
@@ -1260,7 +1264,10 @@ def _apply_governor_semantic_work_intent(
 			now=now,
 			in_response_to_request_id=pending.get("requestId"),
 			presentation_key="permission.needed",
-			presentation_args={"scope": required_scope},
+			presentation_args={
+				"scope": required_scope,
+				"contextRef": permission_request["contextRef"],
+			},
 		)
 	)
 	_refresh_snapshot(
@@ -1324,6 +1331,7 @@ def _apply_governor_semantic_clarification(
 			now=now,
 			in_response_to_request_id=pending.get("requestId"),
 			presentation_key="clarification.requested",
+			presentation_args={"contextRef": clarification["contextRef"]},
 		)
 	)
 	_refresh_snapshot(
@@ -3218,7 +3226,10 @@ def handle_submit_prompt(
 						in_response_to_request_id=request_id,
 					),
 					presentation_key="permission.needed",
-					presentation_args={"scope": "observe"},
+					presentation_args={
+						"scope": "observe",
+						"contextRef": permission_request["contextRef"],
+					},
 				)
 			)
 			_refresh_snapshot(
@@ -3322,7 +3333,10 @@ def handle_submit_prompt(
 					in_response_to_request_id=request_id,
 				),
 				presentation_key="permission.needed",
-				presentation_args={"scope": "execute"},
+				presentation_args={
+					"scope": "execute",
+					"contextRef": permission_request["contextRef"],
+				},
 			)
 		)
 		_refresh_snapshot(
@@ -3417,6 +3431,7 @@ def handle_submit_prompt(
 					in_response_to_request_id=request_id,
 				),
 				presentation_key="clarification.requested",
+				presentation_args={"contextRef": clarification["contextRef"]},
 			)
 		)
 		_refresh_snapshot(
@@ -3488,7 +3503,10 @@ def handle_submit_prompt(
 				in_response_to_request_id=request_id,
 			),
 			presentation_key="permission.needed",
-			presentation_args={"scope": required_scope},
+			presentation_args={
+				"scope": required_scope,
+				"contextRef": model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+			},
 		)
 	)
 	_refresh_snapshot(
@@ -3672,7 +3690,10 @@ def handle_answer_clarification(
 				in_response_to_request_id=request_id,
 			),
 			presentation_key="permission.needed",
-			presentation_args={"scope": required_scope},
+			presentation_args={
+				"scope": required_scope,
+				"contextRef": model["snapshot"]["pendingPermissionRequest"]["contextRef"],
+			},
 		)
 	)
 	_refresh_snapshot(

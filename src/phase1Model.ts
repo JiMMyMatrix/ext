@@ -1311,12 +1311,13 @@ export function applyModelAction(
 								{
 									turn_type: turnType,
 									...responseProvenanceForAction(action),
-									presentation_key: 'permission.needed',
-									presentation_args: {
-										scope: permissionRequest.recommendedScope,
-									},
-								}
-							),
+										presentation_key: 'permission.needed',
+										presentation_args: {
+											scope: permissionRequest.recommendedScope,
+											contextRef: permissionRequest.contextRef,
+										},
+									}
+								),
 						],
 						activeForegroundRequestId: model.activeForegroundRequestId ?? action.request_id,
 					};
@@ -1397,12 +1398,13 @@ export function applyModelAction(
 							{
 								turn_type: turnType,
 								...responseProvenanceForAction(action),
-								presentation_key: 'permission.needed',
-								presentation_args: {
-									scope: permissionRequest.recommendedScope,
-								},
-							}
-						),
+									presentation_key: 'permission.needed',
+									presentation_args: {
+										scope: permissionRequest.recommendedScope,
+										contextRef: permissionRequest.contextRef,
+									},
+								}
+							),
 					],
 					activeClarification: undefined,
 					activeForegroundRequestId: action.request_id ?? model.activeForegroundRequestId,
@@ -1461,10 +1463,14 @@ export function applyModelAction(
 							summary: 'Intake clarification',
 						},
 						{
-							turn_type: turnType,
-							...responseProvenanceForAction(action),
-						}
-					),
+								turn_type: turnType,
+								...responseProvenanceForAction(action),
+								presentation_key: 'clarification.requested',
+								presentation_args: {
+									contextRef: clarification.contextRef,
+								},
+							}
+						),
 					createFeedItem(
 						'clarification_request',
 						clarification.title,
@@ -1575,12 +1581,13 @@ export function applyModelAction(
 						{
 							turn_type: 'clarification_reply',
 							...responseProvenanceForAction(action),
-							presentation_key: 'permission.needed',
-							presentation_args: {
-								scope: permissionRequest.recommendedScope,
-							},
-						}
-					),
+								presentation_key: 'permission.needed',
+								presentation_args: {
+									scope: permissionRequest.recommendedScope,
+									contextRef: permissionRequest.contextRef,
+								},
+							}
+						),
 					createFeedItem(
 						'shell_event',
 						'Draft is ready for permission review',

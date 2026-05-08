@@ -25,6 +25,7 @@ import {
 	type SemanticLoopState,
 	type SemanticSidecarRuntime,
 } from './semanticSidecar';
+import { buildRuntimeErgonomicsKernel } from './runtimeErgonomicsKernel';
 
 export const EXECUTION_WINDOW_CONTAINER_ID = 'extExecutionWindowSidebar';
 export const EXECUTION_WINDOW_VIEW_ID = 'ext.executionWindowView';
@@ -223,7 +224,10 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 	private postState() {
 		void this.view?.webview.postMessage({
 			type: 'state',
-			payload: this.model,
+			payload: {
+				...this.model,
+				runtimeErgonomics: buildRuntimeErgonomicsKernel(this.model),
+			},
 		});
 	}
 
@@ -1774,7 +1778,12 @@ export function getExecutionWindowHtml(
 				},
 				actions: collectTextRows(composerActions, 'button'),
 				messages: collectTextRows(feed, '.message, .activity-row, .turn-divider, .feed-empty'),
+				transcript: collectTextRows(feed, '.message'),
+				activity: collectTextRows(feed, '.activity-row'),
 				progress: collectTextRows(feed, '.progress-bullet, .activity-summary'),
+				detailsHidden: Array.from(
+					feed.querySelectorAll('details:not([open]), .inline-actions button')
+				).length,
 				runtimeTimings: cloneForSnapshot(
 					ui.foregroundRequest?.runtimeTimings || ui.lastRuntimeTimings || []
 				),
@@ -2297,38 +2306,186 @@ export function getExecutionWindowHtml(
 			return undefined;
 		}
 
-		function shouldRenderInTranscript(item) {
-			if (item.type === 'artifact_reference' || item.type === 'shell_event') {
-				return false;
+			function runtimeErgonomics() {
+				return model?.runtimeErgonomics && typeof model.runtimeErgonomics === 'object'
+					? model.runtimeErgonomics
+					: {};
 			}
-			if (item.type === 'user_message' && item.turn_type === 'permission_action') {
-				return false;
-			}
-			if (
-				item.type === 'system_status' &&
-				(item.title === 'Dispatch queued' || item.title === 'Executor starting')
-			) {
-				return false;
-			}
-			if (item.type === 'permission_request') {
-				return Boolean(
-					model?.snapshot.pendingPermissionRequest &&
-					item.body === model.snapshot.pendingPermissionRequest.body
-				);
-			}
-			if (item.type === 'clarification_request') {
-				return Boolean(
-					model?.activeClarification &&
-					item.body === model.activeClarification.body
-				);
-			}
-			if (item.type === 'system_status' && !isMeaningfulMilestone(item)) {
-				return false;
-			}
-			return true;
-		}
 
-		function milestoneArtifact(item) {
+			function runtimeActivityForItem(item) {
+				const activities = Array.isArray(runtimeErgonomics().activities)
+					? runtimeErgonomics().activities
+					: [];
+				return activities.find((activity) => activity.sourceRef === item.id);
+			}
+
+			function lifecycleActivitySummaryKey(item) {
+				const title = String(item.title || '').trim().toLowerCase();
+				if (title === 'dispatch queued') {
+					return 'dispatch_queued';
+				}
+				if (title === 'executor starting') {
+					return 'executor_running';
+				}
+				if (title === 'executor completed') {
+					return 'executor_completed';
+				}
+				if (title === 'reviewer completed') {
+					return 'reviewer_completed';
+				}
+				if (title === 'reviewer requested changes') {
+					return 'reviewer_request_changes';
+				}
+				if (title === 'governor decision recorded') {
+					return 'governor_decision_recorded';
+				}
+				return undefined;
+			}
+
+			function summaryForActivityKey(summaryKey, summaryArgs) {
+				if (summaryKey === 'parallel_running') {
+					const count = Number(summaryArgs?.count || 0);
+					return count > 1 ? count + ' executor tasks running' : 'Executor is working';
+				}
+				switch (summaryKey) {
+					case 'semantic_intake':
+						return 'Understanding request';
+					case 'governor_drafting_plan':
+						return 'Governor is drafting the plan';
+					case 'dispatch_queued':
+						return 'Executor is ready';
+					case 'executor_running':
+						return 'Executor is working';
+					case 'executor_completed':
+						return 'Executor finished the task';
+					case 'reviewer_running':
+						return 'Reviewer is checking';
+					case 'reviewer_request_changes':
+						return 'Reviewer requested changes';
+					case 'reviewer_completed':
+						return 'Reviewer checked the result';
+					case 'plan_revision':
+						return 'Governor is revising the plan';
+					case 'advisor_consulting':
+						return 'Governor is consulting an advisor';
+					case 'governor_decision_recorded':
+						return 'Final decision recorded';
+					default:
+						return String(summaryKey || '').replace(/_/g, ' ');
+				}
+			}
+
+			function isAdvisorActivityItem(item) {
+				const text = [
+					item.source_actor,
+					item.source_layer,
+					item.title,
+					item.body,
+				].join('\\n').toLowerCase();
+				return text.includes('advisor') || text.includes('consult');
+			}
+
+			function runtimeFeedItemVisibility(item) {
+				const ergonomics = runtimeErgonomics();
+				const lists = [
+					['transcript', ergonomics.transcriptFeedItemIds],
+					['activity', ergonomics.activityFeedItemIds],
+					['detail', ergonomics.detailFeedItemIds],
+					['internal', ergonomics.internalFeedItemIds],
+				];
+				for (const [visibility, ids] of lists) {
+					if (Array.isArray(ids) && ids.includes(item.id)) {
+						return visibility;
+					}
+				}
+				return undefined;
+			}
+
+			function fallbackFeedItemVisibility(item) {
+				if (item.type === 'artifact_reference' || item.type === 'shell_event') {
+					return 'detail';
+				}
+				if (item.type === 'user_message' && item.turn_type === 'permission_action') {
+					return 'internal';
+				}
+				if (
+					item.type === 'actor_event' &&
+					item.source_actor === 'governor'
+				) {
+					return 'transcript';
+				}
+				if (item.type === 'user_message') {
+					return 'transcript';
+				}
+				if (
+					item.activity ||
+					lifecycleActivitySummaryKey(item) ||
+					(item.type === 'actor_event' && item.source_actor !== 'governor') ||
+					isAdvisorActivityItem(item)
+				) {
+					return 'activity';
+				}
+				if (item.type === 'permission_request') {
+					const itemContextRef = item.presentation_args?.contextRef;
+					const activeContextRef = model?.snapshot.pendingPermissionRequest?.contextRef;
+					if (typeof itemContextRef === 'string' && typeof activeContextRef === 'string') {
+						return itemContextRef === activeContextRef ? 'transcript' : 'internal';
+					}
+					return Boolean(
+						model?.snapshot.pendingPermissionRequest &&
+						item.body === model.snapshot.pendingPermissionRequest.body
+					) ? 'transcript' : 'internal';
+				}
+				if (item.type === 'clarification_request') {
+					const itemContextRef = item.presentation_args?.contextRef;
+					const activeContextRef = model?.activeClarification?.contextRef;
+					if (typeof itemContextRef === 'string' && typeof activeContextRef === 'string') {
+						return itemContextRef === activeContextRef ? 'transcript' : 'internal';
+					}
+					return Boolean(
+						model?.activeClarification &&
+						item.body === model.activeClarification.body
+					) ? 'transcript' : 'internal';
+				}
+				if (item.type === 'system_status' && !isMeaningfulMilestone(item)) {
+					return 'internal';
+				}
+				return 'transcript';
+			}
+
+			function feedItemVisibility(item) {
+				return runtimeFeedItemVisibility(item) || fallbackFeedItemVisibility(item);
+			}
+
+			function shouldRenderInTranscript(item) {
+				return feedItemVisibility(item) === 'transcript';
+			}
+
+			function runtimeGoalDisplay(snapshot, stale) {
+				const goal = runtimeErgonomics().goal;
+				if (!goal || typeof goal !== 'object') {
+					return goalDisplayState(snapshot, stale);
+				}
+				return {
+					title: compactText(goal.goal || railTitle(snapshot), 96),
+					step: goal.step || goalStepLabel(snapshot),
+					status: goal.status || statusLabel(snapshot, stale),
+				};
+			}
+
+			function runtimeActionLabel(actionId, fallbackLabel) {
+				const ergonomics = runtimeErgonomics();
+				const candidates = [
+					ergonomics.primaryAction,
+					...(Array.isArray(ergonomics.secondaryActions)
+						? ergonomics.secondaryActions
+						: []),
+				];
+				const match = candidates.find((action) => action?.id === actionId);
+				return match?.label || fallbackLabel;
+			}
+
+			function milestoneArtifact(item) {
 			if (!model || !item?.source_artifact_ref) {
 				return undefined;
 			}
@@ -3289,7 +3446,7 @@ export function getExecutionWindowHtml(
 
 			const snapshot = model.snapshot;
 			const stale = isSnapshotStale(snapshot);
-			const goal = goalDisplayState(snapshot, stale);
+				const goal = runtimeGoalDisplay(snapshot, stale);
 			headerContent.innerHTML =
 				'<div class="goal-main">' +
 					'<span class="status-dot ' + statusDotClass(snapshot, stale) + '"></span>' +
@@ -3368,19 +3525,19 @@ export function getExecutionWindowHtml(
 					: ['execute_plan', 'revise_plan'];
 				if (actions.includes('execute_plan')) {
 					buttons.push(
-						'<button type="button" data-action="execute_plan" data-context-ref="' +
-						escapeHtml(planReady.contextRef) +
-						'">Execute plan</button>'
-					);
+							'<button type="button" data-action="execute_plan" data-context-ref="' +
+							escapeHtml(planReady.contextRef) +
+							'">' + escapeHtml(runtimeActionLabel('execute_plan', 'Execute plan')) + '</button>'
+						);
+					}
+					if (actions.includes('revise_plan')) {
+						buttons.push(
+							'<button type="button" class="secondary" data-action="revise_plan" data-context-ref="' +
+							escapeHtml(planReady.contextRef) +
+							'">' + escapeHtml(runtimeActionLabel('revise_plan', 'Revise')) + '</button>'
+						);
+					}
 				}
-				if (actions.includes('revise_plan')) {
-					buttons.push(
-						'<button type="button" class="secondary" data-action="revise_plan" data-context-ref="' +
-						escapeHtml(planReady.contextRef) +
-						'">Revise</button>'
-					);
-				}
-			}
 			if (
 				isPlanReady(snapshot) &&
 				model.planReadyRequest.contextRef === ui.pendingPlanContextRef
@@ -3413,12 +3570,23 @@ export function getExecutionWindowHtml(
 			return ' for ' + Math.round(ms / 100) / 10 + 's';
 		}
 
-		function activityLabel(item) {
-			const activity = item.activity ?? {};
-			const path = activity.path || item.artifact?.path;
-			const query = activity.query;
-			const command = activity.command;
-			const elapsed = formatElapsed(activity.elapsedMs);
+			function activityLabel(item) {
+				const runtimeActivity = runtimeActivityForItem(item);
+				if (runtimeActivity?.summary) {
+					return runtimeActivity.summary;
+				}
+				const lifecycleSummaryKey = lifecycleActivitySummaryKey(item);
+				if (lifecycleSummaryKey) {
+					return summaryForActivityKey(lifecycleSummaryKey, {});
+				}
+				if (isAdvisorActivityItem(item)) {
+					return summaryForActivityKey('advisor_consulting', {});
+				}
+				const activity = item.activity ?? {};
+				const path = activity.path || item.artifact?.path;
+				const query = activity.query;
+				const command = activity.command;
+				const elapsed = formatElapsed(activity.elapsedMs);
 
 			switch (activity.kind) {
 				case 'read':
@@ -3781,12 +3949,24 @@ export function getExecutionWindowHtml(
 
 		function renderActivity(item) {
 			const activity = item.activity ?? { state: item.type === 'error' ? 'failed' : 'completed' };
-			const state = activity.state || 'completed';
-			const summary = item.type === 'artifact_reference'
-				? item.artifact.summary
-				: activity.summary && activity.kind !== 'status'
-					? activity.summary
-					: undefined;
+			const runtimeActivity = runtimeActivityForItem(item);
+			const lifecycleSummaryKey = lifecycleActivitySummaryKey(item);
+			const state =
+				lifecycleSummaryKey === 'dispatch_queued' ||
+				lifecycleSummaryKey === 'executor_running' ||
+				lifecycleSummaryKey === 'reviewer_running'
+					? 'running'
+					: runtimeActivity?.severity === 'error'
+						? 'failed'
+						: activity.state || 'completed';
+			const summary =
+				runtimeActivity && runtimeActivity.summary !== activityLabel(item)
+					? runtimeActivity.summary
+					: item.type === 'artifact_reference'
+						? item.artifact.summary
+						: activity.summary && activity.kind !== 'status'
+							? activity.summary
+							: undefined;
 
 			return (
 				'<article class="activity-row is-' + escapeHtml(state) + ' ' +
@@ -3797,6 +3977,7 @@ export function getExecutionWindowHtml(
 						'<div class="activity-label">' + escapeHtml(activityLabel(item)) + '</div>' +
 						(summary ? '<div class="activity-summary">' + escapeHtml(summary) + '</div>' : '') +
 						renderArtifactActions(item) +
+						renderSourceActionForItem(item) +
 						renderDetails(item) +
 					'</div>' +
 				'</article>'
@@ -3975,12 +4156,12 @@ export function getExecutionWindowHtml(
 		}
 
 		function renderFeedItem(item) {
-			if (!shouldRenderInTranscript(item)) {
-				return '';
-			}
-
-			if (item.activity) {
+			const visibility = feedItemVisibility(item);
+			if (visibility === 'activity') {
 				return renderActivity(item);
+			}
+			if (visibility !== 'transcript') {
+				return '';
 			}
 
 			return renderMessage(item);

@@ -238,6 +238,44 @@ fallbacks for compatibility.
 - permission, clarification, system, and error items should prefer mapped
   presentation copy when `presentation_key` is present
 
+## Runtime Ergonomics Kernel
+The extension may derive a Runtime Ergonomics Kernel from authoritative
+snapshot/feed state before rendering. This kernel is presentation-only.
+
+It may emit normalized activity events with:
+- `requestId`
+- `workRef`
+- `attemptNumber`
+- `actor`
+- `phase`
+- `severity`
+- `summaryKey`
+- `summaryArgs`
+- `visibility`
+- `sourceRef`
+
+It may also expose presentation indexes such as transcript, activity, detail,
+and internal feed item ids so the webview can avoid re-deriving those
+boundaries locally.
+
+The kernel must not create workflow truth, mutate session state, authorize
+actions, or replace orchestration validation.
+
+Visibility policy:
+- `transcript` is for user messages, Governor prose, and final concise
+  human-facing outcomes
+- `activity` is for short operational rows such as `Executor is working`,
+  `Reviewer is checking`, `Governor is revising the plan`, or `2 executor
+  tasks running`
+- `detail` is for artifact-backed sources, runtime timings, dispatch/review
+  refs, and advisor output
+- `internal` is for request ids, session refs, context refs, semantic reasons,
+  app-server ids, protocol payloads, and provenance fields
+
+Routine Executor, Reviewer, dispatch, advisor, validation, retry, and
+finalization events should render as brief activity first. Governor prose
+remains the main readable transcript layer.
+
 ## Command Boundary
 The extension should talk to the project orchestration layer through:
 - `python3 orchestration/scripts/orchestrate.py session ...`

@@ -35,6 +35,11 @@ import {
 	getExecutionWindowHtml,
 	OPEN_EXECUTION_WINDOW_COMMAND_ID,
 } from '../executionWindowPanel';
+import {
+	buildRuntimeErgonomicsKernel,
+	runtimeVisibilityForFeedItem,
+	summaryForActivity,
+} from '../runtimeErgonomicsKernel';
 
 const PACKAGE_JSON_PATH = path.resolve(__dirname, '../../package.json');
 const LAUNCH_JSON_PATH = path.resolve(__dirname, '../../.vscode/launch.json');
@@ -91,6 +96,10 @@ const GOVERNOR_RUNTIME_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/governorRuntime.ts'
 );
+const RUNTIME_ERGONOMICS_KERNEL_TS_PATH = path.resolve(
+	__dirname,
+	'../../src/runtimeErgonomicsKernel.ts'
+);
 const GOVERNOR_RUNTIME_CONFIG_PATH = path.resolve(
 	__dirname,
 	'../../orchestration/runtime/config.toml'
@@ -117,7 +126,12 @@ const ADVISORY_MCP_SERVER_PATH = path.resolve(
 	__dirname,
 	'../../orchestration/runtime/advisory/mcp_server.py'
 );
+const ADVISORY_CAPABILITIES_PATH = path.resolve(
+	__dirname,
+	'../../orchestration/runtime/advisory/capabilities.json'
+);
 const ADVISORY_DOC_PATH = path.resolve(__dirname, '../../orchestration/advisory.md');
+const UX_CONTRACT_PATH = path.resolve(__dirname, '../../orchestration/contracts/ux.md');
 const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
 	__dirname,
 	'../../src/test/fixtures/semantic-routing.json'
@@ -202,7 +216,10 @@ type WebviewSnapshotPayload = {
 	goalStrip: string;
 	actions: SnapshotTextRow[];
 	messages: SnapshotTextRow[];
+	transcript: SnapshotTextRow[];
+	activity: SnapshotTextRow[];
 	progress: SnapshotTextRow[];
+	detailsHidden: number;
 	composer: {
 		context: string;
 		hint: string;
@@ -435,7 +452,13 @@ function renderWebviewSnapshot(model: ExecutionWindowModel): WebviewSnapshotPayl
 	};
 
 	vm.runInNewContext(script, context);
-	fakeWindow.dispatchMessage({ type: 'state', payload: model });
+	fakeWindow.dispatchMessage({
+		type: 'state',
+		payload: {
+			...model,
+			runtimeErgonomics: buildRuntimeErgonomicsKernel(model),
+		},
+	});
 
 	const snapshot = postedMessages
 		.filter((message) => message.type === 'webview_snapshot')
@@ -1087,6 +1110,38 @@ suite('Corgi Webview UX', () => {
 		assert.ok(advisoryDoc.includes('for building Corgi itself'));
 	});
 
+	test('documents runtime ergonomics as presentation-only and advisor capabilities as descriptive', () => {
+		const uxContract = fs.readFileSync(UX_CONTRACT_PATH, 'utf8');
+		const advisoryDoc = fs.readFileSync(ADVISORY_DOC_PATH, 'utf8');
+		const kernelSource = fs.readFileSync(RUNTIME_ERGONOMICS_KERNEL_TS_PATH, 'utf8');
+		const capabilities = JSON.parse(
+			fs.readFileSync(ADVISORY_CAPABILITIES_PATH, 'utf8')
+		) as { capabilities: Array<{ provider: string; roleAccess: string[] }> };
+
+		assert.ok(uxContract.includes('## Runtime Ergonomics Kernel'));
+		assert.ok(uxContract.includes('presentation-only'));
+		assert.ok(uxContract.includes('must not create workflow truth'));
+		assert.ok(uxContract.includes('`activity` is for short operational rows'));
+		assert.ok(uxContract.includes('`internal` is for request ids, session refs, context refs'));
+		assert.ok(advisoryDoc.includes('## Runtime Capability Registry'));
+		assert.ok(advisoryDoc.includes('orchestration/runtime/advisory/capabilities.json'));
+		assert.ok(advisoryDoc.includes('| MiniMax | `consult_minimax` | Governor only | none |'));
+		assert.ok(advisoryDoc.includes('| Claude Headless | `consult_claude_headless` | Governor only | read-only target workspace |'));
+		assert.ok(advisoryDoc.includes('descriptive only'));
+		assert.ok(kernelSource.includes('RuntimeActivityVisibility'));
+		assert.ok(kernelSource.includes('activityFeedItemIds'));
+		assert.ok(kernelSource.includes('governor_decision_recorded'));
+		assert.deepStrictEqual(
+			capabilities.capabilities.map((capability) => capability.provider),
+			['consult_minimax', 'consult_claude_headless', 'consult_architect']
+		);
+		assert.ok(
+			capabilities.capabilities.every((capability) =>
+				capability.roleAccess.includes('governor')
+			)
+		);
+	});
+
 	test('permission continuation collapses progress into a specific wait state', () => {
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 
@@ -1137,8 +1192,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('planRevisionMode'));
 		assert.ok(webviewSource.includes("type: 'execute_plan'"));
 		assert.ok(webviewSource.includes("type: 'revise_plan'"));
-		assert.ok(webviewSource.includes('">Execute plan</button>'));
-		assert.ok(webviewSource.includes('">Revise</button>'));
+		assert.ok(webviewSource.includes("runtimeActionLabel('execute_plan', 'Execute plan')"));
+		assert.ok(webviewSource.includes("runtimeActionLabel('revise_plan', 'Revise')"));
 		assert.ok(webviewSource.includes('Send to Governor'));
 	});
 
@@ -1273,22 +1328,270 @@ suite('Corgi Webview UX', () => {
 
 		const snapshot = renderWebviewSnapshot(model);
 		const messageText = snapshot.messages.map((message) => message.text).join('\n');
-		const resultSummaries = snapshot.messages.filter((message) =>
-			message.className.includes('result-summary')
-		);
+		const activityText = snapshot.activity.map((message) => message.text).join('\n');
+		const transcriptText = snapshot.transcript.map((message) => message.text).join('\n');
 
 		assert.match(snapshot.goalStrip, /Goal: Analyze the repository architecture\./);
 		assert.match(snapshot.goalStrip, /Step: Reviewer checked the result/);
 		assert.match(snapshot.goalStrip, /Done/);
 		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
-		assert.ok(resultSummaries.length >= 2);
-		assert.match(messageText, /Executor wrote a bounded result artifact/);
+		assert.match(activityText, /Executor finished the task/);
 		assert.match(messageText, /Reviewer checked the result/);
+		assert.match(transcriptText, /Objective: analyze the repository architecture/);
 		assert.match(messageText, /View source/);
 		assert.ok(!messageText.includes('Execute plan'));
 		assert.ok(!messageText.includes('reviewer_completed'));
 		assert.ok(!snapshot.composer.context.includes('Reviewer'));
 		assert.deepStrictEqual(snapshot.progress, []);
+	});
+
+	test('runtime ergonomics kernel separates transcript, activity, detail, and internal surfaces', () => {
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			activeForegroundRequestId: 'req-kernel',
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Analyze the repository architecture.',
+				currentActor: 'reviewer',
+				currentStage: 'reviewer_completed',
+				currentWorkRef: 'lane/main/work-123',
+				currentAttemptNumber: 2,
+			},
+			feed: [
+				{
+					id: 'governor',
+					type: 'actor_event',
+					title: 'Governor responded',
+					body: 'Objective: analyze the repo.',
+					timestamp: '2026-04-10T10:00:00.000Z',
+					authoritative: true,
+					source_actor: 'governor',
+				},
+				{
+					id: 'executor',
+					type: 'system_status',
+					title: 'Executor completed',
+					body: 'Executor wrote .agent/dispatches/lane/main/dispatch-1/result.json.',
+					timestamp: '2026-04-10T10:00:10.000Z',
+					authoritative: true,
+					source_artifact_ref: '.agent/dispatches/lane/main/dispatch-1/result.json',
+				},
+				{
+					id: 'artifact',
+					type: 'artifact_reference',
+					title: 'Result artifact',
+					timestamp: '2026-04-10T10:00:11.000Z',
+					authoritative: true,
+					artifact: {
+						id: 'artifact',
+						label: 'result.json',
+						path: '.agent/dispatches/lane/main/dispatch-1/result.json',
+						authoritative: true,
+					},
+				},
+				{
+					id: 'permission-action',
+					type: 'user_message',
+					title: 'Permission selected',
+					body: 'Execute plan',
+					timestamp: '2026-04-10T10:00:12.000Z',
+					authoritative: false,
+					turn_type: 'permission_action',
+				},
+			],
+		};
+
+		const kernel = buildRuntimeErgonomicsKernel(model);
+		const activityText = kernel.activities.map((activity) => activity.summary).join('\n');
+
+		assert.deepStrictEqual(kernel.transcriptFeedItemIds, ['governor']);
+		assert.deepStrictEqual(kernel.activityFeedItemIds, ['executor']);
+		assert.deepStrictEqual(kernel.detailFeedItemIds, ['artifact']);
+		assert.deepStrictEqual(kernel.internalFeedItemIds, ['permission-action']);
+		assert.match(activityText, /Executor finished the task/);
+		assert.ok(!activityText.includes('dispatch-1'));
+		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[0]), 'transcript');
+		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[1]), 'activity');
+		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[2]), 'detail');
+		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[3]), 'internal');
+	});
+
+	test('runtime ergonomics kernel hides stale blocking surfaces from transcript indexes', () => {
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			activeClarification: undefined,
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				pendingPermissionRequest: undefined,
+			},
+			feed: [
+				{
+					id: 'stale-permission',
+					type: 'permission_request',
+					title: 'Permission needed',
+					body: 'Choose plan if you want Corgi to continue.',
+					timestamp: '2026-04-10T10:00:00.000Z',
+					authoritative: true,
+				},
+				{
+					id: 'stale-clarification',
+					type: 'clarification_request',
+					title: 'Clarification required',
+					body: 'What should Corgi focus on?',
+					timestamp: '2026-04-10T10:00:01.000Z',
+					authoritative: true,
+				},
+				{
+					id: 'ready',
+					type: 'system_status',
+					title: 'Ready when you are',
+					body: 'Ask Corgi to work on this repo.',
+					timestamp: '2026-04-10T10:00:02.000Z',
+					authoritative: true,
+				},
+			],
+		};
+
+		const kernel = buildRuntimeErgonomicsKernel(model);
+
+		assert.deepStrictEqual(kernel.transcriptFeedItemIds, []);
+		assert.deepStrictEqual(kernel.internalFeedItemIds, [
+			'stale-permission',
+			'stale-clarification',
+			'ready',
+		]);
+	});
+
+	test('runtime ergonomics kernel matches active blocking surfaces by context ref', () => {
+		const body = 'Choose plan if you want Corgi to continue this request.';
+		const clarificationBody = 'What should Corgi focus on?';
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			activeClarification: {
+				id: 'clarification-new',
+				contextRef: 'clarification-new',
+				title: 'Clarification required',
+				body: clarificationBody,
+				allowFreeText: true,
+				requestedAt: '2026-04-10T10:00:04.000Z',
+			},
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				pendingPermissionRequest: {
+					id: 'permission-new',
+					contextRef: 'permission-new',
+					title: 'Permission needed',
+					body,
+					requestedAt: '2026-04-10T10:00:03.000Z',
+					recommendedScope: 'plan',
+					allowedScopes: ['plan', 'execute'],
+				},
+			},
+			feed: [
+				{
+					id: 'permission-old',
+					type: 'permission_request',
+					title: 'Permission needed',
+					body,
+					timestamp: '2026-04-10T10:00:00.000Z',
+					authoritative: true,
+					presentation_args: { contextRef: 'permission-old', scope: 'plan' },
+				},
+				{
+					id: 'permission-new',
+					type: 'permission_request',
+					title: 'Permission needed',
+					body,
+					timestamp: '2026-04-10T10:00:03.000Z',
+					authoritative: true,
+					presentation_args: { contextRef: 'permission-new', scope: 'plan' },
+				},
+				{
+					id: 'clarification-old',
+					type: 'clarification_request',
+					title: 'Clarification required',
+					body: clarificationBody,
+					timestamp: '2026-04-10T10:00:01.000Z',
+					authoritative: true,
+					presentation_args: { contextRef: 'clarification-old' },
+				},
+				{
+					id: 'clarification-new',
+					type: 'clarification_request',
+					title: 'Clarification required',
+					body: clarificationBody,
+					timestamp: '2026-04-10T10:00:04.000Z',
+					authoritative: true,
+					presentation_args: { contextRef: 'clarification-new' },
+				},
+			],
+		};
+
+		const kernel = buildRuntimeErgonomicsKernel(model);
+
+		assert.deepStrictEqual(kernel.transcriptFeedItemIds, [
+			'permission-new',
+			'clarification-new',
+		]);
+		assert.deepStrictEqual(kernel.internalFeedItemIds, [
+			'permission-old',
+			'clarification-old',
+		]);
+	});
+
+	test('runtime ergonomics kernel collapses repeated activity and names safe parallel work', () => {
+		const base = createInitialModel('2026-04-10T10:00:00.000Z');
+		const model: ExecutionWindowModel = {
+			...base,
+			activeForegroundRequestId: 'req-parallel',
+			snapshot: {
+				...base.snapshot,
+				task: 'Build the static pet diary app.',
+				currentActor: 'executor',
+				currentStage: 'plan_executing',
+				runState: 'running',
+				currentWorkRef: 'work-pet-diary',
+				currentAttemptNumber: 1,
+				activeParallelDispatchCount: 2,
+			},
+			feed: [
+				{
+					id: 'executor-starting-1',
+					type: 'system_status',
+					title: 'Executor starting',
+					body: 'Executor is starting.',
+					timestamp: '2026-04-10T10:00:10.000Z',
+					authoritative: true,
+					in_response_to_request_id: 'req-parallel',
+				},
+				{
+					id: 'executor-starting-2',
+					type: 'system_status',
+					title: 'Executor starting',
+					body: 'Executor is still starting.',
+					timestamp: '2026-04-10T10:00:11.000Z',
+					authoritative: true,
+					in_response_to_request_id: 'req-parallel',
+				},
+			],
+		};
+
+		const kernel = buildRuntimeErgonomicsKernel(model);
+		const executorRunningEvents = kernel.activities.filter(
+			(activity) => activity.summaryKey === 'executor_running'
+		);
+
+		assert.strictEqual(executorRunningEvents.length, 1);
+		assert.deepStrictEqual(kernel.activityFeedItemIds, ['executor-starting-2']);
+		assert.ok(kernel.internalFeedItemIds.includes('executor-starting-1'));
+		assert.strictEqual(
+			summaryForActivity('parallel_running', { count: 2 }),
+			'2 executor tasks running'
+		);
+		assert.match(
+			kernel.activities.map((activity) => activity.summary).join('\n'),
+			/2 executor tasks running/
+		);
 	});
 
 	test('webview snapshot keeps plan-ready actions compact and action-bound', () => {
@@ -1335,12 +1638,18 @@ suite('Corgi Webview UX', () => {
 		};
 
 		const snapshot = renderWebviewSnapshot(model);
+		const kernel = buildRuntimeErgonomicsKernel(model);
 		const actionText = snapshot.actions.map((action) => action.text);
 		const executeAction = snapshot.actions.find((action) => action.text === 'Execute plan');
 		const reviseAction = snapshot.actions.find((action) => action.text === 'Revise');
 
 		assert.match(snapshot.goalStrip, /Step: Plan ready/);
 		assert.deepStrictEqual(actionText, ['Execute plan', 'Revise']);
+		assert.strictEqual(kernel.primaryAction?.label, 'Execute plan');
+		assert.deepStrictEqual(
+			kernel.secondaryActions.map((action) => action.label),
+			['Revise']
+		);
 		assert.ok(executeAction);
 		assert.ok(!executeAction.className.includes('secondary'));
 		assert.ok(reviseAction?.className.includes('secondary'));
@@ -1441,7 +1750,7 @@ suite('Corgi Webview UX', () => {
 
 		const snapshot = renderWebviewSnapshot(model);
 
-		assert.match(snapshot.goalStrip, /Step: 2 tasks running/);
+		assert.match(snapshot.goalStrip, /Step: 2 executor tasks running/);
 		assert.ok(!snapshot.goalStrip.includes('parallel-set-1'));
 	});
 
@@ -2048,7 +2357,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('composerContext'));
 		assert.ok(html.includes('composerActions'));
 		assert.ok(html.includes('goal-strip'));
-		assert.ok(html.includes('goalDisplayState'));
+		assert.ok(html.includes('runtimeGoalDisplay'));
+		assert.ok(html.includes('runtimeActionLabel'));
 		assert.ok(html.includes('goalStrip: compactText'));
 		assert.ok(html.includes('View source'));
 		assert.ok(html.includes('foregroundRequest'));
@@ -2136,10 +2446,13 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('candidateRenderedAt >= existingRenderedAt'));
 		assert.ok(html.includes('function collectWebviewSnapshot(reason)'));
 		assert.ok(html.includes('function cloneForSnapshot(value)'));
-		assert.ok(html.includes("type: 'webview_snapshot'"));
-		assert.ok(html.includes('messages: collectTextRows(feed'));
-		assert.ok(html.includes("actions: collectTextRows(composerActions, 'button')"));
-		assert.ok(html.includes('model: {'));
+			assert.ok(html.includes("type: 'webview_snapshot'"));
+			assert.ok(html.includes('messages: collectTextRows(feed'));
+			assert.ok(html.includes('transcript: collectTextRows(feed'));
+			assert.ok(html.includes('activity: collectTextRows(feed'));
+			assert.ok(html.includes('detailsHidden:'));
+			assert.ok(html.includes("actions: collectTextRows(composerActions, 'button')"));
+			assert.ok(html.includes('model: {'));
 		assert.ok(html.includes('feed: cloneForSnapshot(feedItems)'));
 		assert.ok(html.includes('activeClarification: cloneForSnapshot(model?.activeClarification)'));
 		assert.ok(html.includes('autoStep: {'));

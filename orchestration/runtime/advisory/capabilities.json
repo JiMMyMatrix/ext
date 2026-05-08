@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "capabilities": [
+    {
+      "id": "minimax",
+      "provider": "consult_minimax",
+      "roleAccess": ["governor"],
+      "fileAccess": "none",
+      "costPosture": "low/medium",
+      "intendedUse": "Bounded reasoning, option comparison, and external perspective without project filesystem access."
+    },
+    {
+      "id": "claude_headless",
+      "provider": "consult_claude_headless",
+      "roleAccess": ["governor"],
+      "fileAccess": "read-only target workspace",
+      "costPosture": "medium/high",
+      "intendedUse": "Read-only multi-file code inspection and design review."
+    },
+    {
+      "id": "consult_architect",
+      "provider": "consult_architect",
+      "roleAccess": ["governor"],
+      "fileAccess": "root-cause file context",
+      "costPosture": "high",
+      "intendedUse": "Repeated or non-trivial debugging on a likely root-cause file."
+    }
+  ]
+}
