@@ -47,15 +47,15 @@ export interface RuntimeErgonomicsState {
 
 const SUMMARY_COPY: Record<string, string> = {
 	semantic_intake: 'Understanding request',
-	governor_drafting_plan: 'Governor is drafting the plan',
-	dispatch_queued: 'Executor is ready',
-	executor_running: 'Executor is working',
-	executor_completed: 'Executor finished the task',
-	reviewer_running: 'Reviewer is checking',
-	reviewer_request_changes: 'Reviewer requested changes',
-	reviewer_completed: 'Reviewer checked the result',
-	plan_revision: 'Governor is revising the plan',
-	advisor_consulting: 'Governor is consulting an advisor',
+	governor_drafting_plan: 'Drafting plan',
+	dispatch_queued: 'Ready to write',
+	executor_running: 'Writing',
+	executor_completed: 'Changes written',
+	reviewer_running: 'Checking',
+	reviewer_request_changes: 'Changes requested',
+	reviewer_completed: 'Checked result',
+	plan_revision: 'Revising plan',
+	advisor_consulting: 'Consulting advisor',
 	governor_decision_recorded: 'Final decision recorded',
 };
 
@@ -82,7 +82,7 @@ export function summaryForActivity(
 ): string {
 	if (summaryKey === 'parallel_running') {
 		const count = Number(summaryArgs.count || 0);
-		return count > 1 ? `${count} executor tasks running` : 'Executor is working';
+		return count > 1 ? `${count} tasks running` : 'Writing';
 	}
 	return SUMMARY_COPY[summaryKey] ?? summaryKey.replace(/_/g, ' ');
 }
@@ -366,25 +366,25 @@ function goalDisplay(model: ExecutionWindowModel): RuntimeGoalDisplay {
 	} else if (isPlanReady(model)) {
 		step = `Plan ready${nextAttemptSuffix(model)}`;
 	} else if (snapshot.currentStage === 'plan_executing') {
-		step = `Executor running${attempt}`;
+		step = `Writing${attempt}`;
 	} else if (isDispatchQueued(model)) {
-		step = `Executor is ready${attempt}`;
+		step = `Ready to write${attempt}`;
 	} else if (isGovernorDecisionRecorded(model)) {
 		step = snapshot.latestGovernorDecision
 			? `Final decision ${summarizeToken(snapshot.latestGovernorDecision, '')}${attempt}`
 			: `Final decision recorded${attempt}`;
 	} else if (isReviewerCompleted(model)) {
 		step = snapshot.latestReviewVerdict
-			? `Reviewer ${summarizeToken(snapshot.latestReviewVerdict, '')}${attempt}`
-			: `Reviewer checked the result${attempt}`;
+			? `Check ${summarizeToken(snapshot.latestReviewVerdict, '')}${attempt}`
+			: `Checked result${attempt}`;
 	} else if (isExecutorCompleted(model)) {
-		step = `Executor wrote the result${attempt}`;
+		step = `Changes written${attempt}`;
 	} else if (snapshot.currentActor === 'governor' && snapshot.runState === 'running') {
-		step = 'Governor is planning';
+		step = 'Planning';
 	} else if (snapshot.currentActor === 'executor') {
-		step = `Executor is working${attempt}`;
+		step = `Writing${attempt}`;
 	} else if (snapshot.currentActor === 'reviewer') {
-		step = `Reviewer is checking${attempt}`;
+		step = `Checking${attempt}`;
 	} else if (snapshot.runState === 'running') {
 		step = 'Corgi is working';
 	}
@@ -399,7 +399,7 @@ function goalDisplay(model: ExecutionWindowModel): RuntimeGoalDisplay {
 	} else if (snapshot.currentStage === 'plan_executing') {
 		status = 'Running';
 	} else if (isDispatchQueued(model)) {
-		status = 'Executor ready';
+		status = 'Ready to write';
 	} else if (isGovernorDecisionRecorded(model)) {
 		status = 'Finalized';
 	} else if (isReviewerCompleted(model) || isExecutorCompleted(model)) {

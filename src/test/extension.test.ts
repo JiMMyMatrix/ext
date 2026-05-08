@@ -220,6 +220,7 @@ type WebviewSnapshotPayload = {
 	messages: SnapshotTextRow[];
 	transcript: SnapshotTextRow[];
 	activity: SnapshotTextRow[];
+	activityOverflow: SnapshotTextRow[];
 	progress: SnapshotTextRow[];
 	detailsHidden: number;
 	composer: {
@@ -341,7 +342,7 @@ class FakeWebviewElement {
 		if (selector === 'button') {
 			return parseElementsBySelector(this.innerHTML, ['button'], []);
 		}
-		return parseElementsBySelector(this.innerHTML, ['article', 'div', 'li'], selectorClasses(selector));
+		return parseElementsBySelector(this.innerHTML, ['article', 'div', 'li', 'details'], selectorClasses(selector));
 	}
 }
 
@@ -1168,21 +1169,21 @@ suite('Corgi Webview UX', () => {
 
 		assert.ok(clientSource.includes("runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake'"));
 		assert.ok(clientSource.includes('firstDeltaMessage'));
-		assert.ok(clientSource.includes('Governor is drafting the plan'));
-		assert.ok(clientSource.includes('Governor plan draft preview'));
+		assert.ok(clientSource.includes('Drafting plan'));
+		assert.ok(clientSource.includes('Plan draft preview'));
 		assert.ok(transportSource.includes('runtimeKind: event.runtimeKind'));
 		assert.ok(webviewSource.includes("event.runtimeKind === 'semantic_intake'"));
 		assert.ok(webviewSource.includes("event.runtimeKind === 'plan'"));
 		assert.ok(webviewSource.includes('if (event.model)'));
 		assert.ok(webviewSource.includes('this.model = event.model'));
 		assert.ok(webviewSource.includes('Understanding request'));
-		assert.ok(webviewSource.includes('Governor is drafting the plan'));
-		assert.ok(webviewSource.includes('Still drafting the plan'));
+		assert.ok(webviewSource.includes('Drafting plan'));
+		assert.ok(webviewSource.includes('Still drafting plan'));
 		assert.ok(webviewSource.includes('runtimeTimings'));
 		assert.ok(webviewSource.includes('lastRuntimeTimings'));
 		assert.ok(webviewSource.includes('uiLagMs'));
-		assert.ok(webviewSource.includes('Preparing Governor handoff'));
-		assert.ok(webviewSource.includes('Governor request sent'));
+		assert.ok(webviewSource.includes('Preparing request'));
+		assert.ok(webviewSource.includes('Request sent'));
 		assert.match(
 			webviewSource,
 			/snapshot\.currentActor === 'governor'[\s\S]*?snapshot\.currentStage === 'semantic_intake'[\s\S]*?snapshot\.runState === 'running'/
@@ -1250,13 +1251,13 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('function setDraftPreviewTarget(value)'));
 		assert.ok(webviewSource.includes('function scheduleDraftPreviewTyping()'));
 		assert.ok(webviewSource.includes('function scheduleGovernorWaitHeartbeat(event)'));
-		assert.ok(webviewSource.includes('Still waiting for the Governor'));
-		assert.ok(webviewSource.includes('Governor is taking a deeper pass'));
+		assert.ok(webviewSource.includes('Still waiting for reply'));
+		assert.ok(webviewSource.includes('Taking a deeper pass'));
 		assert.ok(webviewSource.includes('nextDraftPreviewSlice(current, target)'));
 		assert.ok(webviewSource.includes("scheduleWebviewSnapshot('draft_preview_type')"));
 		assert.ok(webviewSource.includes("scheduleWebviewSnapshot('governor_wait_heartbeat')"));
 		assert.ok(webviewSource.includes('draft-preview'));
-		assert.ok(webviewSource.includes('Governor draft'));
+		assert.ok(webviewSource.includes('Draft preview'));
 		assert.ok(
 			!/function ensureForegroundRequest[\s\S]*?\(state \|\| ''\)[\s\S]*?\n\t\tfunction latestForegroundUserTextFromModel/.test(
 				webviewSource
@@ -1375,9 +1376,9 @@ suite('Corgi Webview UX', () => {
 		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
 
 		assert.ok(webviewSource.includes('function setForegroundSingleBullet(label, state, hint) {'));
-		assert.ok(webviewSource.includes('Waiting for a reply from the Governor...'));
+		assert.ok(webviewSource.includes('Waiting for reply'));
 		assert.ok(webviewSource.includes("scope === 'execute'"));
-		assert.ok(webviewSource.includes('Starting execution...'));
+		assert.ok(webviewSource.includes('Starting write'));
 		assert.ok(!webviewSource.includes('Applying your permission choice...'));
 		assert.ok(
 			!webviewSource.includes(
@@ -1423,7 +1424,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes("type: 'revise_plan'"));
 		assert.ok(webviewSource.includes("runtimeActionLabel('execute_plan', 'Execute plan')"));
 		assert.ok(webviewSource.includes("runtimeActionLabel('revise_plan', 'Revise')"));
-		assert.ok(webviewSource.includes('Send to Governor'));
+		assert.ok(webviewSource.includes('Send revision'));
 	});
 
 	test('presentation mapping keeps non-governor copy controller-owned', () => {
@@ -1443,7 +1444,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes("item.title === 'Executor completed'"));
 		assert.ok(webviewSource.includes('function renderCompactResultMessage(item, copy, renderedBody)'));
 		assert.ok(webviewSource.includes('message assistant result-summary'));
-		assert.ok(webviewSource.includes('Reviewer checked the result'));
+		assert.ok(webviewSource.includes('Checked result'));
 		assert.ok(webviewSource.includes('escapeHtml(body)'));
 
 		const permissionModel = applyModelAction(createInitialModel('2026-04-10T10:00:00.000Z'), {
@@ -1561,11 +1562,11 @@ suite('Corgi Webview UX', () => {
 		const transcriptText = snapshot.transcript.map((message) => message.text).join('\n');
 
 		assert.match(snapshot.goalStrip, /Goal: Analyze the repository architecture\./);
-		assert.match(snapshot.goalStrip, /Step: Reviewer checked the result/);
+		assert.match(snapshot.goalStrip, /Step: Checked result/);
 		assert.match(snapshot.goalStrip, /Done/);
 		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
-		assert.match(activityText, /Executor finished the task/);
-		assert.match(messageText, /Reviewer checked the result/);
+		assert.match(activityText, /Changes written/);
+		assert.match(messageText, /Checked result/);
 		assert.match(transcriptText, /Objective: analyze the repository architecture/);
 		assert.match(messageText, /View source/);
 		assert.ok(!messageText.includes('Execute plan'));
@@ -1637,12 +1638,61 @@ suite('Corgi Webview UX', () => {
 		assert.deepStrictEqual(kernel.activityFeedItemIds, ['executor']);
 		assert.deepStrictEqual(kernel.detailFeedItemIds, ['artifact']);
 		assert.deepStrictEqual(kernel.internalFeedItemIds, ['permission-action']);
-		assert.match(activityText, /Executor finished the task/);
+		assert.match(activityText, /Changes written/);
 		assert.ok(!activityText.includes('dispatch-1'));
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[0]), 'transcript');
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[1]), 'activity');
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[2]), 'detail');
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[3]), 'internal');
+	});
+
+	test('webview snapshot caps routine activity rows behind an overflow control', () => {
+		const base = createInitialModel('2026-04-10T10:00:00.000Z');
+		const activityKinds = [
+			'read',
+			'search',
+			'list',
+			'command',
+			'edit',
+			'artifact',
+			'status',
+		] as const;
+		const model: ExecutionWindowModel = {
+			...base,
+			snapshot: {
+				...base.snapshot,
+				task: 'Build the static pet diary app.',
+				currentActor: 'executor',
+				currentStage: 'plan_executing',
+				runState: 'running',
+			},
+			feed: activityKinds.map((kind, index) => ({
+				id: `activity-${index}`,
+				type: 'system_status',
+				title: `Activity ${index}`,
+				body: `Activity ${index}`,
+				timestamp: `2026-04-10T10:00:${String(index).padStart(2, '0')}.000Z`,
+				authoritative: true,
+				source_actor: 'executor',
+				activity: {
+					kind,
+					state: index === activityKinds.length - 1 ? 'running' : 'completed',
+					path: kind === 'read' || kind === 'edit' || kind === 'artifact' ? `src/file-${index}.ts` : undefined,
+					query: kind === 'search' ? 'pet diary' : undefined,
+					command: kind === 'command' ? 'npm test' : undefined,
+					summary: `Activity summary ${index}`,
+				},
+			})),
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+		const overflowText = snapshot.activityOverflow.map((row) => row.text).join('\n');
+
+		assert.strictEqual(snapshot.activity.length, 5);
+		assert.match(overflowText, /Older activity \(2\)/);
+		assert.match(overflowText, /Activity summary 0/);
+		assert.match(overflowText, /Activity summary 1/);
+		assert.ok(snapshot.activity.every((row) => !row.text.includes('activity-')));
 	});
 
 	test('runtime ergonomics kernel hides stale blocking surfaces from transcript indexes', () => {
@@ -1815,11 +1865,11 @@ suite('Corgi Webview UX', () => {
 		assert.ok(kernel.internalFeedItemIds.includes('executor-starting-1'));
 		assert.strictEqual(
 			summaryForActivity('parallel_running', { count: 2 }),
-			'2 executor tasks running'
+			'2 tasks running'
 		);
 		assert.match(
 			kernel.activities.map((activity) => activity.summary).join('\n'),
-			/2 executor tasks running/
+			/2 tasks running/
 		);
 	});
 
@@ -1979,7 +2029,7 @@ suite('Corgi Webview UX', () => {
 
 		const snapshot = renderWebviewSnapshot(model);
 
-		assert.match(snapshot.goalStrip, /Step: 2 executor tasks running/);
+		assert.match(snapshot.goalStrip, /Step: 2 tasks running/);
 		assert.ok(!snapshot.goalStrip.includes('parallel-set-1'));
 	});
 
@@ -2035,8 +2085,8 @@ suite('Corgi Webview UX', () => {
 		const snapshot = renderWebviewSnapshot(model);
 		const messageText = snapshot.messages.map((message) => message.text).join('\n');
 
-		assert.match(snapshot.goalStrip, /Step: Executor is ready/);
-		assert.match(snapshot.goalStrip, /Executor ready/);
+		assert.match(snapshot.goalStrip, /Step: Ready to write/);
+		assert.match(snapshot.goalStrip, /Ready to write/);
 		assert.ok(!messageText.includes('Dispatch queued'));
 		assert.ok(!messageText.includes('Dispatch truth was created'));
 		assert.ok(!messageText.includes('Execute plan'));
@@ -2078,7 +2128,7 @@ suite('Corgi Webview UX', () => {
 		const snapshot = renderWebviewSnapshot(model);
 		const messageText = snapshot.messages.map((message) => message.text).join('\n');
 
-		assert.match(snapshot.goalStrip, /Step: Executor running/);
+		assert.match(snapshot.goalStrip, /Step: Writing/);
 		assert.match(snapshot.goalStrip, /Running/);
 		assert.ok(!messageText.includes('Executor starting'));
 		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
@@ -2611,7 +2661,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(html.includes('Scope: '));
 		assert.ok(html.includes('Waiting for clarification'));
 		assert.ok(html.includes('Waiting for permission: '));
-		assert.ok(html.includes('Executor is ready'));
+		assert.ok(html.includes('Ready to write'));
 		assert.ok(html.includes('latestDispatchQueuedStatus'));
 		assert.ok(html.includes('latestPostExecutionStatus'));
 		assert.ok(

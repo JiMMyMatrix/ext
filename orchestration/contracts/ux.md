@@ -264,9 +264,9 @@ actions, or replace orchestration validation.
 Visibility policy:
 - `transcript` is for user messages, Governor prose, and final concise
   human-facing outcomes
-- `activity` is for short operational rows such as `Executor is working`,
-  `Reviewer is checking`, `Governor is revising the plan`, or `2 executor
-  tasks running`
+- `activity` is for short operational rows such as `Writing`, `Checking`,
+  `Revising plan`, or `2 tasks running`; internal actor names stay available
+  in hover/detail/source contexts rather than the default reading flow
 - `detail` is for artifact-backed sources, runtime timings, dispatch/review
   refs, and advisor output
 - `internal` is for request ids, session refs, context refs, semantic reasons,

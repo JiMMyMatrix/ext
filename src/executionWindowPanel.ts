@@ -1331,7 +1331,8 @@ export function getExecutionWindowHtml(
 			margin-top: 6px;
 		}
 
-		.activity-row {
+		.activity-row,
+		.activity-overflow-row {
 			display: grid;
 			grid-template-columns: 18px minmax(0, 1fr);
 			gap: 8px;
@@ -1349,17 +1350,21 @@ export function getExecutionWindowHtml(
 			background: var(--faint);
 		}
 
-		.activity-row.is-running .activity-dot {
+		.activity-row.is-running .activity-dot,
+		.activity-overflow-row.is-running .activity-dot {
 			background: var(--accent);
 			animation: pulse 1.5s ease-in-out infinite;
 		}
 
-		.activity-row.is-completed .activity-dot {
+		.activity-row.is-completed .activity-dot,
+		.activity-overflow-row.is-completed .activity-dot {
 			background: var(--success);
 		}
 
 		.activity-row.is-failed .activity-dot,
-		.activity-row.is-error .activity-dot {
+		.activity-row.is-error .activity-dot,
+		.activity-overflow-row.is-failed .activity-dot,
+		.activity-overflow-row.is-error .activity-dot {
 			background: var(--danger);
 		}
 
@@ -1368,7 +1373,8 @@ export function getExecutionWindowHtml(
 			font-size: 12px;
 		}
 
-		.activity-row.is-informational .activity-label {
+		.activity-row.is-informational .activity-label,
+		.activity-overflow-row.is-informational .activity-label {
 			color: var(--muted);
 		}
 
@@ -1381,6 +1387,23 @@ export function getExecutionWindowHtml(
 		.activity-summary {
 			margin-top: 2px;
 			font-size: 12px;
+		}
+
+		.activity-overflow {
+			color: var(--muted);
+			font-size: 12px;
+			padding: 2px 0;
+		}
+
+		.activity-overflow summary {
+			cursor: pointer;
+			user-select: none;
+		}
+
+		.activity-overflow-body {
+			margin-top: 6px;
+			display: grid;
+			gap: 4px;
 		}
 
 		.inline-actions {
@@ -1780,6 +1803,7 @@ export function getExecutionWindowHtml(
 				messages: collectTextRows(feed, '.message, .activity-row, .turn-divider, .feed-empty'),
 				transcript: collectTextRows(feed, '.message'),
 				activity: collectTextRows(feed, '.activity-row'),
+				activityOverflow: collectTextRows(feed, '.activity-overflow'),
 				progress: collectTextRows(feed, '.progress-bullet, .activity-summary'),
 				detailsHidden: Array.from(
 					feed.querySelectorAll('details:not([open]), .inline-actions button')
@@ -2078,7 +2102,7 @@ export function getExecutionWindowHtml(
 				return 'Running';
 			}
 			if (isDispatchQueued(snapshot)) {
-				return 'Executor ready';
+				return 'Ready to write';
 			}
 			if (isGovernorDecisionRecorded(snapshot)) {
 				return 'Finalized';
@@ -2176,10 +2200,10 @@ export function getExecutionWindowHtml(
 				return 'Plan ready' + nextAttempt;
 			}
 			if (snapshot.currentStage === 'plan_executing') {
-				return 'Executor running' + attempt;
+				return 'Writing' + attempt;
 			}
 			if (isDispatchQueued(snapshot)) {
-				return 'Executor is ready' + attempt;
+				return 'Ready to write' + attempt;
 			}
 			if (isGovernorDecisionRecorded(snapshot)) {
 				if (snapshot.latestGovernorDecision) {
@@ -2189,21 +2213,21 @@ export function getExecutionWindowHtml(
 			}
 			if (isReviewerCompleted(snapshot)) {
 				if (snapshot.latestReviewVerdict) {
-					return 'Reviewer ' + summarizeToken(snapshot.latestReviewVerdict, '') + attempt;
+					return 'Check ' + summarizeToken(snapshot.latestReviewVerdict, '') + attempt;
 				}
-				return 'Reviewer checked the result' + attempt;
+				return 'Checked result' + attempt;
 			}
 			if (isExecutorCompleted(snapshot)) {
-				return 'Executor wrote the result' + attempt;
+				return 'Changes written' + attempt;
 			}
 			if (snapshot.currentActor === 'governor' && snapshot.runState === 'running') {
-				return 'Governor is planning';
+				return 'Planning';
 			}
 			if (snapshot.currentActor === 'executor') {
-				return 'Executor is working' + attempt;
+				return 'Writing' + attempt;
 			}
 			if (snapshot.currentActor === 'reviewer') {
-				return 'Reviewer is checking' + attempt;
+				return 'Checking' + attempt;
 			}
 			if (snapshot.runState === 'running') {
 				return 'Corgi is working';
@@ -2217,6 +2241,19 @@ export function getExecutionWindowHtml(
 				step: goalStepLabel(snapshot),
 				status: statusLabel(snapshot, stale),
 			};
+		}
+
+		function goalDetailLabel(snapshot) {
+			const details = [];
+			const actor = actorSummary(snapshot);
+			const stage = stageSummary(snapshot);
+			if (actor) {
+				details.push('Actor: ' + actor);
+			}
+			if (stage) {
+				details.push('Stage: ' + stage);
+			}
+			return details.join(' · ');
 		}
 
 		function summarizeToken(value, fallback) {
@@ -2247,17 +2284,17 @@ export function getExecutionWindowHtml(
 		function stageSummary(snapshot) {
 			switch (snapshot.currentStage) {
 				case 'dispatch_queued':
-					return 'Executor is ready';
+					return 'Ready to write';
 				case 'plan_executing':
-					return 'Executor running';
+					return 'Writing';
 				case 'reviewer_completed':
-					return 'Reviewer checked';
+					return 'Checked result';
 				case 'permission_needed':
 					return 'Permission needed';
 				case 'semantic_intake':
 					return 'Understanding request';
 				case 'executor_completed':
-					return 'Executor completed';
+					return 'Changes written';
 				case 'governor_decision_recorded':
 					return 'Finalized';
 				case 'plan_ready':
@@ -2345,29 +2382,29 @@ export function getExecutionWindowHtml(
 			function summaryForActivityKey(summaryKey, summaryArgs) {
 				if (summaryKey === 'parallel_running') {
 					const count = Number(summaryArgs?.count || 0);
-					return count > 1 ? count + ' executor tasks running' : 'Executor is working';
+					return count > 1 ? count + ' tasks running' : 'Writing';
 				}
 				switch (summaryKey) {
 					case 'semantic_intake':
 						return 'Understanding request';
 					case 'governor_drafting_plan':
-						return 'Governor is drafting the plan';
+						return 'Drafting plan';
 					case 'dispatch_queued':
-						return 'Executor is ready';
+						return 'Ready to write';
 					case 'executor_running':
-						return 'Executor is working';
+						return 'Writing';
 					case 'executor_completed':
-						return 'Executor finished the task';
+						return 'Changes written';
 					case 'reviewer_running':
-						return 'Reviewer is checking';
+						return 'Checking';
 					case 'reviewer_request_changes':
-						return 'Reviewer requested changes';
+						return 'Changes requested';
 					case 'reviewer_completed':
-						return 'Reviewer checked the result';
+						return 'Checked result';
 					case 'plan_revision':
-						return 'Governor is revising the plan';
+						return 'Revising plan';
 					case 'advisor_consulting':
-						return 'Governor is consulting an advisor';
+						return 'Consulting advisor';
 					case 'governor_decision_recorded':
 						return 'Final decision recorded';
 					default:
@@ -2709,19 +2746,19 @@ export function getExecutionWindowHtml(
 			const isPlan = event.runtimeKind === 'plan';
 			const beats = isSemanticIntake
 				? [
-					[12000, 'Still interpreting the request', 'Governor is still interpreting the request...'],
-					[30000, 'Still checking intent and workflow state', 'Governor is still checking intent and workflow state...'],
+					[12000, 'Still understanding request', 'Still understanding the request...'],
+					[30000, 'Still checking workflow state', 'Still checking intent and workflow state...'],
 				]
 				: isPlan
 					? [
-						[12000, 'Still drafting the plan', 'Governor is still drafting the plan...'],
-						[30000, 'Governor is shaping the plan', 'Governor is still shaping the plan checkpoint...'],
-						[60000, 'Governor is taking a deeper planning pass', 'The Governor is still working. This model can take a little longer.'],
+						[12000, 'Still drafting plan', 'Still drafting the plan...'],
+						[30000, 'Shaping the plan', 'Still shaping the plan checkpoint...'],
+						[60000, 'Taking a deeper planning pass', 'This model can take a little longer.'],
 					]
 				: [
-					[12000, 'Still waiting for the Governor', 'Still waiting for a reply from the Governor...'],
-					[30000, 'Governor is still thinking', 'Governor is still thinking through the plan...'],
-					[60000, 'Governor is taking a deeper pass', 'The Governor is still working. This model can take a little longer.'],
+					[12000, 'Still waiting for reply', 'Still waiting for a reply...'],
+					[30000, 'Still thinking', 'Still thinking through the plan...'],
+					[60000, 'Taking a deeper pass', 'This model can take a little longer.'],
 			];
 			governorWaitTimers = beats.map(([delay, label, hint]) =>
 				setTimeout(() => {
@@ -2961,32 +2998,32 @@ export function getExecutionWindowHtml(
 			if (event.stage === 'governor_runtime_requested') {
 				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
 				replaceForegroundTail(
-					'Preparing Governor handoff',
+					'Preparing request',
 					'active',
-					'Preparing the request for the Governor...'
+					'Preparing the request...'
 				);
 				scheduleGovernorWaitHeartbeat(event);
 			} else if (event.stage === 'executor_run_started') {
 				replaceForegroundTail(
-					'Executor is running the plan',
+					'Writing',
 					'active',
-					'Executor is working from the accepted plan...'
+					'Writing from the accepted plan...'
 				);
 			} else if (event.stage === 'turn_request_sent') {
 				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
 				replaceForegroundTail(
-					'Governor request sent',
+					'Request sent',
 					'active',
-					'The Governor has the request now...'
+					'The request is in progress...'
 				);
 				scheduleGovernorWaitHeartbeat(event);
 			} else if (event.stage === 'turn_started') {
 				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
 				const isPlan = event.runtimeKind === 'plan';
 				replaceForegroundTail(
-					isPlan ? 'Governor is reading the plan request' : 'Governor is reading the request',
+					isPlan ? 'Reading plan request' : 'Reading request',
 					'active',
-					isPlan ? 'Governor is reading the plan request...' : 'Governor is reading the request...'
+					isPlan ? 'Reading the plan request...' : 'Reading the request...'
 				);
 				scheduleGovernorWaitHeartbeat(event);
 			} else if (event.stage === 'first_delta') {
@@ -2997,22 +3034,22 @@ export function getExecutionWindowHtml(
 					isSemanticIntake
 						? 'Understanding request'
 						: isPlan
-							? 'Governor is drafting the plan'
-							: 'Governor is drafting a reply',
+							? 'Drafting plan'
+							: 'Drafting reply',
 					'active',
 					isSemanticIntake
 						? 'Understanding request...'
 						: isPlan
-							? 'Governor is drafting the plan...'
-							: 'Governor is drafting a reply...'
+							? 'Drafting the plan...'
+							: 'Drafting a reply...'
 				);
 			} else if (event.stage === 'draft_preview') {
 				clearGovernorWaitTimers();
 				const isPlan = event.runtimeKind === 'plan';
 				replaceForegroundTail(
-					isPlan ? 'Governor is drafting the plan' : 'Governor is drafting a reply',
+					isPlan ? 'Drafting plan' : 'Drafting reply',
 					'active',
-					isPlan ? 'Governor is drafting the plan...' : 'Governor is drafting a reply...'
+					isPlan ? 'Drafting the plan...' : 'Drafting a reply...'
 				);
 				if (typeof event.previewText === 'string' && event.previewText.trim()) {
 					setDraftPreviewTarget(event.previewText);
@@ -3020,9 +3057,9 @@ export function getExecutionWindowHtml(
 			} else if (event.stage === 'governor_runtime_failed') {
 				clearGovernorWaitTimers();
 				replaceForegroundTail(
-					'Governor runtime had trouble',
+					'Runtime had trouble',
 					'failed',
-					'Governor did not reply. Corgi is updating the state now.'
+					'Corgi is updating the state now.'
 				);
 				resetDraftPreview();
 			} else if (event.stage === 'governor_runtime_completed') {
@@ -3335,9 +3372,9 @@ export function getExecutionWindowHtml(
 				latestTerminalStatus?.title === 'Governor decision recorded'
 			) {
 				freezeForegroundRequest(
-					'Governor decision recorded',
+					'Final decision recorded',
 					'done',
-					'Governor recorded the final dispatch decision.'
+					'Final dispatch decision recorded.'
 				);
 				return;
 			}
@@ -3347,9 +3384,9 @@ export function getExecutionWindowHtml(
 				latestTerminalStatus?.title === 'Reviewer completed'
 			) {
 				freezeForegroundRequest(
-					'Reviewer checked the result',
+					'Checked result',
 					'done',
-					'Reviewer checked the Executor result artifact.'
+					'Read-only check finished.'
 				);
 				return;
 			}
@@ -3359,16 +3396,16 @@ export function getExecutionWindowHtml(
 				latestTerminalStatus?.title === 'Executor completed'
 			) {
 				freezeForegroundRequest(
-					'Executor wrote the result',
+					'Changes written',
 					'done',
-					'Executor wrote the bounded result artifact.'
+					'Bounded result artifact written.'
 				);
 				return;
 			}
 
 			if (isDispatchQueued(snapshot) || latestDispatchQueuedStatus(requestKey)) {
 				freezeForegroundRequest(
-					'Executor is ready',
+					'Ready to write',
 					'done',
 					'Corgi created dispatch truth for the accepted plan.'
 				);
@@ -3391,15 +3428,15 @@ export function getExecutionWindowHtml(
 					return;
 				}
 				setForegroundSingleBullet(
-					'Waiting for a reply from the Governor...',
+					'Waiting for reply',
 					'active',
-					'Waiting for a reply from the Governor...'
+					'Waiting for a reply...'
 				);
 				return;
 			}
 
 			if (snapshot.runState === 'running') {
-				replaceForegroundTail('Executor is ready', 'active', 'Corgi queued dispatch truth for the accepted plan.');
+				replaceForegroundTail('Ready to write', 'active', 'Corgi queued dispatch truth for the accepted plan.');
 				return;
 			}
 
@@ -3412,9 +3449,9 @@ export function getExecutionWindowHtml(
 		function composerMode() {
 			if (model?.snapshot && isPlanReady(model.snapshot) && ui.planRevisionMode) {
 				return {
-					placeholder: 'Tell the Governor what to add, explain, or revise...',
+					placeholder: 'Add details or revise the plan...',
 					hint: 'This updates the plan only. Choose Execute plan when it is ready.',
-					buttonLabel: 'Send to Governor',
+					buttonLabel: 'Send revision',
 				};
 			}
 			if (model?.activeClarification) {
@@ -3447,6 +3484,7 @@ export function getExecutionWindowHtml(
 			const snapshot = model.snapshot;
 			const stale = isSnapshotStale(snapshot);
 				const goal = runtimeGoalDisplay(snapshot, stale);
+			const goalDetail = goalDetailLabel(snapshot);
 			headerContent.innerHTML =
 				'<div class="goal-main">' +
 					'<span class="status-dot ' + statusDotClass(snapshot, stale) + '"></span>' +
@@ -3454,7 +3492,7 @@ export function getExecutionWindowHtml(
 						escapeHtml(goal.title) +
 					'</span>' +
 				'</div>' +
-				'<div class="goal-meta">' +
+				'<div class="goal-meta" title="' + escapeHtml(goalDetail) + '">' +
 					'<span class="goal-step"><span class="goal-label">Step:</span> ' +
 						escapeHtml(goal.step) +
 					'</span>' +
@@ -3626,6 +3664,19 @@ export function getExecutionWindowHtml(
 			}
 		}
 
+			function activityDetailLabel(item, runtimeActivity) {
+				const details = [];
+				const actor = runtimeActivity?.actor || item.source_actor || item.source_layer;
+				const phase = runtimeActivity?.phase || item.activity?.kind;
+				if (actor) {
+					details.push('Actor: ' + summarizeToken(String(actor), String(actor)));
+				}
+				if (phase) {
+					details.push('Phase: ' + summarizeToken(String(phase), String(phase)));
+				}
+				return details.join(' · ');
+			}
+
 		function renderDetails(item) {
 			if (item.type === 'actor_event' && item.source_actor === 'governor') {
 				return '';
@@ -3789,18 +3840,18 @@ export function getExecutionWindowHtml(
 				switch (item.title) {
 					case 'Executor completed':
 						return {
-							title: 'Executor completed',
-							body: 'Executor wrote a bounded result artifact for this goal.',
+							title: 'Changes written',
+							body: 'A bounded result artifact was written for this goal.',
 						};
 					case 'Reviewer completed':
 						return {
-							title: 'Reviewer checked the result',
-							body: 'Reviewer finished its read-only check of the Executor output.',
+							title: 'Checked result',
+							body: 'A read-only check of the output finished.',
 						};
 					case 'Governor decision recorded':
 						return {
 							title: 'Final decision recorded',
-							body: 'Governor recorded the final dispatch decision.',
+							body: 'The final dispatch decision was recorded.',
 						};
 					default:
 						return copy;
@@ -3947,7 +3998,7 @@ export function getExecutionWindowHtml(
 			}
 		}
 
-		function renderActivity(item) {
+		function renderActivity(item, overflow) {
 			const activity = item.activity ?? { state: item.type === 'error' ? 'failed' : 'completed' };
 			const runtimeActivity = runtimeActivityForItem(item);
 			const lifecycleSummaryKey = lifecycleActivitySummaryKey(item);
@@ -3959,22 +4010,27 @@ export function getExecutionWindowHtml(
 					: runtimeActivity?.severity === 'error'
 						? 'failed'
 						: activity.state || 'completed';
-			const summary =
-				runtimeActivity && runtimeActivity.summary !== activityLabel(item)
+			const label = activityLabel(item);
+			const summaryCandidate =
+				runtimeActivity && runtimeActivity.summary !== label
 					? runtimeActivity.summary
 					: item.type === 'artifact_reference'
 						? item.artifact.summary
 						: activity.summary && activity.kind !== 'status'
 							? activity.summary
 							: undefined;
+			const summary = summaryCandidate && summaryCandidate !== label ? summaryCandidate : undefined;
+			const detailTitle = activityDetailLabel(item, runtimeActivity);
+
+			const rowClass = overflow ? 'activity-overflow-row' : 'activity-row';
 
 			return (
-				'<article class="activity-row is-' + escapeHtml(state) + ' ' +
+				'<article class="' + rowClass + ' is-' + escapeHtml(state) + ' ' +
 					(item.authoritative ? '' : 'is-informational') +
-				'">' +
+				'" title="' + escapeHtml(detailTitle) + '">' +
 					'<div class="activity-dot"></div>' +
 					'<div>' +
-						'<div class="activity-label">' + escapeHtml(activityLabel(item)) + '</div>' +
+						'<div class="activity-label">' + escapeHtml(label) + '</div>' +
 						(summary ? '<div class="activity-summary">' + escapeHtml(summary) + '</div>' : '') +
 						renderArtifactActions(item) +
 						renderSourceActionForItem(item) +
@@ -4127,7 +4183,7 @@ export function getExecutionWindowHtml(
 			const draftPreviewText = String(ui.foregroundRequest.draftPreview || '').trim();
 			const draftPreviewMarkup = draftPreviewText
 				? '<div class="draft-preview" aria-live="polite">' +
-					'<div class="draft-preview-label">Governor draft</div>' +
+					'<div class="draft-preview-label">Draft preview</div>' +
 					'<div>' + escapeHtml(draftPreviewText) + '</div>' +
 				  '</div>'
 				: '';
@@ -4167,6 +4223,30 @@ export function getExecutionWindowHtml(
 			return renderMessage(item);
 		}
 
+		function visibleActivityIds(limit) {
+			if (!model) {
+				return new Set();
+			}
+			const activityIds = model.feed
+				.filter((item) => feedItemVisibility(item) === 'activity')
+				.map((item) => item.id);
+			return new Set(activityIds.slice(-limit));
+		}
+
+		function renderActivityOverflow(items) {
+			if (!Array.isArray(items) || items.length === 0) {
+				return '';
+			}
+			return (
+				'<details class="activity-overflow">' +
+					'<summary>Older activity (' + String(items.length) + ')</summary>' +
+					'<div class="activity-overflow-body">' +
+						items.map((item) => renderActivity(item, true)).join('') +
+					'</div>' +
+				'</details>'
+			);
+		}
+
 		function renderFeed() {
 			if (!model) {
 				return;
@@ -4182,8 +4262,25 @@ export function getExecutionWindowHtml(
 				model.feed.length > ui.initialFeedCount
 					? ui.initialFeedCount
 					: -1;
+			const activityLimit = 5;
+			const activityItems = model.feed.filter((item) => feedItemVisibility(item) === 'activity');
+			const visibleActivities = visibleActivityIds(activityLimit);
+			const hiddenActivityItems = activityItems.filter((item) => !visibleActivities.has(item.id));
+			let renderedActivityOverflow = false;
 			const cards = model.feed.map((item, index) => {
-				const markup = renderFeedItem(item);
+				const visibility = feedItemVisibility(item);
+				if (visibility === 'activity' && !visibleActivities.has(item.id)) {
+					return '';
+				}
+				let markup = renderFeedItem(item);
+				if (
+					visibility === 'activity' &&
+					hiddenActivityItems.length > 0 &&
+					!renderedActivityOverflow
+				) {
+					markup = renderActivityOverflow(hiddenActivityItems) + markup;
+					renderedActivityOverflow = true;
+				}
 				if (index === dividerIndex) {
 					return dividerMarkup('Current turn') + markup;
 				}
@@ -4266,13 +4363,13 @@ export function getExecutionWindowHtml(
 			resetPromptHistoryNavigation();
 			const requestId = nextForegroundRequestKey();
 			if (model?.snapshot && isPlanReady(model.snapshot) && ui.planRevisionMode) {
-				startForegroundRequest(text, 'Waiting for a reply from the Governor...', requestId);
+				startForegroundRequest(text, 'Waiting for reply...', requestId);
 				ui.pendingPlanContextRef = model.planReadyRequest?.contextRef;
 				ui.pendingPlanHiddenAt = Date.now();
 				setForegroundSingleBullet(
-					'Waiting for a reply from the Governor...',
+					'Waiting for reply',
 					'active',
-					'Waiting for a reply from the Governor...'
+					'Waiting for reply...'
 				);
 				scheduleActivityTrace(requestId);
 				vscode.postMessage({ type: 'revise_plan', text, requestId });
@@ -4373,11 +4470,11 @@ export function getExecutionWindowHtml(
 			}
 			if (action === 'execute_plan') {
 				const requestId = nextForegroundRequestKey();
-				startForegroundRequest('', 'Preparing Executor...', requestId);
+				startForegroundRequest('', 'Preparing to write...', requestId);
 				setForegroundSingleBullet(
-					'Preparing Executor...',
+					'Preparing to write',
 					'active',
-					'Preparing Executor...'
+					'Preparing to write...'
 				);
 				scheduleActivityTrace(requestId);
 				ui.planRevisionMode = false;
@@ -4445,12 +4542,12 @@ export function getExecutionWindowHtml(
 					ui.pendingPermissionHiddenAt = Date.now();
 					setForegroundSingleBullet(
 						scope === 'execute'
-							? 'Starting execution...'
-							: 'Waiting for a reply from the Governor...',
+							? 'Starting write'
+							: 'Waiting for reply',
 						'active',
 						scope === 'execute'
-							? 'Starting execution...'
-							: 'Waiting for a reply from the Governor...'
+							? 'Starting write...'
+							: 'Waiting for reply...'
 					);
 					scheduleActivityTrace(requestKey);
 					renderComposerActions();

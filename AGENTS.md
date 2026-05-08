@@ -24,6 +24,18 @@ as the runtime doc entrypoint, and use
 [`python3 orchestration/scripts/orchestrate.py`](orchestration/scripts/orchestrate.py)
 as the canonical orchestration command surface.
 
+## Development Workflow Guardrail
+After completing any non-trivial implementation, refactor, or plan in this
+repository:
+1. Run the relevant checks first, such as typecheck, lint, tests, and
+   `git diff --check`.
+2. Review the changed diff for correctness, regressions, stale state, and
+   authority-boundary leaks.
+3. Fix review findings before reporting completion or committing.
+
+For small documentation-only edits, run the smallest relevant validation and
+still inspect the diff for accidental scope creep.
+
 ## Critical Runtime Rules
 - The orchestration layer supplements the Codex runtime substrate with
   project-specific gates, artifacts, and role constraints. It must not become a

@@ -175,7 +175,7 @@ export class CodexAppServerClient extends EventEmitter {
 				requestId: request.requestId,
 				runtimeKind: request.runtimeKind,
 				elapsedMs: Date.now() - turnStartedAt,
-				message: 'Governor request sent',
+				message: 'Request sent',
 			});
 			await this.request('turn/start', {
 				threadId,
@@ -528,19 +528,19 @@ export class CodexAppServerClient extends EventEmitter {
 
 function firstDeltaMessage(runtimeKind: ActiveTurn['runtimeKind']): string {
 	if (runtimeKind === 'semantic_intake') {
-		return 'Governor is interpreting the request';
+		return 'Understanding request';
 	}
 	if (runtimeKind === 'plan') {
-		return 'Governor is drafting the plan';
+		return 'Drafting plan';
 	}
-	return 'Governor is drafting a reply';
+	return 'Drafting reply';
 }
 
 function draftPreviewMessage(runtimeKind: ActiveTurn['runtimeKind']): string {
 	if (runtimeKind === 'plan') {
-		return 'Governor plan draft preview';
+		return 'Plan draft preview';
 	}
-	return 'Governor draft preview';
+	return 'Draft preview';
 }
 
 function readOnlySandbox(): JsonObject {
