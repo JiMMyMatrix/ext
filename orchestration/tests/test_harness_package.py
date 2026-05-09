@@ -18,6 +18,7 @@ from orchestration.harness import (
     dispatch_contracts,
     dispatch_guards,
     executor_runtime,
+    governor_runtime,
     intake,
     parallel_dispatch,
     reviewer,
@@ -1400,8 +1401,8 @@ class HarnessPackageTests(unittest.TestCase):
                 )
 
             prompt_root = Path(__file__).resolve().parents[2] / "orchestration" / "prompts" / "governor.txt"
-            with mock.patch.object(session.subprocess, "run", side_effect=fake_run):
-                with mock.patch.object(session, "prompt_path", return_value=prompt_root):
+            with mock.patch.object(governor_runtime.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(governor_runtime, "prompt_path", return_value=prompt_root):
                     first = session._continue_governor_dialogue(
                         payload, "hello!", repo_root=repo_root
                     )

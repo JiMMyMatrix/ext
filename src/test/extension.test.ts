@@ -822,15 +822,15 @@ suite('Corgi Webview UX', () => {
 
 	test('governor runtime config uses gpt-5.5 with xhigh reasoning', () => {
 		const configSource = fs.readFileSync(GOVERNOR_RUNTIME_CONFIG_PATH, 'utf8');
-		const sessionSource = fs.readFileSync(
-			path.resolve(__dirname, '../../orchestration/harness/session.py'),
+		const governorRuntimeSource = fs.readFileSync(
+			path.resolve(__dirname, '../../orchestration/harness/governor_runtime.py'),
 			'utf8'
 		);
 
 		assert.ok(configSource.includes('model = "gpt-5.5"'));
 		assert.ok(configSource.includes('model_reasoning_effort = "xhigh"'));
-		assert.ok(sessionSource.includes('model = "gpt-5.5"'));
-		assert.ok(sessionSource.includes('reasoning = "xhigh"'));
+		assert.ok(governorRuntimeSource.includes('model = "gpt-5.5"'));
+		assert.ok(governorRuntimeSource.includes('reasoning = "xhigh"'));
 	});
 
 	test('registers advisory MCP server through repo entrypoint with Python env handling', () => {
