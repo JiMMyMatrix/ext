@@ -2322,7 +2322,7 @@ export function getExecutionWindowHtml(
 				if (item.title === 'Dispatch queued' || item.title === 'Executor starting') {
 					return false;
 				}
-				return item.title !== 'Ready when you are';
+				return item.title !== 'Ready when you are' && item.title !== 'Accepted and ready';
 			}
 
 			return false;

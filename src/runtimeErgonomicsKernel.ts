@@ -76,6 +76,14 @@ function isAdvisorItem(item: FeedItem): boolean {
 	return haystack.includes('advisor') || haystack.includes('consult');
 }
 
+function isInternalStatusItem(item: FeedItem): boolean {
+	if (item.type !== 'system_status') {
+		return false;
+	}
+	const title = normalizedTitle(item);
+	return title === 'ready when you are' || title === 'accepted and ready';
+}
+
 export function summaryForActivity(
 	summaryKey: string,
 	summaryArgs: Record<string, unknown> = {}
@@ -94,6 +102,9 @@ export function runtimeVisibilityForFeedItem(
 		return 'detail';
 	}
 	if (item.type === 'user_message' && item.turn_type === 'permission_action') {
+		return 'internal';
+	}
+	if (isInternalStatusItem(item)) {
 		return 'internal';
 	}
 	if (isGovernorFeedItem(item) || item.type === 'user_message') {
@@ -134,7 +145,7 @@ function runtimeVisibilityForModelFeedItem(
 			? 'transcript'
 			: 'internal';
 	}
-	if (item.type === 'system_status' && normalizedTitle(item) === 'ready when you are') {
+	if (isInternalStatusItem(item)) {
 		return 'internal';
 	}
 	return runtimeVisibilityForFeedItem(item);

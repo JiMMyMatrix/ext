@@ -1524,6 +1524,16 @@ suite('Corgi Webview UX', () => {
 					source_actor: 'governor',
 				},
 				{
+					id: 'accepted-ready',
+					type: 'system_status',
+					title: 'Accepted and ready',
+					body: 'Accepted intake summary should not appear in transcript.',
+					timestamp: '2026-04-10T10:00:06.000Z',
+					authoritative: true,
+					source_actor: 'orchestration',
+					source_layer: 'orchestration',
+				},
+				{
 					id: 'execute-plan-action',
 					type: 'user_message',
 					title: 'Permission selected',
@@ -1570,6 +1580,7 @@ suite('Corgi Webview UX', () => {
 		assert.match(transcriptText, /Objective: analyze the repository architecture/);
 		assert.match(messageText, /View source/);
 		assert.ok(!messageText.includes('Execute plan'));
+		assert.ok(!transcriptText.includes('Accepted intake summary should not appear in transcript.'));
 		assert.ok(!messageText.includes('reviewer_completed'));
 		assert.ok(!snapshot.composer.context.includes('Reviewer'));
 		assert.deepStrictEqual(snapshot.progress, []);
@@ -1628,6 +1639,15 @@ suite('Corgi Webview UX', () => {
 					authoritative: false,
 					turn_type: 'permission_action',
 				},
+				{
+					id: 'accepted-ready',
+					type: 'system_status',
+					title: 'Accepted and ready',
+					body: 'Accepted intake summary should stay out of the transcript.',
+					timestamp: '2026-04-10T10:00:13.000Z',
+					authoritative: true,
+					source_actor: 'orchestration',
+				},
 			],
 		};
 
@@ -1637,13 +1657,15 @@ suite('Corgi Webview UX', () => {
 		assert.deepStrictEqual(kernel.transcriptFeedItemIds, ['governor']);
 		assert.deepStrictEqual(kernel.activityFeedItemIds, ['executor']);
 		assert.deepStrictEqual(kernel.detailFeedItemIds, ['artifact']);
-		assert.deepStrictEqual(kernel.internalFeedItemIds, ['permission-action']);
+		assert.deepStrictEqual(kernel.internalFeedItemIds, ['permission-action', 'accepted-ready']);
 		assert.match(activityText, /Changes written/);
 		assert.ok(!activityText.includes('dispatch-1'));
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[0]), 'transcript');
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[1]), 'activity');
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[2]), 'detail');
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[3]), 'internal');
+		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[4]), 'internal');
+		assert.strictEqual(buildRuntimeErgonomicsKernel(model).internalFeedItemIds.includes('accepted-ready'), true);
 	});
 
 	test('webview snapshot caps routine activity rows behind an overflow control', () => {
