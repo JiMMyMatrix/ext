@@ -11,8 +11,6 @@ import {
 	type ExecutionWindowModel,
 	getArtifactById,
 	isSnapshotStale,
-	type SemanticActionName,
-	type SemanticRouteType,
 } from '../phase1Model';
 import {
 	createExecutionTransport,
@@ -41,111 +39,50 @@ import {
 	runtimeVisibilityForFeedItem,
 	summaryForActivity,
 } from '../runtimeErgonomicsKernel';
-
-const PACKAGE_JSON_PATH = path.resolve(__dirname, '../../package.json');
-const REPO_ROOT = path.resolve(__dirname, '../..');
-const LAUNCH_JSON_PATH = path.resolve(__dirname, '../../.vscode/launch.json');
-const EXTENSION_TS_PATH = path.resolve(__dirname, '../../src/extension.ts');
-const DEVELOPMENT_SESSION_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/developmentSession.ts'
-);
-const EXECUTION_WINDOW_PANEL_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/executionWindowPanel.ts'
-);
-const EXECUTION_WINDOW_RENDERER_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/executionWindowRenderer.ts'
-);
-const EXECUTION_WINDOW_STYLES_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/executionWindowStyles.ts'
-);
-const EXECUTION_TRANSPORT_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/executionTransport.ts'
-);
-const TEST_WINDOW_SCRIPT_PATH = path.resolve(
-	__dirname,
-	'../../scripts/launch-corgi-test-window.sh'
-);
-const TEST_WINDOW_CLOSE_SCRIPT_PATH = path.resolve(
-	__dirname,
-	'../../scripts/close-corgi-test-window.sh'
-);
-const TEST_WINDOW_AUTO_SCRIPT_PATH = path.resolve(
-	__dirname,
-	'../../scripts/run-corgi-test-window-auto.sh'
-);
-const TEST_WINDOW_PROMPT_CATALOG_PATH = path.resolve(
-	__dirname,
-	'../../scripts/corgi-test-prompts.json'
-);
-const TEST_WINDOW_PROMPT_SCRIPT_PATH = path.resolve(
-	__dirname,
-	'../../scripts/corgi-test-prompt.cjs'
-);
-const TEST_WINDOW_STATUS_SCRIPT_PATH = path.resolve(
-	__dirname,
-	'../../scripts/corgi-test-window-status.cjs'
-);
-const PROCESS_TEST_SCRIPT_PATH = path.resolve(
-	__dirname,
-	'../../scripts/corgi-process-test.cjs'
-);
-const PROCESS_REPLAN_HELPER_PATH = path.resolve(
-	__dirname,
-	'../../scripts/corgi-review-replan-process-test.py'
-);
-const CODEX_APP_SERVER_CLIENT_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/codexAppServerClient.ts'
-);
-const GOVERNOR_RUNTIME_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/governorRuntime.ts'
-);
-const RUNTIME_ERGONOMICS_KERNEL_TS_PATH = path.resolve(
-	__dirname,
-	'../../src/runtimeErgonomicsKernel.ts'
-);
-const GOVERNOR_RUNTIME_CONFIG_PATH = path.resolve(
-	__dirname,
-	'../../orchestration/runtime/config.toml'
-);
-const MCP_SERVER_ENTRYPOINT_PATH = path.resolve(__dirname, '../../mcp_server.py');
-const DEV_MCP_SERVER_ENTRYPOINT_PATH = path.resolve(__dirname, '../../dev_mcp_server.py');
-const ADVISORY_MCP_LAUNCHER_PATH = path.resolve(
-	__dirname,
-	'../../orchestration/scripts/serve_advisory_mcp.py'
-);
-const DEVELOPMENT_CONSULTING_MCP_LAUNCHER_PATH = path.resolve(
-	__dirname,
-	'../../orchestration/scripts/serve_development_consulting_mcp.py'
-);
-const ADVISORY_MCP_SETUP_PATH = path.resolve(
-	__dirname,
-	'../../orchestration/scripts/setup_advisory_mcp_env.py'
-);
-const ADVISORY_MCP_REQUIREMENTS_PATH = path.resolve(
-	__dirname,
-	'../../orchestration/runtime/advisory/requirements.txt'
-);
-const ADVISORY_MCP_SERVER_PATH = path.resolve(
-	__dirname,
-	'../../orchestration/runtime/advisory/mcp_server.py'
-);
-const ADVISORY_CAPABILITIES_PATH = path.resolve(
-	__dirname,
-	'../../orchestration/runtime/advisory/capabilities.json'
-);
-const ADVISORY_DOC_PATH = path.resolve(__dirname, '../../orchestration/advisory.md');
-const UX_CONTRACT_PATH = path.resolve(__dirname, '../../orchestration/contracts/ux.md');
-const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
-	__dirname,
-	'../../src/test/fixtures/semantic-routing.json'
-);
+import {
+	ADVISORY_CAPABILITIES_PATH,
+	ADVISORY_DOC_PATH,
+	ADVISORY_MCP_LAUNCHER_PATH,
+	ADVISORY_MCP_REQUIREMENTS_PATH,
+	ADVISORY_MCP_SERVER_PATH,
+	ADVISORY_MCP_SETUP_PATH,
+	CODEX_APP_SERVER_CLIENT_TS_PATH,
+	DEVELOPMENT_CONSULTING_MCP_LAUNCHER_PATH,
+	DEVELOPMENT_SESSION_TS_PATH,
+	DEV_MCP_SERVER_ENTRYPOINT_PATH,
+	EXECUTION_TRANSPORT_TS_PATH,
+	EXECUTION_WINDOW_CLIENT_SCRIPT_TS_PATH,
+	EXECUTION_WINDOW_PANEL_TS_PATH,
+	EXECUTION_WINDOW_RENDERER_TS_PATH,
+	EXECUTION_WINDOW_STYLES_TS_PATH,
+	EXTENSION_TS_PATH,
+	GOVERNOR_RUNTIME_CONFIG_PATH,
+	GOVERNOR_RUNTIME_TS_PATH,
+	LAUNCH_JSON_PATH,
+	MCP_SERVER_ENTRYPOINT_PATH,
+	PACKAGE_JSON_PATH,
+	PROCESS_REPLAN_HELPER_PATH,
+	PROCESS_TEST_SCRIPT_PATH,
+	REPO_ROOT,
+	RUNTIME_ERGONOMICS_KERNEL_TS_PATH,
+	SEMANTIC_ROUTING_FIXTURE_PATH,
+	TEST_WINDOW_AUTO_SCRIPT_PATH,
+	TEST_WINDOW_CLOSE_SCRIPT_PATH,
+	TEST_WINDOW_PROMPT_CATALOG_PATH,
+	TEST_WINDOW_PROMPT_SCRIPT_PATH,
+	TEST_WINDOW_SCRIPT_PATH,
+	TEST_WINDOW_STATUS_SCRIPT_PATH,
+	UX_CONTRACT_PATH,
+} from './testPaths';
+import {
+	semanticContextFlags,
+	semanticDecision,
+	semanticFallbackRunner,
+	semanticFixtureModel,
+	type SemanticRoutingFixture,
+	semanticRunnerInput,
+} from './semanticTestHelpers';
+import { renderWebviewSnapshot } from './webviewHarness';
 
 function loadPackageJson(): Record<string, unknown> {
 	return JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8')) as Record<string, unknown>;
@@ -155,390 +92,9 @@ function readExecutionWindowSource(): string {
 	return [
 		fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8'),
 		fs.readFileSync(EXECUTION_WINDOW_RENDERER_TS_PATH, 'utf8'),
+		fs.readFileSync(EXECUTION_WINDOW_CLIENT_SCRIPT_TS_PATH, 'utf8'),
 		fs.readFileSync(EXECUTION_WINDOW_STYLES_TS_PATH, 'utf8'),
 	].join('\n');
-}
-
-function semanticContextFlags() {
-	return {
-		used_controller_summary: true,
-		used_accepted_intake_summary: false,
-		used_dialogue_summary: false,
-		had_active_clarification: false,
-		had_pending_permission_request: false,
-		had_pending_interrupt: false,
-	};
-}
-
-function semanticDecision(
-	overrides: Partial<SemanticDecision>
-): SemanticDecision {
-	return {
-		route_type: 'governed_work_intent',
-		action_name: 'none',
-		normalized_text: 'analyze the repo',
-		paraphrase: 'Ask Corgi to analyze the repo.',
-		confidence: 'high',
-		reason: 'clear_work_intent',
-		...overrides,
-	};
-}
-
-function semanticRunnerInput(
-	rawText: string
-): Parameters<AppServerSemanticRunner['classify']>[0] {
-	return {
-		rawText,
-		summary: {
-			current_turn: rawText,
-			controller_state: {
-				permission_scope: 'unset',
-				run_state: 'idle',
-			},
-			active_clarification: null,
-			pending_permission_request: null,
-			pending_interrupt: null,
-			accepted_intake_summary: null,
-			recent_dialogue_summary: [],
-			semantic_clarification_state: null,
-		},
-	};
-}
-
-function semanticFallbackRunner(decision: SemanticDecision): SemanticRunner {
-	return {
-		classify: async () => decision,
-	};
-}
-
-type SemanticRoutingFixture = {
-	name: string;
-	input: string;
-	session_state: 'idle' | 'active_clarification' | 'pending_permission' | 'running';
-	expected_route_type: SemanticRouteType;
-	expected_action_name: SemanticActionName;
-	expected_outcome:
-		| 'submit_prompt'
-		| 'answer_clarification'
-		| 'interrupt_run'
-		| 'block';
-	notes: string;
-};
-
-type SnapshotTextRow = {
-	className: string;
-	text: string;
-};
-
-type WebviewSnapshotPayload = {
-	goalStrip: string;
-	actions: SnapshotTextRow[];
-	messages: SnapshotTextRow[];
-	transcript: SnapshotTextRow[];
-	activity: SnapshotTextRow[];
-	activityOverflow: SnapshotTextRow[];
-	progress: SnapshotTextRow[];
-	detailsHidden: number;
-	composer: {
-		context: string;
-		hint: string;
-		button: string;
-		placeholder: string;
-		disabled: boolean;
-	};
-	state: {
-		currentActor: string;
-		currentStage: string;
-		permissionScope: string;
-		runState: string;
-		task: string;
-	};
-};
-
-type PostedWebviewMessage = {
-	type: string;
-	payload?: WebviewSnapshotPayload;
-};
-
-function decodeHtmlEntities(value: string): string {
-	return value
-		.replace(/&nbsp;/g, ' ')
-		.replace(/&amp;/g, '&')
-		.replace(/&lt;/g, '<')
-		.replace(/&gt;/g, '>')
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'");
-}
-
-function htmlToText(value: string): string {
-	return decodeHtmlEntities(
-		value
-			.replace(/<style\b[\s\S]*?<\/style>/gi, '')
-			.replace(/<script\b[\s\S]*?<\/script>/gi, '')
-			.replace(/<[^>]+>/g, ' ')
-			.replace(/\s+/g, ' ')
-			.trim()
-	);
-}
-
-function parseClassName(attributes: string): string {
-	return decodeHtmlEntities(attributes.match(/\bclass="([^"]*)"/)?.[1] ?? '');
-}
-
-function selectorClasses(selector: string): string[] {
-	return selector
-		.split(',')
-		.map((part) => part.trim())
-		.filter((part) => part.startsWith('.'))
-		.map((part) => part.slice(1));
-}
-
-class FakeWebviewNode {
-	constructor(
-		readonly className: string,
-		readonly innerHTML: string
-	) {}
-
-	get textContent(): string {
-		return htmlToText(this.innerHTML);
-	}
-
-	get innerText(): string {
-		return this.textContent;
-	}
-}
-
-class FakeWebviewElement {
-	innerHTML = '';
-	textContent = '';
-	value = '';
-	placeholder = '';
-	disabled = false;
-	hidden = false;
-	scrollTop = 0;
-	scrollHeight = 1200;
-	clientHeight = 600;
-	selectionStart = 0;
-	selectionEnd = 0;
-	private readonly listeners = new Map<string, Array<(event: { preventDefault(): void; target: FakeWebviewElement; key?: string }) => void>>();
-
-	addEventListener(
-		type: string,
-		listener: (event: { preventDefault(): void; target: FakeWebviewElement; key?: string }) => void
-	): void {
-		const listeners = this.listeners.get(type) ?? [];
-		listeners.push(listener);
-		this.listeners.set(type, listeners);
-	}
-
-	requestSubmit(): void {
-		for (const listener of this.listeners.get('submit') ?? []) {
-			listener({
-				preventDefault() {
-					// The webview handler expects this browser API.
-				},
-				target: this,
-			});
-		}
-	}
-
-	focus(): void {
-		// No-op for renderer tests.
-	}
-
-	get innerText(): string {
-		return htmlToText(this.innerHTML || this.textContent || this.value);
-	}
-
-	set innerText(value: string) {
-		this.textContent = value;
-	}
-
-	querySelectorAll(selector: string): FakeWebviewNode[] {
-		if (selector === 'button') {
-			return parseElementsBySelector(this.innerHTML, ['button'], []);
-		}
-		return parseElementsBySelector(this.innerHTML, ['article', 'div', 'li', 'details'], selectorClasses(selector));
-	}
-}
-
-function parseElementsBySelector(
-	html: string,
-	tags: string[],
-	requiredClasses: string[]
-): FakeWebviewNode[] {
-	const nodes: FakeWebviewNode[] = [];
-	for (const tag of tags) {
-		const pattern = new RegExp('<' + tag + '\\b([^>]*)>([\\s\\S]*?)<\\/' + tag + '>', 'gi');
-		for (const match of html.matchAll(pattern)) {
-			const className = parseClassName(match[1] ?? '');
-			if (
-				requiredClasses.length > 0 &&
-				!requiredClasses.some((requiredClass) => className.split(/\s+/).includes(requiredClass))
-			) {
-				continue;
-			}
-			nodes.push(new FakeWebviewNode(className, match[2] ?? ''));
-		}
-	}
-	return nodes;
-}
-
-class FakeWebviewDocument {
-	private readonly elements = new Map<string, FakeWebviewElement>();
-	private readonly listeners = new Map<string, Array<(event: { target: { closest(selector: string): null } }) => void>>();
-
-	getElementById(id: string): FakeWebviewElement {
-		const existing = this.elements.get(id);
-		if (existing) {
-			return existing;
-		}
-		const created = new FakeWebviewElement();
-		this.elements.set(id, created);
-		return created;
-	}
-
-	addEventListener(
-		type: string,
-		listener: (event: { target: { closest(selector: string): null } }) => void
-	): void {
-		const listeners = this.listeners.get(type) ?? [];
-		listeners.push(listener);
-		this.listeners.set(type, listeners);
-	}
-}
-
-class FakeWebviewWindow {
-	private readonly listeners = new Map<string, Array<(event: { data: unknown }) => void>>();
-
-	addEventListener(type: string, listener: (event: { data: unknown }) => void): void {
-		const listeners = this.listeners.get(type) ?? [];
-		listeners.push(listener);
-		this.listeners.set(type, listeners);
-	}
-
-	dispatchMessage(data: unknown): void {
-		for (const listener of this.listeners.get('message') ?? []) {
-			listener({ data });
-		}
-	}
-}
-
-function renderWebviewSnapshot(model: ExecutionWindowModel): WebviewSnapshotPayload {
-	const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
-	const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)?.[1];
-	assert.ok(script, 'Expected generated webview HTML to contain an inline script.');
-
-	const postedMessages: PostedWebviewMessage[] = [];
-	const fakeDocument = new FakeWebviewDocument();
-	const fakeWindow = new FakeWebviewWindow();
-	let persistedState: unknown = undefined;
-	let timeoutId = 0;
-
-	const context = {
-		acquireVsCodeApi: () => ({
-			getState: () => persistedState,
-			setState: (value: unknown) => {
-				persistedState = value;
-			},
-			postMessage: (message: PostedWebviewMessage) => {
-				postedMessages.push(message);
-			},
-		}),
-		document: fakeDocument,
-		window: fakeWindow,
-		console,
-		Date,
-		JSON,
-		Math,
-		String,
-		Array,
-		Boolean,
-		Number,
-		RegExp,
-		setTimeout: (callback: () => void) => {
-			callback();
-			timeoutId += 1;
-			return timeoutId;
-		},
-		clearTimeout: () => {
-			// Timers run synchronously in this focused renderer harness.
-		},
-		setInterval: () => 0,
-		clearInterval: () => {
-			// No-op for renderer tests.
-		},
-	};
-
-	vm.runInNewContext(script, context);
-	fakeWindow.dispatchMessage({
-		type: 'state',
-		payload: {
-			...model,
-			runtimeErgonomics: buildRuntimeErgonomicsKernel(model),
-		},
-	});
-
-	const snapshot = postedMessages
-		.filter((message) => message.type === 'webview_snapshot')
-		.at(-1)?.payload;
-	assert.ok(snapshot, 'Expected webview renderer to post a monitor snapshot.');
-	return snapshot;
-}
-
-function semanticFixtureModel(state: SemanticRoutingFixture['session_state']): ExecutionWindowModel {
-	const model = createInitialModel('2026-04-10T10:00:00.000Z');
-	if (state === 'active_clarification') {
-		return {
-			...model,
-			activeClarification: {
-				id: 'clarification-test',
-				contextRef: 'clarification-test',
-				title: 'Clarification required',
-				body: 'What kind of analysis do you want?',
-				requestedAt: '2026-04-10T10:00:00.000Z',
-				options: [
-					{
-						id: 'architecture',
-						label: 'Architecture',
-						answer: 'Focus on architecture.',
-					},
-				],
-				allowFreeText: true,
-			},
-		};
-	}
-	if (state === 'pending_permission') {
-		return {
-			...model,
-			snapshot: {
-				...model.snapshot,
-				currentActor: 'orchestration',
-				currentStage: 'permission_needed',
-				pendingPermissionRequest: {
-					id: 'permission-test',
-					contextRef: 'permission-test',
-					title: 'Permission needed',
-					body: 'Choose Plan to continue this request.',
-					requestedAt: '2026-04-10T10:00:00.000Z',
-					recommendedScope: 'plan',
-					allowedScopes: ['observe', 'plan', 'execute'],
-				},
-			},
-		};
-	}
-	if (state === 'running') {
-		return {
-			...model,
-			snapshot: {
-				...model.snapshot,
-				currentActor: 'governor',
-				currentStage: 'running',
-				runState: 'running',
-			},
-		};
-	}
-	return model;
 }
 
 suite('Corgi Webview UX', () => {
