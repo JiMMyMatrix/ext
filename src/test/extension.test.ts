@@ -759,6 +759,71 @@ suite('Corgi Webview UX', () => {
 		}
 	});
 
+	test('test-window status accepts a completed final snapshot after the window closes', () => {
+		const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corgi-status-complete-'));
+		const workspaceRoot = path.join(testRoot, 'scratch-workspaces', 'finished-window');
+		const agentRoot = path.join(workspaceRoot, '.agent');
+		const snapshotPath = path.join(agentRoot, 'orchestration', 'corgi_webview_snapshot.json');
+		try {
+			fs.mkdirSync(workspaceRoot, { recursive: true });
+			fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+			fs.writeFileSync(
+				snapshotPath,
+				JSON.stringify({
+					recordedAt: new Date().toISOString(),
+					payload: {
+						state: {
+							runState: 'idle',
+							currentStage: 'governor_decision_recorded',
+						},
+						messages: [{ text: 'Final decision recorded' }],
+						progress: [],
+						actions: [],
+						autoStep: { mode: 'execute', appliedCount: 3 },
+					},
+				})
+			);
+			fs.writeFileSync(
+				path.join(testRoot, 'current-run.json'),
+				JSON.stringify(
+					{
+						workspaceMode: 'scratch',
+						workspaceRoot,
+						sourceRoot: REPO_ROOT,
+						agentRoot,
+						snapshotPath,
+						userDataDir: path.join(testRoot, 'definitely-not-running-profile'),
+						stderrPath: path.join(testRoot, 'stderr.log'),
+					},
+					null,
+					2
+				) + '\n'
+			);
+			const result = spawnSync('node', [TEST_WINDOW_STATUS_SCRIPT_PATH, '--json'], {
+				cwd: REPO_ROOT,
+				encoding: 'utf8',
+				env: {
+					...process.env,
+					CORGI_TEST_WINDOW_ROOT: testRoot,
+				},
+			});
+
+			assert.strictEqual(result.status, 0);
+			const status = JSON.parse(result.stdout) as {
+				ok?: boolean;
+				processAlive?: boolean;
+				processError?: string;
+				lastRunCompleted?: boolean;
+			};
+			assert.strictEqual(status.ok, true);
+			assert.strictEqual(status.processAlive, false);
+			assert.strictEqual(status.lastRunCompleted, true);
+			assert.strictEqual(status.processError, '');
+		} finally {
+			fs.rmSync(testRoot, { recursive: true, force: true });
+		}
+	});
+
 	test('development resets no longer depend on launch env flags', () => {
 		const extensionSource = fs.readFileSync(EXTENSION_TS_PATH, 'utf8');
 		const developmentSessionSource = fs.readFileSync(
@@ -891,6 +956,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(statusScriptSource.includes('processState'));
 		assert.ok(statusScriptSource.includes('oldProfileProcessAlive'));
 		assert.ok(statusScriptSource.includes('legacyProfileProcessAlive'));
+		assert.ok(statusScriptSource.includes('lastRunCompleted'));
+		assert.ok(statusScriptSource.includes('governor_decision_recorded'));
 		assert.ok(statusScriptSource.includes('Current Corgi test window process is not running'));
 		assert.ok(statusScriptSource.includes('Process error: none'));
 		assert.ok(statusScriptSource.includes('relevantLogErrors'));

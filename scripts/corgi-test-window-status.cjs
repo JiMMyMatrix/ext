@@ -190,6 +190,19 @@ function workspaceWriteError() {
 	);
 }
 
+function isCompletedLastRun(state, payload) {
+	const stage = String(state.currentStage || '');
+	const runState = String(state.runState || '');
+	const autoMode = String(payload.autoStep?.mode || '');
+	if (runState !== 'idle') {
+		return false;
+	}
+	if (stage === 'governor_decision_recorded') {
+		return true;
+	}
+	return autoMode === 'plan' && stage === 'plan_ready';
+}
+
 function summarize() {
 	const snapshot = readJson(snapshotPath);
 	const payload = snapshot?.payload || {};
@@ -218,7 +231,8 @@ function summarize() {
 	const isolationError = workspaceIsolationError();
 	const writeError = workspaceWriteError();
 	const processes = processState();
-	const processError = currentRun.userDataDir && !processes.current
+	const lastRunCompleted = Boolean(snapshot) && isCompletedLastRun(state, payload);
+	const processError = currentRun.userDataDir && !processes.current && !lastRunCompleted
 		? 'Current Corgi test window process is not running.'
 		: '';
 
@@ -256,6 +270,7 @@ function summarize() {
 		feedHasError,
 		knownBlockingError,
 		stale,
+		lastRunCompleted,
 		isolationError,
 		writeError,
 		processError,
@@ -270,7 +285,7 @@ if (process.argv.includes('--json')) {
 		[
 			`Corgi test window: ${summary.ok ? 'healthy' : 'attention needed'}`,
 				`Snapshot: ${summary.snapshot}${summary.ageMs === null ? '' : ` (${Math.round(summary.ageMs / 1000)}s old)`}`,
-				`Process: ${summary.processAlive ? 'live' : 'not running'}`,
+				`Process: ${summary.processAlive ? 'live' : summary.lastRunCompleted ? 'completed' : 'not running'}`,
 				summary.oldProfileProcessAlive || summary.legacyProfileProcessAlive
 					? `Legacy processes: old=${summary.oldProfileProcessAlive ? 'live' : 'none'} legacy=${summary.legacyProfileProcessAlive ? 'live' : 'none'}`
 					: 'Legacy processes: none',
