@@ -58,6 +58,10 @@ const EXECUTION_WINDOW_RENDERER_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionWindowRenderer.ts'
 );
+const EXECUTION_WINDOW_STYLES_TS_PATH = path.resolve(
+	__dirname,
+	'../../src/executionWindowStyles.ts'
+);
 const EXECUTION_TRANSPORT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionTransport.ts'
@@ -151,6 +155,7 @@ function readExecutionWindowSource(): string {
 	return [
 		fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8'),
 		fs.readFileSync(EXECUTION_WINDOW_RENDERER_TS_PATH, 'utf8'),
+		fs.readFileSync(EXECUTION_WINDOW_STYLES_TS_PATH, 'utf8'),
 	].join('\n');
 }
 
