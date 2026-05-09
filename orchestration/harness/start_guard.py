@@ -27,6 +27,9 @@ AUXILIARY_PREFIXES = (
     ".agent/smoke/",
     ".agent/worktrees/",
 )
+AUXILIARY_EXACT_PATHS = {
+    "THIS_IS_A_CORGI_TEST_WORKSPACE.md",
+}
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -106,6 +109,8 @@ def scopes_overlap(left: List[str], right: List[str]) -> bool:
 
 def tracked_path_is_auxiliary(rel_path: str) -> bool:
     normalized = normalize_scope_entry(rel_path)
+    if normalized in AUXILIARY_EXACT_PATHS:
+        return True
     return any(normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in AUXILIARY_PREFIXES)
 
 

@@ -3170,6 +3170,35 @@ class HarnessPackageTests(unittest.TestCase):
             )
             self.assertEqual(result, 0)
 
+    def test_start_guard_ignores_test_workspace_marker_but_blocks_real_uncovered_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            subprocess.run(["git", "init"], cwd=repo_root, check=True, capture_output=True)
+            (repo_root / "THIS_IS_A_CORGI_TEST_WORKSPACE.md").write_text(
+                "Corgi test workspace marker.\n",
+                encoding="utf-8",
+            )
+            (repo_root / "src").mkdir(parents=True, exist_ok=True)
+            (repo_root / "src" / "app.js").write_text("console.log('ok');\n", encoding="utf-8")
+            (repo_root / "notes.txt").write_text("unplanned\n", encoding="utf-8")
+
+            blockers = start_guard.worktree_coverage_blockers(
+                repo_root,
+                {
+                    "dispatch_ref": "lane/test/dispatch-001",
+                    "lane": "lane/test",
+                    "required_outputs": ["src/app.js"],
+                },
+                include_current_request_scope=True,
+            )
+
+            self.assertIn("uncovered_worktree_change:notes.txt", blockers)
+            self.assertNotIn(
+                "uncovered_worktree_change:THIS_IS_A_CORGI_TEST_WORKSPACE.md",
+                blockers,
+            )
+            self.assertNotIn("uncovered_worktree_change:src/app.js", blockers)
+
     def test_dispatch_validator_runs_from_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
