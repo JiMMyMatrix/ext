@@ -54,6 +54,10 @@ const EXECUTION_WINDOW_PANEL_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionWindowPanel.ts'
 );
+const EXECUTION_WINDOW_RENDERER_TS_PATH = path.resolve(
+	__dirname,
+	'../../src/executionWindowRenderer.ts'
+);
 const EXECUTION_TRANSPORT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/executionTransport.ts'
@@ -141,6 +145,13 @@ const SEMANTIC_ROUTING_FIXTURE_PATH = path.resolve(
 
 function loadPackageJson(): Record<string, unknown> {
 	return JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8')) as Record<string, unknown>;
+}
+
+function readExecutionWindowSource(): string {
+	return [
+		fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8'),
+		fs.readFileSync(EXECUTION_WINDOW_RENDERER_TS_PATH, 'utf8'),
+	].join('\n');
 }
 
 function semanticContextFlags() {
@@ -754,7 +765,7 @@ suite('Corgi Webview UX', () => {
 			DEVELOPMENT_SESSION_TS_PATH,
 			'utf8'
 		);
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 		const launchScriptSource = fs.readFileSync(TEST_WINDOW_SCRIPT_PATH, 'utf8');
 		const closeScriptSource = fs.readFileSync(TEST_WINDOW_CLOSE_SCRIPT_PATH, 'utf8');
 		const autoScriptSource = fs.readFileSync(TEST_WINDOW_AUTO_SCRIPT_PATH, 'utf8');
@@ -1078,7 +1089,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('semantic sidecar runtime defaults to app-server while keeping exec selectable', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 		const semanticSource = fs.readFileSync(
 			path.resolve(__dirname, '../../src/semanticSidecar.ts'),
 			'utf8'
@@ -1163,7 +1174,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('semantic-intake runtime progress is presented as interpretation, not user-visible drafting', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
 		const clientSource = fs.readFileSync(CODEX_APP_SERVER_CLIENT_TS_PATH, 'utf8');
 
@@ -1191,7 +1202,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('prompt submits omit sessionRef while state-bound actions still gate it on authoritative transport state', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(webviewSource.includes('CORGI_SEMANTIC_MODE'));
 		assert.ok(webviewSource.includes("semantic_mode: 'governor-first'"));
@@ -1213,7 +1224,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('permission clicks keep the foreground request key while sending a fresh command request id', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(webviewSource.includes('function foregroundRequestKeyForAction(action) {'));
 		assert.ok(webviewSource.includes('pendingPermissionRequest?.foregroundRequestId'));
@@ -1224,7 +1235,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('governor replies do not render debug details in the transcript', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(
 			webviewSource.includes(
@@ -1235,7 +1246,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('transient progress stack hides after a governor reply and only keeps three visible rows', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(webviewSource.includes('function latestGovernorReplyForRequest(requestKey) {'));
 		assert.ok(webviewSource.includes('if (latestGovernorReplyForRequest(requestKey)) {'));
@@ -1373,7 +1384,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('permission continuation collapses progress into a specific wait state', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(webviewSource.includes('function setForegroundSingleBullet(label, state, hint) {'));
 		assert.ok(webviewSource.includes('Waiting for reply'));
@@ -1388,7 +1399,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('permission action surface stays hidden until authoritative state changes', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(webviewSource.includes('ui.pendingPermissionContextRef ='));
 		assert.ok(webviewSource.includes('pendingPermissionHiddenAt'));
@@ -1412,7 +1423,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('plan-ready checkpoint exposes execute and revision actions', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(webviewSource.includes('function isPlanReady(snapshot) {'));
 		assert.ok(webviewSource.includes('Plan ready'));
@@ -1428,7 +1439,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('presentation mapping keeps non-governor copy controller-owned', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(webviewSource.includes('function displayCopy(item) {'));
 		assert.ok(webviewSource.includes("case 'permission.needed':"));
@@ -2434,7 +2445,7 @@ suite('Corgi Webview UX', () => {
 		const runtimeSources = [
 			fs.readFileSync(path.resolve(__dirname, '../../src/phase1Model.ts'), 'utf8'),
 			fs.readFileSync(path.resolve(__dirname, '../../src/semanticSidecar.ts'), 'utf8'),
-			fs.readFileSync(path.resolve(__dirname, '../../src/executionWindowPanel.ts'), 'utf8'),
+			readExecutionWindowSource(),
 		].join('\n');
 
 		assert.ok(!runtimeSources.includes('semantic-routing.json'));
@@ -2650,7 +2661,7 @@ suite('Corgi Webview UX', () => {
 
 	test('webview transcript treats requests as assistant replies and separates new turns', () => {
 		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 
 		assert.ok(html.includes('feed-divider'));
 		assert.ok(html.includes('Current turn'));
@@ -2722,7 +2733,7 @@ suite('Corgi Webview UX', () => {
 	});
 
 	test('webview reports structured monitor snapshots without screenshots', () => {
-		const webviewSource = fs.readFileSync(EXECUTION_WINDOW_PANEL_TS_PATH, 'utf8');
+		const webviewSource = readExecutionWindowSource();
 		const html = getExecutionWindowHtml('vscode-webview-resource://test', 'nonce-for-test');
 		const autoHtml = getExecutionWindowHtml(
 			'vscode-webview-resource://test',
