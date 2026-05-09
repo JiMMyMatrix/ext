@@ -11,6 +11,7 @@ from pathlib import Path
 
 from orchestration.harness import (
     artifacts,
+    authorship_evidence,
     cli,
     contracts,
     dispatch,
@@ -480,6 +481,24 @@ class HarnessPackageTests(unittest.TestCase):
                     ".agent/intakes/20260507-pet-life-diary-static/accepted_intake.json",
                 )
             )
+
+    def test_static_pet_diary_dispatch_requires_authorship_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            paths = resolve_paths(repo_root)
+            args: list[str] = []
+
+            session_execution.extend_static_pet_diary_dispatch_args(
+                args,
+                paths,
+                dispatch_ref="lane/intake/dispatch-001",
+                objective="Build a simple static pet life diary app from scratch.",
+                accepted_ref=".agent/intakes/pet/accepted_intake.json",
+            )
+
+            self.assertIn("--authorship-evidence-required", args)
+            for output_ref in session_execution.PET_DIARY_OUTPUTS:
+                self.assertIn(output_ref, args)
 
     def test_advisory_mcp_runtime_config_uses_repo_entrypoint(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -3198,6 +3217,335 @@ class HarnessPackageTests(unittest.TestCase):
                 blockers,
             )
             self.assertNotIn("uncovered_worktree_change:src/app.js", blockers)
+
+    def test_authorship_evidence_classifies_created_and_mutated_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            before_created = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            (repo_root / "README.md").write_text("created by executor\n", encoding="utf-8")
+            after_created = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            created = authorship_evidence.build_evidence_payload(
+                repo_root,
+                {"required_outputs": ["README.md"], "authorship_evidence": {"required": True}},
+                before_created,
+                after_created,
+            )
+
+            self.assertTrue(created["verified"])
+            self.assertEqual(
+                created["required_outputs"]["README.md"]["classification"],
+                "created",
+            )
+
+            before_mutated = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            (repo_root / "README.md").write_text("mutated by executor\n", encoding="utf-8")
+            after_mutated = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            mutated = authorship_evidence.build_evidence_payload(
+                repo_root,
+                {"required_outputs": ["README.md"], "authorship_evidence": {"required": True}},
+                before_mutated,
+                after_mutated,
+            )
+
+            self.assertTrue(mutated["verified"])
+            self.assertEqual(
+                mutated["required_outputs"]["README.md"]["classification"],
+                "mutated",
+            )
+
+    def test_authorship_evidence_blocks_unchanged_and_dirty_at_claim_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            (repo_root / "README.md").write_text("pre-existing content\n", encoding="utf-8")
+            before = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            after = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+
+            unchanged = authorship_evidence.build_evidence_payload(
+                repo_root,
+                {"required_outputs": ["README.md"], "authorship_evidence": {"required": True}},
+                before,
+                after,
+            )
+            self.assertFalse(unchanged["verified"])
+            self.assertIn("unchanged_required_output:README.md", unchanged["blockers"])
+
+            dirty = authorship_evidence.build_evidence_payload(
+                repo_root,
+                {"required_outputs": ["README.md"], "authorship_evidence": {"required": True}},
+                before,
+                after,
+                baseline_status={"README.md": "??"},
+            )
+            self.assertFalse(dirty["verified"])
+            self.assertIn("dirty_at_claim:README.md", dirty["blockers"])
+
+    def test_authorship_evidence_allows_explicit_idempotent_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            (repo_root / "README.md").write_text("stable generated content\n", encoding="utf-8")
+            before = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            after = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+
+            evidence = authorship_evidence.build_evidence_payload(
+                repo_root,
+                {
+                    "required_outputs": ["README.md"],
+                    "authorship_evidence": {
+                        "required": True,
+                        "idempotent_output_allowed": ["README.md"],
+                    },
+                },
+                before,
+                after,
+            )
+
+            self.assertTrue(evidence["verified"])
+            self.assertEqual(evidence["blockers"], [])
+
+    def test_authorship_evidence_rejects_boolean_idempotent_allowance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            (repo_root / "README.md").write_text("stable generated content\n", encoding="utf-8")
+            before = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            after = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+
+            request = {
+                "required_outputs": ["README.md"],
+                "authorship_evidence": {
+                    "required": True,
+                    "idempotent_output_allowed": True,
+                },
+            }
+            evidence = authorship_evidence.build_evidence_payload(
+                repo_root,
+                request,
+                before,
+                after,
+            )
+            failures: list[str] = []
+            dispatch_contracts.validate_authorship_evidence_request(request, failures)
+
+            self.assertFalse(evidence["verified"])
+            self.assertIn("unchanged_required_output:README.md", evidence["blockers"])
+            self.assertIn(
+                "request.json authorship_evidence.idempotent_output_allowed must be a string list when present",
+                failures,
+            )
+
+    def test_result_contract_requires_output_signatures_for_authorship_dispatch(self) -> None:
+        request = {
+            "required_outputs": ["README.md"],
+            "authorship_evidence": {
+                "schema_version": "corgi.executor-authorship.v1",
+                "required": True,
+                "idempotent_output_allowed": [],
+            },
+        }
+        result = {
+            "dispatch_ref": "lane/test/dispatch-001",
+            "status": "completed",
+            "executor_run_refs": ["lane/test/dispatch-001"],
+            "written_or_updated": ["README.md"],
+            "auto_validated": ["validator"],
+            "blocker": None,
+            "recommended_next_bounded_task": "Governor should decide.",
+            "runtime_behavior_changed": False,
+            "scope_respected": True,
+            "notes": [],
+        }
+        failures: list[str] = []
+
+        dispatch_contracts.validate_result(result, failures, request=request)
+
+        self.assertIn(
+            "result.json missing output_signatures for authorship-evidence dispatch",
+            failures,
+        )
+
+    def test_result_contract_accepts_verified_created_authorship_evidence(self) -> None:
+        request = {
+            "required_outputs": ["README.md"],
+            "authorship_evidence": {
+                "schema_version": "corgi.executor-authorship.v1",
+                "required": True,
+                "idempotent_output_allowed": [],
+            },
+        }
+        result = {
+            "dispatch_ref": "lane/test/dispatch-001",
+            "status": "completed",
+            "executor_run_refs": ["lane/test/dispatch-001"],
+            "written_or_updated": ["README.md"],
+            "auto_validated": ["validator"],
+            "blocker": None,
+            "recommended_next_bounded_task": "Governor should decide.",
+            "runtime_behavior_changed": False,
+            "scope_respected": True,
+            "notes": [],
+            "output_signatures": {
+                "schema_version": "corgi.executor-authorship.v1",
+                "baseline_ref": ".agent/runs/lane/test/dispatch-001/baseline_signatures.json",
+                "after_ref": ".agent/runs/lane/test/dispatch-001/output_signatures.json",
+                "required_outputs": {
+                    "README.md": {
+                        "classification": "created",
+                        "dirty_at_claim": False,
+                        "idempotent_allowed": False,
+                    }
+                },
+                "summary": {"created": 1, "mutated": 0, "unchanged": 0, "missing": 0},
+                "verified": True,
+                "blockers": [],
+            },
+        }
+        failures: list[str] = []
+
+        dispatch_contracts.validate_result(result, failures, request=request)
+
+        self.assertEqual(failures, [])
+
+    def test_result_contract_validates_authorship_signature_artifact_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            refs = self._write_matching_authorship_refs(repo_root)
+            request = self._authorship_request()
+            result = self._authorship_result(
+                baseline_ref=refs["baseline_ref"],
+                after_ref=refs["after_ref"],
+            )
+            failures: list[str] = []
+
+            dispatch_contracts.validate_result(
+                result,
+                failures,
+                request=request,
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(failures, [])
+
+    def test_result_contract_rejects_missing_or_tampered_authorship_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            refs = self._write_matching_authorship_refs(repo_root)
+            request = self._authorship_request()
+            result = self._authorship_result(
+                baseline_ref=refs["baseline_ref"],
+                after_ref=".agent/runs/lane/test/dispatch-001/missing.json",
+            )
+            failures: list[str] = []
+
+            dispatch_contracts.validate_result(
+                result,
+                failures,
+                request=request,
+                repo_root=repo_root,
+            )
+
+            self.assertIn(
+                "result.json output_signatures.after_ref does not exist: .agent/runs/lane/test/dispatch-001/missing.json",
+                failures,
+            )
+
+            tampered_after = refs["after_payload"] | {"summary": {"created": 0, "mutated": 1}}
+            (repo_root / refs["after_ref"]).write_text(
+                json.dumps(tampered_after, indent=2),
+                encoding="utf-8",
+            )
+            result = self._authorship_result(
+                baseline_ref=refs["baseline_ref"],
+                after_ref=refs["after_ref"],
+            )
+            failures = []
+
+            dispatch_contracts.validate_result(
+                result,
+                failures,
+                request=request,
+                repo_root=repo_root,
+            )
+
+            self.assertIn(
+                "result.json output_signatures.after_ref does not match embedded summary",
+                failures,
+            )
+
+    def _authorship_request(self) -> dict:
+        return {
+            "required_outputs": ["README.md"],
+            "authorship_evidence": {
+                "schema_version": "corgi.executor-authorship.v1",
+                "required": True,
+                "idempotent_output_allowed": [],
+            },
+        }
+
+    def _authorship_result(self, *, baseline_ref: str, after_ref: str) -> dict:
+        return {
+            "dispatch_ref": "lane/test/dispatch-001",
+            "status": "completed",
+            "executor_run_refs": ["lane/test/dispatch-001"],
+            "written_or_updated": ["README.md"],
+            "auto_validated": ["validator"],
+            "blocker": None,
+            "recommended_next_bounded_task": "Governor should decide.",
+            "runtime_behavior_changed": False,
+            "scope_respected": True,
+            "notes": [],
+            "output_signatures": {
+                "schema_version": "corgi.executor-authorship.v1",
+                "baseline_ref": baseline_ref,
+                "after_ref": after_ref,
+                "required_outputs": {
+                    "README.md": {
+                        "classification": "created",
+                        "dirty_at_claim": False,
+                        "idempotent_allowed": False,
+                    }
+                },
+                "summary": {"created": 1, "mutated": 0, "unchanged": 0, "missing": 0},
+                "verified": True,
+                "blockers": [],
+            },
+        }
+
+    def _write_matching_authorship_refs(self, repo_root: Path) -> dict:
+        baseline_ref = ".agent/runs/lane/test/dispatch-001/baseline_signatures.json"
+        after_ref = ".agent/runs/lane/test/dispatch-001/output_signatures.json"
+        baseline_path = repo_root / baseline_ref
+        after_path = repo_root / after_ref
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_payload = {
+            "schema_version": "corgi.executor-authorship.v1",
+            "dispatch_ref": "lane/test/dispatch-001",
+            "executor_run_ref": "lane/test/dispatch-001",
+            "required_outputs": ["README.md"],
+            "signatures": {"README.md": {"present": False}},
+        }
+        after_payload = {
+            "created_at": "2026-05-10T00:00:00Z",
+            "dispatch_ref": "lane/test/dispatch-001",
+            "executor_run_ref": "lane/test/dispatch-001",
+            "baseline_signatures_ref": baseline_ref,
+            "schema_version": "corgi.executor-authorship.v1",
+            "required_outputs": {
+                "README.md": {
+                    "classification": "created",
+                    "dirty_at_claim": False,
+                    "idempotent_allowed": False,
+                }
+            },
+            "summary": {"created": 1, "mutated": 0, "unchanged": 0, "missing": 0},
+            "verified": True,
+            "blockers": [],
+        }
+        baseline_path.write_text(json.dumps(baseline_payload, indent=2), encoding="utf-8")
+        after_path.write_text(json.dumps(after_payload, indent=2), encoding="utf-8")
+        return {
+            "baseline_ref": baseline_ref,
+            "after_ref": after_ref,
+            "after_payload": after_payload,
+        }
 
     def test_dispatch_validator_runs_from_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

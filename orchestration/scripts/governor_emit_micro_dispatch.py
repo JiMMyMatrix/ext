@@ -81,6 +81,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--execution-evidence", action="append", default=[])
     parser.add_argument("--execution-note", action="append", default=[])
     parser.add_argument("--execution-next-action")
+    parser.add_argument("--authorship-evidence-required", action="store_true")
+    parser.add_argument("--idempotent-output-allowed", action="append", default=[])
     parser.add_argument("--review-required", action="store_true")
     parser.add_argument("--review-focus", action="append", default=[])
     parser.add_argument("--review-artifact-path")
@@ -144,6 +146,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         emit_argv.extend(["--execution-evidence", value])
     for value in args.execution_note:
         emit_argv.extend(["--execution-note", value])
+    for value in args.idempotent_output_allowed:
+        emit_argv.extend(["--idempotent-output-allowed", value])
     for value in args.review_focus:
         emit_argv.extend(["--review-focus", value])
     for value in args.depends_on_dispatch:
@@ -156,6 +160,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         emit_argv.extend(["--execution-summary", args.execution_summary])
     if args.execution_next_action:
         emit_argv.extend(["--execution-next-action", args.execution_next_action])
+    if args.authorship_evidence_required:
+        emit_argv.append("--authorship-evidence-required")
     if args.review_required:
         emit_argv.append("--review-required")
     if args.review_artifact_path:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from orchestration.harness.transition import (
     ALLOWED_CONTINUE_ACTIONS,
@@ -18,6 +18,13 @@ from orchestration.harness.spawn_bridge import (
     LIVE_SUBAGENT_PATH,
 )
 from orchestration.harness.reviewer import ReviewerContractViolation, resolve_review_artifact_path
+from orchestration.harness.authorship_evidence import (
+    SCHEMA_VERSION as AUTHORSHIP_SCHEMA_VERSION,
+    VALID_CLASSIFICATIONS as AUTHORSHIP_CLASSIFICATIONS,
+    authorship_evidence_required,
+    idempotent_output_allowlist,
+    normalized_required_outputs,
+)
 from orchestration.harness.parallel_dispatch import (
     validate_parallel_request_metadata,
     validate_parallel_set_payload,
@@ -488,6 +495,7 @@ def validate_request(payload: Dict, failures: List[str]) -> None:
     validate_parallel_request_metadata(payload, failures)
     validate_review_fields(payload, failures)
     validate_overlap_isolation_request(payload, failures)
+    validate_authorship_evidence_request(payload, failures)
     checkpoint_outputs = [
         item
         for item in payload.get("required_outputs", [])
@@ -507,7 +515,199 @@ def validate_request(payload: Dict, failures: List[str]) -> None:
     validate_execution_payload(payload, failures)
 
 
-def validate_result(payload: Dict, failures: List[str]) -> None:
+def validate_authorship_evidence_request(payload: Dict, failures: List[str]) -> None:
+    raw = payload.get("authorship_evidence")
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        failures.append("request.json authorship_evidence must be an object when present")
+        return
+    schema_version = raw.get("schema_version")
+    if schema_version is not None and schema_version != AUTHORSHIP_SCHEMA_VERSION:
+        failures.append(
+            f"request.json authorship_evidence.schema_version must be {AUTHORSHIP_SCHEMA_VERSION}"
+        )
+    required = raw.get("required")
+    if not isinstance(required, bool):
+        failures.append("request.json authorship_evidence.required must be a boolean")
+    idempotent = raw.get("idempotent_output_allowed")
+    if idempotent is not None and (
+        not isinstance(idempotent, list)
+        or not all(isinstance(item, str) and item.strip() for item in idempotent)
+    ):
+        failures.append(
+            "request.json authorship_evidence.idempotent_output_allowed must be a string list when present"
+        )
+    if raw.get("required") is True and not normalized_required_outputs(payload):
+        failures.append("request.json authorship evidence requires non-empty required_outputs")
+    allowed_outputs = set(normalized_required_outputs(payload))
+    if isinstance(idempotent, list):
+        for item in idempotent:
+            if isinstance(item, str) and item.strip().lstrip("./") not in allowed_outputs:
+                failures.append(
+                    f"request.json idempotent_output_allowed is not a required output: {item}"
+                )
+
+
+def _resolve_repo_local_artifact_ref(repo_root: Path, raw_ref: Any) -> Optional[Path]:
+    if not isinstance(raw_ref, str) or not raw_ref.strip():
+        return None
+    candidate_ref = Path(raw_ref)
+    if candidate_ref.is_absolute():
+        return None
+    resolved_root = repo_root.resolve()
+    resolved = (resolved_root / candidate_ref).resolve()
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _load_authorship_ref_payload(
+    *,
+    repo_root: Path,
+    raw_ref: Any,
+    field: str,
+    failures: List[str],
+) -> Optional[Dict]:
+    resolved = _resolve_repo_local_artifact_ref(repo_root, raw_ref)
+    if resolved is None:
+        failures.append(f"result.json output_signatures.{field} must be a repo-local path")
+        return None
+    if not resolved.is_file():
+        failures.append(f"result.json output_signatures.{field} does not exist: {raw_ref}")
+        return None
+    try:
+        payload = load_json(resolved)
+    except Exception as exc:
+        failures.append(f"result.json output_signatures.{field} could not be read: {exc}")
+        return None
+    if not isinstance(payload, dict):
+        failures.append(f"result.json output_signatures.{field} must point to a JSON object")
+        return None
+    return payload
+
+
+def validate_result_authorship_evidence(
+    payload: Dict,
+    failures: List[str],
+    *,
+    request: Optional[Dict] = None,
+    repo_root: Optional[Path] = None,
+) -> None:
+    if request is None or not authorship_evidence_required(request):
+        return
+    signatures = payload.get("output_signatures")
+    if not isinstance(signatures, dict):
+        failures.append("result.json missing output_signatures for authorship-evidence dispatch")
+        return
+    if signatures.get("schema_version") != AUTHORSHIP_SCHEMA_VERSION:
+        failures.append(
+            f"result.json output_signatures.schema_version must be {AUTHORSHIP_SCHEMA_VERSION}"
+        )
+    refs: Dict[str, str] = {}
+    for field in ["baseline_ref", "after_ref"]:
+        raw_ref = signatures.get(field)
+        if not isinstance(raw_ref, str) or not raw_ref.strip():
+            failures.append(f"result.json output_signatures.{field} must be a non-empty string")
+            continue
+        refs[field] = raw_ref
+    if repo_root is not None:
+        baseline_payload = (
+            _load_authorship_ref_payload(
+                repo_root=repo_root,
+                raw_ref=refs.get("baseline_ref"),
+                field="baseline_ref",
+                failures=failures,
+            )
+            if "baseline_ref" in refs
+            else None
+        )
+        after_payload = (
+            _load_authorship_ref_payload(
+                repo_root=repo_root,
+                raw_ref=refs.get("after_ref"),
+                field="after_ref",
+                failures=failures,
+            )
+            if "after_ref" in refs
+            else None
+        )
+        expected_outputs = normalized_required_outputs(request)
+        if baseline_payload is not None:
+            if baseline_payload.get("schema_version") != AUTHORSHIP_SCHEMA_VERSION:
+                failures.append(
+                    "result.json output_signatures.baseline_ref schema_version mismatch"
+                )
+            if baseline_payload.get("dispatch_ref") != payload.get("dispatch_ref"):
+                failures.append("result.json output_signatures.baseline_ref dispatch_ref mismatch")
+            if baseline_payload.get("required_outputs") != expected_outputs:
+                failures.append(
+                    "result.json output_signatures.baseline_ref required_outputs mismatch"
+                )
+        if after_payload is not None:
+            if after_payload.get("schema_version") != AUTHORSHIP_SCHEMA_VERSION:
+                failures.append("result.json output_signatures.after_ref schema_version mismatch")
+            if after_payload.get("dispatch_ref") != payload.get("dispatch_ref"):
+                failures.append("result.json output_signatures.after_ref dispatch_ref mismatch")
+            if after_payload.get("baseline_signatures_ref") != refs.get("baseline_ref"):
+                failures.append(
+                    "result.json output_signatures.after_ref baseline reference mismatch"
+                )
+            for field in ["required_outputs", "summary", "verified", "blockers"]:
+                if after_payload.get(field) != signatures.get(field):
+                    failures.append(
+                        f"result.json output_signatures.after_ref does not match embedded {field}"
+                    )
+    if signatures.get("verified") is not True:
+        failures.append("result.json output_signatures.verified must be true")
+    blockers = signatures.get("blockers")
+    if not isinstance(blockers, list):
+        failures.append("result.json output_signatures.blockers must be a list")
+    elif blockers:
+        failures.append("result.json output_signatures.blockers must be empty when verified")
+    required_outputs = signatures.get("required_outputs")
+    if not isinstance(required_outputs, dict):
+        failures.append("result.json output_signatures.required_outputs must be an object")
+        return
+
+    idempotent_allowed = idempotent_output_allowlist(request)
+    changed_count = 0
+    for rel_path in normalized_required_outputs(request):
+        entry = required_outputs.get(rel_path)
+        if not isinstance(entry, dict):
+            failures.append(f"result.json output_signatures missing required output: {rel_path}")
+            continue
+        classification = entry.get("classification")
+        if classification not in AUTHORSHIP_CLASSIFICATIONS:
+            failures.append(
+                f"result.json output_signatures classification is invalid for {rel_path}"
+            )
+            continue
+        if classification in {"created", "mutated"}:
+            changed_count += 1
+        if classification == "missing":
+            failures.append(f"result.json output_signatures marks required output missing: {rel_path}")
+        if classification == "unchanged" and rel_path not in idempotent_allowed:
+            failures.append(
+                f"result.json output_signatures marks required output unchanged: {rel_path}"
+            )
+        if entry.get("dirty_at_claim") is True and classification not in {"created", "mutated"}:
+            failures.append(
+                f"result.json output_signatures dirty-at-claim output was not mutated: {rel_path}"
+            )
+    if changed_count == 0 and len(idempotent_allowed) < len(normalized_required_outputs(request)):
+        failures.append("result.json output_signatures must include at least one created or mutated output")
+
+
+def validate_result(
+    payload: Dict,
+    failures: List[str],
+    request: Optional[Dict] = None,
+    *,
+    repo_root: Optional[Path] = None,
+) -> None:
     for field in missing_fields(payload, RESULT_REQUIRED):
         failures.append(f"result.json missing field: {field}")
     status = payload.get("status")
@@ -526,6 +726,7 @@ def validate_result(payload: Dict, failures: List[str]) -> None:
     ):
         failures.append("result.json failure_category must be a non-empty string when present")
     require_string_list(payload, "review_artifact_refs", failures)
+    validate_result_authorship_evidence(payload, failures, request=request, repo_root=repo_root)
 
 
 def validate_governor_decision(payload: Dict, failures: List[str]) -> None:
@@ -935,7 +1136,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         if result_path.exists():
             result = load_json(result_path)
-            validate_result(result, failures)
+            validate_result(result, failures, request=request, repo_root=repo_root)
             if dispatch_ref != result.get("dispatch_ref"):
                 failures.append("dispatch_ref mismatch between request.json and result.json")
 
@@ -946,6 +1147,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 failures.append("dispatch_ref mismatch between request.json and escalation.json")
 
         if decision_path.exists():
+            if not result_path.exists():
+                failures.append("governor_decision.json cannot exist without result.json")
             decision = load_json(decision_path)
             validate_governor_decision(decision, failures)
             if dispatch_ref != decision.get("dispatch_ref"):
@@ -985,7 +1188,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     failures.append("completed dispatch must have result.json status = completed")
 
         if status == "validated" and result_path.exists():
-            failures.append("validated dispatch should not already have a terminal result.json")
+            expected_result_ref = str(result_path.relative_to(repo_root))
+            if result_ref != expected_result_ref:
+                failures.append(
+                    "validated dispatch with result.json must set state.json result_ref to result.json path"
+                )
 
         if status == "escalated" and not escalation_path.exists():
             failures.append("escalated dispatch must include escalation.json")

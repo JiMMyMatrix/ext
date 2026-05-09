@@ -44,6 +44,14 @@ Dispatch truth starts after intake acceptance.
 - retry attempts must increment `attempt_number`, target the latest validated
   plan version, and link to the previous attempt through
   `revision_of_dispatch_ref`
+- helper-backed file-producing dispatches may opt into
+  `authorship_evidence.required = true`; when enabled, Executor completion must
+  include before/after `output_signatures` proving each declared
+  `required_outputs` entry was created or mutated during the run
+- unchanged required outputs fail closed unless the Governor explicitly declares
+  that output in `authorship_evidence.idempotent_output_allowed`
+- `governor_decision.json` must not accept a file-producing attempt whose
+  authorship evidence is missing, stale, blocked, or unverifiable
 - after the bounded retry limit is reached, the work bundle status must become
   blocked with an explicit `revision_limit_reached` reason rather than staying
   in a replan-ready state

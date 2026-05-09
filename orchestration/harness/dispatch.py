@@ -200,6 +200,18 @@ def build_coordination_fields(args: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
+def build_authorship_evidence_fields(args: argparse.Namespace) -> Dict[str, Any]:
+    if not args.authorship_evidence_required and not args.idempotent_output_allowed:
+        return {}
+    return {
+        "authorship_evidence": {
+            "schema_version": "corgi.executor-authorship.v1",
+            "required": bool(args.authorship_evidence_required),
+            "idempotent_output_allowed": unique(args.idempotent_output_allowed),
+        }
+    }
+
+
 def build_emit_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Emit or normalize a governor/executor dispatch.")
     parser.add_argument("--dispatch-ref", required=True)
@@ -238,6 +250,8 @@ def build_emit_parser() -> argparse.ArgumentParser:
     parser.add_argument("--execution-evidence", action="append", default=[])
     parser.add_argument("--execution-note", action="append", default=[])
     parser.add_argument("--execution-next-action")
+    parser.add_argument("--authorship-evidence-required", action="store_true")
+    parser.add_argument("--idempotent-output-allowed", action="append", default=[])
     parser.add_argument("--injected-weakness-guard", action="append", default=[])
     parser.add_argument("--consulted-advisor", action="append", default=[])
     parser.add_argument("--advisor-artifact", action="append", default=[])
@@ -344,6 +358,7 @@ def emit_main(argv: Optional[List[str]] = None) -> int:
             request["retry_handoff"] = parse_json_file(args.retry_handoff_file)
         request.update(build_review_fields(args))
         request.update(build_coordination_fields(args))
+        request.update(build_authorship_evidence_fields(args))
         execution_payload = build_execution_payload(args)
         if execution_payload is not None:
             request["execution_payload"] = execution_payload

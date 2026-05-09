@@ -19,6 +19,12 @@ from orchestration.harness.paths import (
     script_ref,
 )
 from orchestration.harness.dispatch_guards import artifact_only_executor_readout_request
+from orchestration.harness.authorship_evidence import (
+    authorship_evidence_required,
+    build_evidence_payload,
+    capture_signatures,
+    normalized_required_outputs,
+)
 from orchestration.harness.start_guard import (
     ensure_dispatch_startable,
     ensure_lane_worktree_tracked,
@@ -1570,6 +1576,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         write_json(dispatch_dir / "state.json", state)
         update_state(dispatch_dir, "running", args.executor_id, "executor entered bounded run scope")
         baseline_status = git_status_snapshot(repo_root)
+        authorship_required = authorship_evidence_required(request)
+        authorship_outputs = normalized_required_outputs(request)
+        baseline_signatures = {}
+        baseline_signatures_ref = None
+        if authorship_required:
+            if not authorship_outputs:
+                raise SystemExit("authorship evidence requires at least one required_output")
+            baseline_signatures = capture_signatures(repo_root, authorship_outputs)
+            baseline_path = run_dir / "baseline_signatures.json"
+            write_json(
+                baseline_path,
+                {
+                    "schema_version": "corgi.executor-authorship.v1",
+                    "created_at": utc_now(),
+                    "dispatch_ref": request["dispatch_ref"],
+                    "executor_run_ref": executor_run["run_ref"],
+                    "required_outputs": authorship_outputs,
+                    "signatures": baseline_signatures,
+                },
+            )
+            baseline_signatures_ref = relative_path(baseline_path, repo_root)
         try:
             execution_mode = request.get("execution_mode") or "manual_artifact_report"
             if execution_mode == "command_chain":
@@ -1659,6 +1686,35 @@ def main(argv: Optional[List[str]] = None) -> int:
                     f"{FAILURE_SCOPE_VIOLATION}: " + ", ".join(scope_report["undeclared_tracked"])
                 )
 
+            authorship_evidence = None
+            output_signatures_ref = None
+            if authorship_required:
+                after_signatures = capture_signatures(repo_root, authorship_outputs)
+                authorship_evidence = build_evidence_payload(
+                    repo_root,
+                    request,
+                    baseline_signatures,
+                    after_signatures,
+                    baseline_status=baseline_status,
+                )
+                output_signatures_path = run_dir / "output_signatures.json"
+                write_json(
+                    output_signatures_path,
+                    {
+                        "created_at": utc_now(),
+                        "dispatch_ref": request["dispatch_ref"],
+                        "executor_run_ref": executor_run["run_ref"],
+                        "baseline_signatures_ref": baseline_signatures_ref,
+                        **authorship_evidence,
+                    },
+                )
+                output_signatures_ref = relative_path(output_signatures_path, repo_root)
+                if authorship_evidence["blockers"]:
+                    raise SystemExit(
+                        "executor_authorship_unverified: "
+                        + ", ".join(authorship_evidence["blockers"])
+                    )
+
             update_state(dispatch_dir, "validated", args.executor_id, "executor outputs validated")
             if execution_mode != "manual_artifact_report" and not is_artifact_only_executor_readout(
                 repo_root,
@@ -1687,6 +1743,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                     f"untracked_created={len(scope_report['untracked_created'])}",
                 ],
             }
+            if authorship_required and authorship_evidence is not None:
+                result["output_signatures"] = {
+                    "schema_version": authorship_evidence["schema_version"],
+                    "baseline_ref": baseline_signatures_ref,
+                    "after_ref": output_signatures_ref,
+                    "required_outputs": authorship_evidence["required_outputs"],
+                    "summary": authorship_evidence["summary"],
+                    "verified": authorship_evidence["verified"],
+                    "blockers": authorship_evidence["blockers"],
+                }
+                result["auto_validated"].append(
+                    f"executor authorship evidence verified: {output_signatures_ref}"
+                )
             if request.get("review_required") or review_artifact_refs:
                 result["review_artifact_refs"] = review_artifact_refs
             write_json(result_path, result)
@@ -1694,12 +1763,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             state = load_json(dispatch_dir / "state.json")
             state["result_ref"] = str(result_path.relative_to(repo_root))
             write_json(dispatch_dir / "state.json", state)
-            update_state(dispatch_dir, "completed", args.executor_id, "dispatch result written and lifecycle completed")
-
             run_command(
                 [approved_python, script_ref("validate_dispatch_contract.py", repo_root), str(dispatch_dir)],
                 repo_root,
             )
+            update_state(dispatch_dir, "completed", args.executor_id, "dispatch result written and lifecycle completed")
             print(str(dispatch_dir.relative_to(repo_root)))
             return 0
         except SystemExit as exc:

@@ -875,6 +875,7 @@ function runScratchStaticAppModule(options) {
 	const request = readJson(dispatchInfo.requestPath);
 	const state = readJson(path.join(dispatchInfo.dispatchDir, 'state.json'));
 	const result = readJson(path.join(dispatchInfo.dispatchDir, 'result.json'));
+	const outputSignatures = result.output_signatures;
 	const expectedFiles = [
 		'README.md',
 		'index.html',
@@ -893,7 +894,24 @@ function runScratchStaticAppModule(options) {
 			result.written_or_updated.includes(fileRef),
 			`scratch-static-app: ${fileRef} missing from executor result`
 		);
+		assertCondition(
+			outputSignatures?.required_outputs?.[fileRef]?.classification === 'created' ||
+				outputSignatures?.required_outputs?.[fileRef]?.classification === 'mutated',
+			`scratch-static-app: ${fileRef} missing created/mutated authorship evidence`
+		);
 	}
+	assertCondition(
+		request.authorship_evidence?.required === true,
+		'scratch-static-app: authorship evidence was not required'
+	);
+	assertCondition(
+		outputSignatures?.verified === true,
+		'scratch-static-app: authorship evidence was not verified'
+	);
+	assertCondition(
+		Array.isArray(outputSignatures?.blockers) && outputSignatures.blockers.length === 0,
+		'scratch-static-app: authorship evidence reported blockers'
+	);
 	assertCondition(
 		fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8').includes('Pet Life Diary'),
 		'scratch-static-app: index.html missing app title'

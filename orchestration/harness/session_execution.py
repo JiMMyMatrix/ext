@@ -101,6 +101,7 @@ def extend_static_pet_diary_dispatch_args(
         args.extend(["--required-output", output_ref])
     args.extend(
         [
+            "--authorship-evidence-required",
             "--command",
             " ".join(
                 [
