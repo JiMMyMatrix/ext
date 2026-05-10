@@ -160,6 +160,10 @@ def extend_pet_diary_bugfix_dispatch_args(
         paths.agent_root / "validations" / Path(dispatch_ref) / "pet_diary_entry_fix.json",
         paths.repo_root,
     )
+    patch_ref = repo_relative(
+        paths.agent_root / "patches" / Path(dispatch_ref) / "src-app-js.patch",
+        paths.repo_root,
+    )
     for output_ref in PET_DIARY_BUGFIX_OUTPUTS:
         args.extend(["--run-produce", output_ref])
         args.extend(["--run-touch", output_ref])
@@ -199,6 +203,8 @@ def extend_pet_diary_bugfix_dispatch_args(
             "This dispatch fixed an existing project file instead of recreating the app.",
             "--execution-evidence",
             "src/app.js",
+            "--execution-evidence",
+            patch_ref,
             "--execution-evidence",
             validation_ref,
             "--execution-note",

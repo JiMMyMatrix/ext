@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 from pathlib import Path
 
 
@@ -28,7 +29,11 @@ FIXED_SNIPPET = """\tconst text = input.value.trim();
 """
 
 
-def fix_app(repo_root: Path) -> None:
+def patch_path_for(repo_root: Path, dispatch_ref: str) -> Path:
+	return repo_root / ".agent" / "patches" / Path(dispatch_ref) / "src-app-js.patch"
+
+
+def fix_app(repo_root: Path, dispatch_ref: str) -> None:
 	app_path = repo_root / "src" / "app.js"
 	if not app_path.exists():
 		raise SystemExit("src/app.js is missing; cannot fix Pet Life Diary entry submit bug")
@@ -39,7 +44,21 @@ def fix_app(repo_root: Path) -> None:
 		)
 	if BUGGY_SNIPPET not in source:
 		raise SystemExit("src/app.js does not contain the expected seeded diary-entry bug")
-	app_path.write_text(source.replace(BUGGY_SNIPPET, FIXED_SNIPPET), encoding="utf-8")
+	fixed_source = source.replace(BUGGY_SNIPPET, FIXED_SNIPPET)
+	patch_path = patch_path_for(repo_root, dispatch_ref)
+	patch_path.parent.mkdir(parents=True, exist_ok=True)
+	patch_path.write_text(
+		"".join(
+			difflib.unified_diff(
+				source.splitlines(keepends=True),
+				fixed_source.splitlines(keepends=True),
+				fromfile="a/src/app.js",
+				tofile="b/src/app.js",
+			)
+		),
+		encoding="utf-8",
+	)
+	app_path.write_text(fixed_source, encoding="utf-8")
 	print("src/app.js")
 
 
@@ -49,9 +68,9 @@ def main(argv: list[str] | None = None) -> int:
 	parser.add_argument("--dispatch-ref", required=True)
 	parser.add_argument("--objective", required=True)
 	args = parser.parse_args(argv)
-	del args.dispatch_ref, args.objective
+	del args.objective
 
-	fix_app(Path(args.repo_root).resolve())
+	fix_app(Path(args.repo_root).resolve(), args.dispatch_ref)
 	return 0
 
 

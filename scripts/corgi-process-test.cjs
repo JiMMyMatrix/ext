@@ -1142,6 +1142,13 @@ function runScratchBugfixExistingAppModule(options) {
 		dispatchInfo.request.dispatch_ref,
 		'pet_diary_entry_fix.json'
 	);
+	const patchPath = path.join(
+		scratchRoot,
+		'.agent',
+		'patches',
+		dispatchInfo.request.dispatch_ref,
+		'src-app-js.patch'
+	);
 	const fixedApp = fs.readFileSync(appPath, 'utf8');
 	assertCondition(
 		fixedApp.includes('diaryEntries.push'),
@@ -1174,6 +1181,23 @@ function runScratchBugfixExistingAppModule(options) {
 	assertCondition(
 		fs.existsSync(validationPath),
 		'scratch-bugfix-existing-app: validation report was not written'
+	);
+	assertCondition(
+		fs.existsSync(patchPath),
+		'scratch-bugfix-existing-app: patch artifact was not written'
+	);
+	const patchSource = fs.readFileSync(patchPath, 'utf8');
+	assertCondition(
+		patchSource.includes('--- a/src/app.js') && patchSource.includes('+++ b/src/app.js'),
+		'scratch-bugfix-existing-app: patch artifact does not target src/app.js'
+	);
+	assertCondition(
+		patchSource.includes('+\tdiaryEntries.push({'),
+		'scratch-bugfix-existing-app: patch artifact does not show diary entry append'
+	);
+	assertCondition(
+		request.execution_payload.evidence.some((ref) => ref.endsWith('src-app-js.patch')),
+		'scratch-bugfix-existing-app: patch artifact missing from dispatch evidence'
 	);
 	const validation = readJson(validationPath);
 	assertCondition(

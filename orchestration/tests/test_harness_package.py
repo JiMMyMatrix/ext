@@ -545,6 +545,67 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertIn("--validator-command", args)
             self.assertIn("validate_pet_diary_entry.py", " ".join(args))
 
+    def test_pet_diary_bugfix_executor_writes_patch_artifact(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            app_path = scratch_root / "src" / "app.js"
+            app_path.parent.mkdir(parents=True, exist_ok=True)
+            app_path.write_text(
+                '\n'.join(
+                    [
+                        "const diaryEntries = [];",
+                        'const form = document.querySelector("#diary-form");',
+                        'const input = document.querySelector("#diary-entry-input");',
+                        "function renderEntries() {}",
+                        'form?.addEventListener("submit", (event) => {',
+                        "\tevent.preventDefault();",
+                        "\tconst text = input.value.trim();",
+                        "\tif (!text) {",
+                        "\t\treturn;",
+                        "\t}",
+                        '\tinput.value = "";',
+                        "\trenderEntries();",
+                        "});",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_fix_pet_diary_entry.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--objective",
+                    "Fix the pet diary app so adding a diary entry updates the visible list.",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            patch_path = (
+                scratch_root
+                / ".agent"
+                / "patches"
+                / "lane"
+                / "intake"
+                / "dispatch-001"
+                / "src-app-js.patch"
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("diaryEntries.push", app_path.read_text(encoding="utf-8"))
+            self.assertTrue(patch_path.exists())
+            patch_source = patch_path.read_text(encoding="utf-8")
+            self.assertIn("--- a/src/app.js", patch_source)
+            self.assertIn("+++ b/src/app.js", patch_source)
+            self.assertIn("+\tdiaryEntries.push({", patch_source)
+
     def test_pet_diary_bugfix_executor_rejects_already_fixed_app(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp_dir:
