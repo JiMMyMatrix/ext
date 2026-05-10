@@ -17,7 +17,6 @@ from orchestration.harness.paths import (
     resolve_paths,
     script_ref,
     trim_text,
-    write_json,
 )
 
 FeedItemFactory = Callable[..., dict[str, Any]]
@@ -75,26 +74,6 @@ PET_DIARY_OUTPUTS = [
 ]
 
 PET_DIARY_BUGFIX_OUTPUTS = ["src/app.js"]
-
-PET_DIARY_BUGFIX_OLD_SNIPPET = """\tconst text = input.value.trim();
-\tif (!text) {
-\t\treturn;
-\t}
-\tinput.value = "";
-\trenderEntries();
-"""
-
-PET_DIARY_BUGFIX_NEW_SNIPPET = """\tconst text = input.value.trim();
-\tif (!text) {
-\t\treturn;
-\t}
-\tdiaryEntries.push({
-\t\ttext,
-\t\tcreatedAt: "Just now",
-\t});
-\tinput.value = "";
-\trenderEntries();
-"""
 
 
 def matches_pet_diary_static_request(objective: str, accepted_ref: str | None) -> bool:
@@ -189,24 +168,6 @@ def extend_pet_diary_bugfix_dispatch_args(
         paths.agent_root / "patch_specs" / Path(dispatch_ref) / "pet_diary_entry_fix.json",
         paths.repo_root,
     )
-    write_json(
-        paths.repo_root / patch_spec_ref,
-        {
-            "schema_version": "corgi.patch-spec.v1",
-            "dispatch_ref": dispatch_ref,
-            "intent": "Fix the Pet Life Diary submit handler so new diary entries are appended before rendering.",
-            "operations": [
-                {
-                    "path": "src/app.js",
-                    "old_text": PET_DIARY_BUGFIX_OLD_SNIPPET,
-                    "new_text": PET_DIARY_BUGFIX_NEW_SNIPPET,
-                    "expected_replacements": 1,
-                    "forbidden_text": "diaryEntries.push",
-                    "patch_artifact": patch_ref,
-                }
-            ],
-        },
-    )
     for output_ref in PET_DIARY_BUGFIX_OUTPUTS:
         args.extend(["--run-produce", output_ref])
         args.extend(["--run-touch", output_ref])
@@ -214,6 +175,25 @@ def extend_pet_diary_bugfix_dispatch_args(
     args.extend(
         [
             "--authorship-evidence-required",
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_propose_patch_spec.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                    "--recipe",
+                    "pet_diary_entry_submit",
+                    "--spec",
+                    command_arg(patch_spec_ref),
+                    "--patch-artifact",
+                    command_arg(patch_ref),
+                ]
+            ),
             "--command",
             " ".join(
                 [
