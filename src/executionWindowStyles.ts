@@ -120,6 +120,14 @@ export const executionWindowStyles = String.raw`
 			font-size: 11px;
 		}
 
+		.goal-status {
+			border: 1px solid color-mix(in srgb, var(--line) 84%, transparent);
+			border-radius: 999px;
+			color: var(--muted);
+			padding: 1px 7px;
+			white-space: nowrap;
+		}
+
 		.goal-separator {
 			color: var(--faint);
 		}

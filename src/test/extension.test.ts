@@ -1137,6 +1137,34 @@ suite('Corgi Webview UX', () => {
 		assert.deepStrictEqual(snapshot.progress, []);
 	});
 
+	test('goal strip hides redundant status while preserving meaningful status', () => {
+		const idleSnapshot = renderWebviewSnapshot(
+			createInitialModel('2026-04-10T10:00:00.000Z')
+		);
+
+		assert.match(idleSnapshot.goalStrip, /Goal: Nothing active yet/);
+		assert.match(idleSnapshot.goalStrip, /Step: Ready/);
+		assert.ok(!idleSnapshot.goalStrip.includes('Ready Ready'));
+		assert.ok(!idleSnapshot.goalStrip.includes('Ready · Ready'));
+
+		const finalModel: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Build pet diary app.',
+				currentStage: 'governor_decision_recorded',
+				currentActor: 'governor',
+				currentAttemptNumber: 1,
+				latestGovernorDecision: 'accept',
+				runState: 'idle',
+			},
+		};
+
+		const finalSnapshot = renderWebviewSnapshot(finalModel);
+		assert.match(finalSnapshot.goalStrip, /Final decision Accept/);
+		assert.match(finalSnapshot.goalStrip, /Finalized/);
+	});
+
 	test('runtime ergonomics kernel separates transcript, activity, detail, and internal surfaces', () => {
 		const model: ExecutionWindowModel = {
 			...createInitialModel('2026-04-10T10:00:00.000Z'),

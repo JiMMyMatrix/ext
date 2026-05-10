@@ -840,17 +840,34 @@ export function getExecutionWindowClientScript(
 				};
 			}
 
-			function runtimeActionLabel(actionId, fallbackLabel) {
-				const ergonomics = runtimeErgonomics();
-				const candidates = [
-					ergonomics.primaryAction,
+		function runtimeActionLabel(actionId, fallbackLabel) {
+			const ergonomics = runtimeErgonomics();
+			const candidates = [
+				ergonomics.primaryAction,
 					...(Array.isArray(ergonomics.secondaryActions)
 						? ergonomics.secondaryActions
 						: []),
 				];
-				const match = candidates.find((action) => action?.id === actionId);
-				return match?.label || fallbackLabel;
-			}
+			const match = candidates.find((action) => action?.id === actionId);
+			return match?.label || fallbackLabel;
+		}
+
+		function compactGoalToken(value) {
+			return String(value || '')
+				.toLowerCase()
+				.replace(/· attempt \\d+/g, '')
+				.replace(/\\b(final decision|recorded)\\b/g, '')
+				.replace(/[_-]+/g, ' ')
+				.replace(/[^\\w\\s]/g, ' ')
+				.replace(/\\s+/g, ' ')
+				.trim();
+		}
+
+		function shouldShowGoalStatus(goal) {
+			const step = compactGoalToken(goal.step);
+			const status = compactGoalToken(goal.status);
+			return Boolean(status && status !== step);
+		}
 
 			function milestoneArtifact(item) {
 			if (!model || !item?.source_artifact_ref) {
@@ -1815,6 +1832,7 @@ export function getExecutionWindowClientScript(
 			const stale = isSnapshotStale(snapshot);
 				const goal = runtimeGoalDisplay(snapshot, stale);
 			const goalDetail = goalDetailLabel(snapshot);
+			const showGoalStatus = shouldShowGoalStatus(goal);
 			headerContent.innerHTML =
 				'<div class="goal-main">' +
 					'<span class="status-dot ' + statusDotClass(snapshot, stale) + '"></span>' +
@@ -1826,8 +1844,10 @@ export function getExecutionWindowClientScript(
 					'<span class="goal-step"><span class="goal-label">Step:</span> ' +
 						escapeHtml(goal.step) +
 					'</span>' +
-					'<span class="goal-separator">·</span>' +
-					'<span>' + escapeHtml(goal.status) + '</span>' +
+					(showGoalStatus
+						? '<span class="goal-separator">·</span>' +
+							'<span class="goal-status">' + escapeHtml(goal.status) + '</span>'
+						: '') +
 				'</div>';
 		}
 
