@@ -16,8 +16,8 @@ from orchestration.harness import governor_runtime
 from orchestration.harness import governor_semantic
 from orchestration.harness import session_context
 from orchestration.harness import session_execution
+from orchestration.harness import session_guards
 from orchestration.harness import session_permissions
-from orchestration.harness import session_state
 from orchestration.harness import session_work_lifecycle
 from orchestration.harness.paths import (
 	default_lane,
@@ -1397,43 +1397,6 @@ def _append_error(
 	_refresh_snapshot(model, now)
 
 
-def _processed_request_ids(session: dict[str, Any]) -> dict[str, Any]:
-	meta = session.setdefault("meta", {})
-	processed = meta.setdefault("processedRequestIds", {})
-	if isinstance(processed, dict):
-		return processed
-	meta["processedRequestIds"] = {}
-	return meta["processedRequestIds"]
-
-
-def _is_duplicate_request(session: dict[str, Any], request_id: str | None) -> bool:
-	if not request_id:
-		return False
-	return request_id in _processed_request_ids(session)
-
-
-def _remember_request(session: dict[str, Any], request_id: str | None, command: str, now: str) -> None:
-	if not request_id:
-		return
-	_processed_request_ids(session)[request_id] = {"command": command, "handledAt": now}
-
-
-def _is_snapshot_stale(snapshot: dict[str, Any], now: str) -> bool:
-	return session_state.is_snapshot_stale(snapshot, now)
-
-
-def _current_interrupt_context_ref(model: dict[str, Any]) -> str:
-	return f"interrupt:{model['snapshot']['snapshotFreshness'].get('receivedAt') or utc_now()}"
-
-
-def _context_matches(expected_context_ref: str | None, provided_context_ref: str | None) -> bool:
-	return session_state.context_matches(expected_context_ref, provided_context_ref)
-
-
-def _session_ref_matches(model: dict[str, Any], provided_session_ref: str | None) -> bool:
-	return session_state.session_ref_matches(model, provided_session_ref)
-
-
 def _permission_request(
 	recommended_scope: str,
 	now: str,
@@ -2227,7 +2190,7 @@ def handle_submit_prompt(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
 		_append_error(
 			model,
 			"Session changed",
@@ -2653,7 +2616,7 @@ def handle_answer_clarification(
 	model = session["model"]
 	if model.get("activeForegroundRequestId") is None and request_id is not None:
 		model["activeForegroundRequestId"] = request_id
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
 		_append_error(
 			model,
 			"Session changed",
@@ -2675,7 +2638,7 @@ def handle_answer_clarification(
 		return
 
 	expected_context_ref = model["activeClarification"].get("contextRef") or model["activeClarification"].get("id")
-	if not _context_matches(expected_context_ref, context_ref):
+	if not session_guards.context_matches(expected_context_ref, context_ref):
 		_append_error(
 			model,
 			"Clarification changed",
@@ -2841,7 +2804,7 @@ def handle_set_permission_scope(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
 		_append_error(
 			model,
 			"Session changed",
@@ -2874,7 +2837,7 @@ def handle_set_permission_scope(
 		if isinstance(model["snapshot"].get("pendingPermissionRequest"), dict)
 		else None
 	)
-	if not _context_matches(expected_context_ref, context_ref):
+	if not session_guards.context_matches(expected_context_ref, context_ref):
 		_append_error(
 			model,
 			"Permission changed",
@@ -3111,7 +3074,7 @@ def handle_execute_plan(
 			presentation_args={"kind": "plan"},
 		)
 		return
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
 		_append_error(
 			model,
 			"Session changed",
@@ -3176,7 +3139,7 @@ def handle_execute_plan(
 			presentation_args={"reason": "run_in_progress"},
 		)
 		return
-	if not _context_matches(plan_ready.get("contextRef"), context_ref):
+	if not session_guards.context_matches(plan_ready.get("contextRef"), context_ref):
 		_append_error(
 			model,
 			"Plan changed",
@@ -3310,7 +3273,7 @@ def handle_revise_plan(
 			presentation_args={"kind": "plan"},
 		)
 		return
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
 		_append_error(
 			model,
 			"Session changed",
@@ -3341,7 +3304,7 @@ def handle_revise_plan(
 			presentation_args={"kind": "plan"},
 		)
 		return
-	if not _context_matches(plan_ready.get("contextRef"), context_ref):
+	if not session_guards.context_matches(plan_ready.get("contextRef"), context_ref):
 		_append_error(
 			model,
 			"Plan changed",
@@ -3598,7 +3561,7 @@ def handle_decline_permission(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
 		_append_error(
 			model,
 			"Session changed",
@@ -3623,7 +3586,7 @@ def handle_decline_permission(
 		if isinstance(model["snapshot"].get("pendingPermissionRequest"), dict)
 		else None
 	)
-	if not _context_matches(expected_context_ref, context_ref):
+	if not session_guards.context_matches(expected_context_ref, context_ref):
 		_append_error(
 			model,
 			"Permission changed",
@@ -3683,7 +3646,7 @@ def handle_interrupt(
 ) -> None:
 	now = utc_now()
 	model = session["model"]
-	if session_ref is not None and not _session_ref_matches(model, session_ref):
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
 		_append_error(
 			model,
 			"Session changed",
@@ -3712,8 +3675,8 @@ def handle_interrupt(
 			in_response_to_request_id=request_id,
 		)
 		return
-	expected_context_ref = _current_interrupt_context_ref(model)
-	if not _context_matches(expected_context_ref, context_ref):
+	expected_context_ref = session_guards.current_interrupt_context_ref(model)
+	if not session_guards.context_matches(expected_context_ref, context_ref):
 		_append_error(
 			model,
 			"Interrupt state changed",
@@ -3812,7 +3775,7 @@ def handle_reconnect(
 		return
 	if (
 		model["snapshot"].get("transportState") == "connected"
-		and not _is_snapshot_stale(model["snapshot"], now)
+		and not session_guards.is_snapshot_stale(model["snapshot"], now)
 	):
 		_append_error(
 			model,
@@ -3867,7 +3830,11 @@ def dispatch_session_action(
 ) -> dict[str, Any]:
 	session = load_session(repo_root)
 	now = utc_now()
-	if command not in {"state", "complete_governor_turn", "fallback_governor_turn", "fail_governor_turn"} and _is_duplicate_request(session, request_id):
+	if (
+		command
+		not in {"state", "complete_governor_turn", "fallback_governor_turn", "fail_governor_turn"}
+		and session_guards.is_duplicate_request(session, request_id)
+	):
 		_append_error(
 			session["model"],
 			"Duplicate request",
@@ -4017,7 +3984,7 @@ def dispatch_session_action(
 		raise ValueError(f"unsupported session command: {command}")
 
 	if command not in {"state", "complete_governor_turn", "fallback_governor_turn", "fail_governor_turn"}:
-		_remember_request(session, request_id, command, now)
+		session_guards.remember_request(session, request_id, command, now)
 	save_session(session, repo_root=repo_root)
 	pending = _pending_governor_runtime_request(session)
 	if pending and (
