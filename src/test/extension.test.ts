@@ -801,6 +801,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('function setDraftPreviewTarget(value)'));
 		assert.ok(webviewSource.includes('function scheduleDraftPreviewTyping()'));
 		assert.ok(webviewSource.includes('function scheduleGovernorWaitHeartbeat(event)'));
+		assert.ok(webviewSource.includes('visibleBullets.length === 0'));
 		assert.ok(webviewSource.includes('Still waiting for reply'));
 		assert.ok(webviewSource.includes('Taking a deeper pass'));
 		assert.ok(webviewSource.includes('nextDraftPreviewSlice(current, target)'));

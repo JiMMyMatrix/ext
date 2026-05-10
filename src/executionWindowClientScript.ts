@@ -2488,6 +2488,7 @@ export function getExecutionWindowClientScript(
 			const hintText = normalizeUiText(ui.foregroundRequest.hint);
 			const shouldRenderHint =
 				Boolean(hintText) &&
+				visibleBullets.length === 0 &&
 				hintText !== latestBulletLabel &&
 				!(
 					ui.foregroundRequest.status === 'frozen' &&
