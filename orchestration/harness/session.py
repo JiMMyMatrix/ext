@@ -13,6 +13,7 @@ from orchestration.harness.intake import (
 	start_intake,
 )
 from orchestration.harness import governor_runtime
+from orchestration.harness import governor_semantic
 from orchestration.harness import session_context
 from orchestration.harness import session_execution
 from orchestration.harness import session_state
@@ -453,44 +454,21 @@ def _append_completed_governor_dialogue_response(
 
 
 def _parse_governor_semantic_intake_payload(body: str) -> dict[str, Any] | None:
-	raw = trim_text(body)
-	if not raw:
-		return None
-	try:
-		payload = json.loads(raw)
-	except json.JSONDecodeError:
-		start = raw.find("{")
-		end = raw.rfind("}")
-		if start < 0 or end <= start:
-			return None
-		try:
-			payload = json.loads(raw[start : end + 1])
-		except json.JSONDecodeError:
-			return None
-	return payload if isinstance(payload, dict) else None
+	return governor_semantic.parse_governor_semantic_intake_payload(body)
 
 
 def _governor_semantic_proposal(payload: dict[str, Any]) -> dict[str, Any]:
-	proposal = payload.get("proposal")
-	if not isinstance(proposal, dict):
-		proposal = payload
-	return proposal
+	return governor_semantic.semantic_proposal(payload)
 
 
 def _governor_semantic_user_copy(payload: dict[str, Any], fallback: str) -> str:
-	return trim_text(payload.get("user_visible_reply") if isinstance(payload.get("user_visible_reply"), str) else "") or fallback
+	return governor_semantic.semantic_user_copy(payload, fallback)
 
 
 def _record_rejected_governor_semantic_proposal(
 	session: dict[str, Any], pending: dict[str, Any], reason: str, proposal: Any
 ) -> None:
-	session.setdefault("meta", {})["lastRejectedGovernorSemanticProposal"] = {
-		"runtimeRequestId": pending.get("runtimeRequestId"),
-		"requestId": pending.get("requestId"),
-		"reason": reason,
-		"proposal": proposal if isinstance(proposal, dict) else None,
-		"rejectedAt": utc_now(),
-	}
+	governor_semantic.record_rejected_proposal(session, pending, reason, proposal)
 
 
 def _reject_governor_semantic_proposal(
@@ -527,38 +505,27 @@ def _reject_governor_semantic_proposal(
 
 
 def _proposal_permission(proposal: dict[str, Any]) -> str:
-	permission = proposal.get("recommended_permission")
-	return permission if permission in {"observe", "plan", "execute", "none"} else "none"
+	return governor_semantic.proposal_permission(proposal)
 
 
 def _proposal_route(proposal: dict[str, Any]) -> str | None:
-	route = proposal.get("route_type")
-	return route if isinstance(route, str) else None
+	return governor_semantic.proposal_route(proposal)
 
 
 def _proposal_confidence(proposal: dict[str, Any]) -> str:
-	confidence = proposal.get("confidence")
-	return confidence if confidence in {"high", "low"} else "low"
+	return governor_semantic.proposal_confidence(proposal)
 
 
 def _proposal_normalized_intent(proposal: dict[str, Any], fallback: str) -> str:
-	return trim_text(proposal.get("normalized_intent") if isinstance(proposal.get("normalized_intent"), str) else "") or fallback
+	return governor_semantic.proposal_normalized_intent(proposal, fallback)
 
 
 def _governor_semantic_clarification_options(proposal: dict[str, Any]) -> list[dict[str, Any]]:
-	options = proposal.get("clarification_options")
-	if not isinstance(options, list):
-		return []
-	normalized: list[dict[str, Any]] = []
-	for index, option in enumerate(options):
-		if not isinstance(option, dict):
-			continue
-		label = trim_text(option.get("label") if isinstance(option.get("label"), str) else "")
-		value = trim_text(option.get("value") if isinstance(option.get("value"), str) else "")
-		if not label or not value:
-			continue
-		normalized.append({"id": f"option-{index + 1}", "label": label, "answer": value})
-	return normalized
+	return governor_semantic.clarification_options(proposal)
+
+
+def _governor_semantic_initial_rejection_reason(proposal: dict[str, Any]) -> str | None:
+	return governor_semantic.initial_rejection_reason(proposal)
 
 
 def _apply_governor_semantic_dialogue(
@@ -877,33 +844,13 @@ def _complete_governor_semantic_intake(
 	proposal = _governor_semantic_proposal(payload)
 	reply = _governor_semantic_user_copy(payload, "Corgi needs a clearer request before continuing.")
 	route = _proposal_route(proposal)
-	confidence = _proposal_confidence(proposal)
-	if confidence != "high" and route != "block":
+	rejection_reason = _governor_semantic_initial_rejection_reason(proposal)
+	if rejection_reason:
 		_reject_governor_semantic_proposal(
 			session,
 			pending,
 			now,
-			"semantic_intake_low_confidence",
-			body=reply,
-			proposal=proposal,
-		)
-		return
-	if "permission_scope" in proposal:
-		_reject_governor_semantic_proposal(
-			session,
-			pending,
-			now,
-			"semantic_intake_direct_permission_mutation",
-			body=reply,
-			proposal=proposal,
-		)
-		return
-	if route in {"clarification_reply", "execute", "dispatch"}:
-		_reject_governor_semantic_proposal(
-			session,
-			pending,
-			now,
-			"semantic_intake_unsupported_state_claim",
+			rejection_reason,
 			body=reply,
 			proposal=proposal,
 		)
