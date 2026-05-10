@@ -510,7 +510,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(processTestSource.includes('ORCHESTRATION_TEST_PROMPT_PRESET'));
 		assert.ok(processTestSource.includes('createScratchTestEnv'));
 		assert.ok(processTestSource.includes('scratch-static-app'));
+		assert.ok(processTestSource.includes('scratch-bugfix-existing-app'));
 		assert.ok(processTestSource.includes('pet-life-diary-static'));
+		assert.ok(processTestSource.includes('pet-life-diary-bugfix'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(processTestSource.includes('--auto-consume-executor'));
 		assert.ok(processTestSource.includes('--module'));
@@ -534,6 +536,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'architecture'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'develop-internet'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-static'));
+		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-bugfix'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'progress'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'mixed-stop-work'));
 		assert.strictEqual(
@@ -563,6 +566,14 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:process:scratch'],
 			'node scripts/corgi-process-test.cjs --module scratch-static-app'
+		);
+		assert.strictEqual(
+			scripts['test:process:project'],
+			'node scripts/corgi-process-test.cjs --module scratch-bugfix-existing-app'
+		);
+		assert.strictEqual(
+			scripts['test:process:completion'],
+			'node scripts/corgi-process-test.cjs --module completion'
 		);
 		assert.strictEqual(scripts['test:prompts'], 'node scripts/corgi-test-prompt.cjs validate');
 		assert.strictEqual(scripts['test:prompts:list'], 'node scripts/corgi-test-prompt.cjs list');

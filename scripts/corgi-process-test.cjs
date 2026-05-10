@@ -56,7 +56,7 @@ function printUsage() {
 			'',
 			'Runs phase-1 command-only process tests without opening VS Code.',
 			'',
-			'Modules: executor, reviewer, review-replan, scratch-static-app, all',
+			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-bugfix-existing-app, completion, all',
 		].join('\n') + '\n'
 	);
 }
@@ -566,7 +566,7 @@ function createTestEnv(runName, extraEnv = {}) {
 	};
 }
 
-function createScratchTestEnv(runName) {
+function createScratchTestEnv(runName, promptPreset = 'pet-life-diary-static') {
 	const runDir = path.join(repoRoot, '.agent', 'command-test', runName);
 	const scratchRoot = path.join(runDir, 'scratch-workspace');
 	const agentRoot = path.join(scratchRoot, '.agent');
@@ -598,10 +598,167 @@ function createScratchTestEnv(runName) {
 			ORCHESTRATION_SOURCE_ROOT: repoRoot,
 			ORCHESTRATION_AGENT_ROOT: agentRoot,
 			ORCHESTRATION_TARGET_WORKSPACE_MODE: 'scratch',
-			ORCHESTRATION_TEST_PROMPT_PRESET: 'pet-life-diary-static',
+			ORCHESTRATION_TEST_PROMPT_PRESET: promptPreset,
 			ORCHESTRATION_APPROVED_PYTHON: approvedPython(),
 		},
 	};
+}
+
+function writeFixtureFile(root, relPath, content) {
+	const filePath = path.join(root, relPath);
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	fs.writeFileSync(filePath, content, 'utf8');
+}
+
+function seedBuggyPetDiaryApp(scratchRoot) {
+	writeFixtureFile(
+		scratchRoot,
+		'README.md',
+		`# Pet Life Diary
+
+This seeded scratch app has one intentional bug: submitted diary entries are not added to the visible list.
+
+Open index.html in a browser to test it.
+`
+	);
+	writeFixtureFile(
+		scratchRoot,
+		'index.html',
+		`<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Pet Life Diary</title>
+		<link rel="stylesheet" href="src/styles.css" />
+	</head>
+	<body>
+		<main class="shell">
+			<section class="hero">
+				<p class="eyebrow">Pet Life Diary</p>
+				<h1>Daily notes for tiny companions.</h1>
+			</section>
+			<form id="diary-form" class="entry-form">
+				<label for="diary-entry-input">New diary entry</label>
+				<input id="diary-entry-input" name="entry" placeholder="Mochi learned a new trick" />
+				<button type="submit">Add entry</button>
+			</form>
+			<ul id="diary-entry-list" class="entry-list" aria-live="polite"></ul>
+		</main>
+		<script type="module" src="src/app.js"></script>
+	</body>
+</html>
+`
+	);
+	writeFixtureFile(
+		scratchRoot,
+		'src/app.js',
+		`const diaryEntries = [
+	{
+		text: "Mochi practiced a spin trick.",
+		createdAt: "Yesterday",
+	},
+	{
+		text: "Nori inspected every grocery bag.",
+		createdAt: "Today",
+	},
+];
+
+const form = document.querySelector("#diary-form");
+const input = document.querySelector("#diary-entry-input");
+const list = document.querySelector("#diary-entry-list");
+
+function renderEntries() {
+	if (!list) {
+		return;
+	}
+	list.innerHTML = "";
+	for (const entry of diaryEntries) {
+		const item = document.createElement("li");
+		item.className = "entry-card";
+		item.textContent = entry.text + " - " + entry.createdAt;
+		list.append(item);
+	}
+}
+
+form?.addEventListener("submit", (event) => {
+	event.preventDefault();
+	const text = input.value.trim();
+	if (!text) {
+		return;
+	}
+	input.value = "";
+	renderEntries();
+});
+
+renderEntries();
+`
+	);
+	writeFixtureFile(
+		scratchRoot,
+		'src/styles.css',
+		`:root {
+	color: #24302b;
+	background: #fff8ef;
+	font-family: Avenir Next, ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+	margin: 0;
+}
+
+.shell {
+	width: min(760px, calc(100% - 32px));
+	margin: 0 auto;
+	padding: 48px 0;
+}
+
+.entry-form {
+	display: grid;
+	gap: 10px;
+	margin: 24px 0;
+}
+
+.entry-card {
+	margin: 10px 0;
+	padding: 14px 16px;
+	border-radius: 18px;
+	background: rgba(255, 255, 255, 0.78);
+}
+`
+	);
+	writeFixtureFile(
+		scratchRoot,
+		'data/sample-pets.json',
+		`${JSON.stringify(
+			[
+				{ name: 'Mochi', species: 'Corgi' },
+				{ name: 'Nori', species: 'Cat' },
+			],
+			null,
+			2
+		)}\n`
+	);
+	spawnSync('git', ['add', 'README.md', 'index.html', 'src/app.js', 'src/styles.css', 'data/sample-pets.json'], {
+		cwd: scratchRoot,
+		stdio: 'ignore',
+	});
+	spawnSync(
+		'git',
+		[
+			'-c',
+			'user.name=Corgi Process Test',
+			'-c',
+			'user.email=corgi-process-test@example.invalid',
+			'commit',
+			'-m',
+			'Seed buggy pet diary app',
+		],
+		{
+			cwd: scratchRoot,
+			stdio: 'ignore',
+		}
+	);
 }
 
 function runPrompt(prompt, options) {
@@ -957,6 +1114,108 @@ function runScratchStaticAppModule(options) {
 	};
 }
 
+function runScratchBugfixExistingAppModule(options) {
+	const prompt = promptById('pet-life-diary-bugfix');
+	assertCondition(prompt, 'scratch-bugfix-existing-app: prompt preset missing');
+	const runName = `module-scratch-bugfix-existing-app-${runId}`;
+	const { agentRoot, runDir, scratchRoot, env } = createScratchTestEnv(
+		runName,
+		'pet-life-diary-bugfix'
+	);
+	seedBuggyPetDiaryApp(scratchRoot);
+	const baselineApp = fs.readFileSync(path.join(scratchRoot, 'src/app.js'), 'utf8');
+	assertCondition(
+		!baselineApp.includes('diaryEntries.push'),
+		'scratch-bugfix-existing-app: seeded app unexpectedly starts fixed'
+	);
+	const model = runGovernedWorkFlow(prompt, env, true);
+	const dispatchInfo = latestDispatchInfo(agentRoot);
+	const request = readJson(dispatchInfo.requestPath);
+	const state = readJson(path.join(dispatchInfo.dispatchDir, 'state.json'));
+	const result = readJson(path.join(dispatchInfo.dispatchDir, 'result.json'));
+	const outputSignatures = result.output_signatures;
+	const appPath = path.join(scratchRoot, 'src/app.js');
+	const validationPath = path.join(
+		scratchRoot,
+		'.agent',
+		'validations',
+		dispatchInfo.request.dispatch_ref,
+		'pet_diary_entry_fix.json'
+	);
+	const fixedApp = fs.readFileSync(appPath, 'utf8');
+	assertCondition(
+		fixedApp.includes('diaryEntries.push'),
+		'scratch-bugfix-existing-app: src/app.js did not append submitted diary entries'
+	);
+	assertCondition(
+		fixedApp.includes('renderEntries();'),
+		'scratch-bugfix-existing-app: src/app.js did not re-render entries'
+	);
+	assertCondition(
+		request.required_outputs.length === 1 && request.required_outputs.includes('src/app.js'),
+		'scratch-bugfix-existing-app: expected src/app.js as the only required project output'
+	);
+	assertCondition(
+		result.written_or_updated.includes('src/app.js'),
+		'scratch-bugfix-existing-app: src/app.js missing from executor result'
+	);
+	assertCondition(
+		outputSignatures?.required_outputs?.['src/app.js']?.classification === 'mutated',
+		'scratch-bugfix-existing-app: src/app.js missing mutated authorship evidence'
+	);
+	assertCondition(
+		outputSignatures?.verified === true,
+		'scratch-bugfix-existing-app: authorship evidence was not verified'
+	);
+	assertCondition(
+		Array.isArray(outputSignatures?.blockers) && outputSignatures.blockers.length === 0,
+		'scratch-bugfix-existing-app: authorship evidence reported blockers'
+	);
+	assertCondition(
+		fs.existsSync(validationPath),
+		'scratch-bugfix-existing-app: validation report was not written'
+	);
+	const validation = readJson(validationPath);
+	assertCondition(
+		validation.status === 'pass',
+		`scratch-bugfix-existing-app: validation did not pass (${validation.failures?.join(', ')})`
+	);
+	assertCondition(
+		request.execution_mode === 'command_chain',
+		'scratch-bugfix-existing-app: unexpected execution mode'
+	);
+	assertCondition(
+		request.execution_payload.notes.includes('scratch_pet_diary_bugfix'),
+		'scratch-bugfix-existing-app: missing scratch bugfix execution note'
+	);
+	assertCondition(
+		state.status === 'completed' || state.status === 'validated',
+		'scratch-bugfix-existing-app: executor state did not complete'
+	);
+	assertReviewerArtifacts('scratch-bugfix-existing-app', model, dispatchInfo, {
+		expectFeed: false,
+		repoRoot: scratchRoot,
+	});
+	assertGovernorDecision('scratch-bugfix-existing-app', model, dispatchInfo, {
+		expectFeed: false,
+	});
+	for (const devRef of ['index.html', path.join('data', 'sample-pets.json'), path.join('src', 'app.js')]) {
+		assertCondition(
+			!fs.existsSync(path.join(repoRoot, devRef)),
+			`scratch-bugfix-existing-app: wrote ${devRef} to Corgi source repo`
+		);
+	}
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: 'module:scratch-bugfix-existing-app',
+		stage: model.snapshot.currentStage,
+		permissionScope: model.snapshot.permissionScope,
+		dispatchRef: dispatchInfo.request.dispatch_ref,
+	};
+}
+
 function runModule(moduleName, options) {
 	switch (moduleName) {
 		case 'executor':
@@ -967,6 +1226,10 @@ function runModule(moduleName, options) {
 			return [runReviewReplanModule(options)];
 		case 'scratch-static-app':
 			return [runScratchStaticAppModule(options)];
+		case 'scratch-bugfix-existing-app':
+			return [runScratchBugfixExistingAppModule(options)];
+		case 'completion':
+			return [runScratchStaticAppModule(options), runScratchBugfixExistingAppModule(options)];
 		case 'all':
 			return [
 				runExecutorModule(options),

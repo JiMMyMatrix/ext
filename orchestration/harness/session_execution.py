@@ -73,6 +73,8 @@ PET_DIARY_OUTPUTS = [
     "data/sample-pets.json",
 ]
 
+PET_DIARY_BUGFIX_OUTPUTS = ["src/app.js"]
+
 
 def matches_pet_diary_static_request(objective: str, accepted_ref: str | None) -> bool:
     combined = f"{objective} {accepted_ref or ''}".lower()
@@ -84,6 +86,19 @@ def is_pet_diary_static_test_dispatch(objective: str, accepted_ref: str | None) 
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
         and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-static"
         and matches_pet_diary_static_request(objective, accepted_ref)
+    )
+
+
+def matches_pet_diary_bugfix_request(objective: str, accepted_ref: str | None) -> bool:
+    combined = f"{objective} {accepted_ref or ''}".lower()
+    return "pet" in combined and "diary" in combined and "entry" in combined
+
+
+def is_pet_diary_bugfix_test_dispatch(objective: str, accepted_ref: str | None) -> bool:
+    return (
+        os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-bugfix"
+        and matches_pet_diary_bugfix_request(objective, accepted_ref)
     )
 
 
@@ -130,6 +145,66 @@ def extend_static_pet_diary_dispatch_args(
             "scratch_static_app_creation",
             "--execution-next-action",
             "Reviewer should check the created static app files and Governor should finalize or request a revision.",
+        ]
+    )
+
+
+def extend_pet_diary_bugfix_dispatch_args(
+    args: list[str],
+    paths: Any,
+    *,
+    dispatch_ref: str,
+    objective: str,
+) -> None:
+    validation_ref = repo_relative(
+        paths.agent_root / "validations" / Path(dispatch_ref) / "pet_diary_entry_fix.json",
+        paths.repo_root,
+    )
+    for output_ref in PET_DIARY_BUGFIX_OUTPUTS:
+        args.extend(["--run-produce", output_ref])
+        args.extend(["--run-touch", output_ref])
+        args.extend(["--required-output", output_ref])
+    args.extend(
+        [
+            "--authorship-evidence-required",
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_fix_pet_diary_entry.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                ]
+            ),
+            "--validator-command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("validate_pet_diary_entry.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--report",
+                    command_arg(validation_ref),
+                ]
+            ),
+            "--execution-summary",
+            "Executor fixed the Pet Life Diary entry submit flow in the existing scratch app.",
+            "--execution-claim",
+            "Executor mutated src/app.js so submitted diary entries are appended and re-rendered.",
+            "--execution-claim",
+            "This dispatch fixed an existing project file instead of recreating the app.",
+            "--execution-evidence",
+            "src/app.js",
+            "--execution-evidence",
+            validation_ref,
+            "--execution-note",
+            "scratch_pet_diary_bugfix",
+            "--execution-next-action",
+            "Reviewer should verify the entry-submit behavior evidence before Governor finalizes.",
         ]
     )
 
@@ -185,6 +260,7 @@ def emit_plan_execution_dispatch(
         if isinstance(ref, str) and ref.strip()
     ]
     is_static_pet_diary = is_pet_diary_static_test_dispatch(objective, accepted_ref)
+    is_pet_diary_bugfix = is_pet_diary_bugfix_test_dispatch(objective, accepted_ref)
     args = [
         "--dispatch-ref",
         dispatch_ref,
@@ -219,6 +295,13 @@ def emit_plan_execution_dispatch(
             dispatch_ref=dispatch_ref,
             objective=objective,
             accepted_ref=accepted_ref,
+        )
+    elif is_pet_diary_bugfix:
+        extend_pet_diary_bugfix_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
         )
     else:
         args.extend(

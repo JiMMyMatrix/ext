@@ -88,6 +88,29 @@
       "tags": ["scratch", "static-app", "e2e", "executor"]
     },
     {
+      "id": "pet-life-diary-bugfix",
+      "label": "Pet life diary bugfix",
+      "prompt": "Fix the pet diary app so adding a diary entry updates the visible list. Keep the UI simple and preserve the existing app structure.",
+      "category": "scratch_bugfix",
+      "requiresScenario": "fresh-session",
+      "purpose": "Real-world scratch-workspace benchmark that proves Executor can mutate an existing project file and Reviewer can validate behavior evidence.",
+      "expectedFlow": [
+        "understanding_request",
+        "plan_permission",
+        "governor_plan",
+        "execute_permission",
+        "executor_mutates_existing_file",
+        "reviewer_checks",
+        "governor_decision_recorded"
+      ],
+      "assertions": [
+        "Target workspace is a seeded scratch app, not the Corgi source repo.",
+        "Executor mutates src/app.js instead of recreating the app.",
+        "Reviewer and Governor decision artifacts are recorded after validation evidence passes."
+      ],
+      "tags": ["scratch", "bugfix", "existing-app", "executor", "reviewer"]
+    },
+    {
       "id": "question-work",
       "label": "Question-shaped work",
       "prompt": "can we develop the internet feature?",

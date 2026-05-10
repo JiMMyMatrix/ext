@@ -501,6 +501,147 @@ class HarnessPackageTests(unittest.TestCase):
             for output_ref in session_execution.PET_DIARY_OUTPUTS:
                 self.assertIn(output_ref, args)
 
+    def test_pet_diary_bugfix_executor_requires_explicit_scratch_test_metadata(self) -> None:
+        objective = "Fix the pet diary app so adding a diary entry updates the visible list."
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(
+                session_execution.is_pet_diary_bugfix_test_dispatch(
+                    objective,
+                    ".agent/intakes/20260510-pet-life-diary-bugfix/accepted_intake.json",
+                )
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-bugfix",
+            },
+            clear=True,
+        ):
+            self.assertTrue(
+                session_execution.is_pet_diary_bugfix_test_dispatch(
+                    objective,
+                    ".agent/intakes/20260510-pet-life-diary-bugfix/accepted_intake.json",
+                )
+            )
+
+    def test_pet_diary_bugfix_dispatch_requires_mutation_authorship_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            paths = resolve_paths(repo_root)
+            args: list[str] = []
+
+            session_execution.extend_pet_diary_bugfix_dispatch_args(
+                args,
+                paths,
+                dispatch_ref="lane/intake/dispatch-001",
+                objective="Fix the pet diary app so adding a diary entry updates the visible list.",
+            )
+
+            self.assertIn("--authorship-evidence-required", args)
+            for output_ref in session_execution.PET_DIARY_BUGFIX_OUTPUTS:
+                self.assertIn(output_ref, args)
+            self.assertIn("--validator-command", args)
+            self.assertIn("validate_pet_diary_entry.py", " ".join(args))
+
+    def test_pet_diary_bugfix_executor_rejects_already_fixed_app(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            app_path = scratch_root / "src" / "app.js"
+            app_path.parent.mkdir(parents=True, exist_ok=True)
+            app_path.write_text(
+                '\n'.join(
+                    [
+                        "const diaryEntries = [];",
+                        'const form = document.querySelector("#diary-form");',
+                        'const input = document.querySelector("#diary-entry-input");',
+                        "function renderEntries() {}",
+                        'form?.addEventListener("submit", (event) => {',
+                        "\tevent.preventDefault();",
+                        "\tconst text = input.value.trim();",
+                        "\tif (!text) {",
+                        "\t\treturn;",
+                        "\t}",
+                        "\tdiaryEntries.push({",
+                        "\t\ttext,",
+                        '\t\tcreatedAt: "Just now",',
+                        "\t});",
+                        '\tinput.value = "";',
+                        "\trenderEntries();",
+                        "});",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_fix_pet_diary_entry.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--objective",
+                    "Fix the pet diary app so adding a diary entry updates the visible list.",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("already appends diary entries", result.stderr)
+
+    def test_pet_diary_validation_requires_append_inside_submit_handler(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            (scratch_root / "src").mkdir(parents=True, exist_ok=True)
+            (scratch_root / "index.html").write_text(
+                '<form id="diary-form"><input id="diary-entry-input" /></form>\n',
+                encoding="utf-8",
+            )
+            (scratch_root / "src" / "app.js").write_text(
+                '\n'.join(
+                    [
+                        "const diaryEntries = [];",
+                        "diaryEntries.push({ text: 'dead code', createdAt: 'Never' });",
+                        'const form = document.querySelector("#diary-form");',
+                        "function renderEntries() {}",
+                        'form?.addEventListener("submit", (event) => {',
+                        "\tevent.preventDefault();",
+                        "\trenderEntries();",
+                        "});",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report_ref = ".agent/validations/lane/intake/dispatch-001/pet_diary_entry_fix.json"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "validate_pet_diary_entry.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--report",
+                    report_ref,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            report = load_json(scratch_root / report_ref)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(report["status"], "fail")
+            self.assertFalse(report["checks"]["appends_entry_in_submit_handler"])
+
     def test_advisory_mcp_runtime_config_uses_repo_entrypoint(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         config_source = (repo_root / "orchestration" / "runtime" / "config.toml").read_text(

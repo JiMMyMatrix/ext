@@ -63,20 +63,5 @@ def permission_request(
 
 
 def recommended_permission_scope(prompt: str) -> str:
-	lower = prompt.lower().strip()
-	if any(
-		lower == token or lower.startswith(f"{token} ")
-		for token in (
-			"implement",
-			"build",
-			"create",
-			"refactor",
-			"fix",
-			"debug",
-			"update",
-			"change",
-			"write",
-		)
-	):
-		return "execute"
+	del prompt
 	return "plan"
