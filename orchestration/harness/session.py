@@ -16,6 +16,7 @@ from orchestration.harness import governor_runtime
 from orchestration.harness import governor_semantic
 from orchestration.harness import session_context
 from orchestration.harness import session_execution
+from orchestration.harness import session_permissions
 from orchestration.harness import session_state
 from orchestration.harness import session_work_lifecycle
 from orchestration.harness.paths import (
@@ -552,7 +553,9 @@ def _apply_governor_semantic_dialogue(
 			proposal=proposal,
 		)
 		return
-	if not _scope_satisfies(_current_permission_scope(model), "observe"):
+	if not session_permissions.scope_satisfies(
+		session_permissions.current_permission_scope(model), "observe"
+	):
 		permission_request = _permission_request(
 			"observe",
 			now,
@@ -620,7 +623,7 @@ def _apply_governor_semantic_work_intent(
 	normalized = _proposal_normalized_intent(proposal, prompt)
 	initial_scope = _proposal_permission(proposal)
 	if initial_scope == "none":
-		initial_scope = _recommended_permission_scope(normalized)
+		initial_scope = session_permissions.recommended_permission_scope(normalized)
 	if initial_scope == "execute":
 		# Free-text governed work still starts at planning. The Governor may
 		# recommend execute for an obvious build request, but orchestration must
@@ -1198,7 +1201,7 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 			snapshot["pendingPermissionRequest"] = {
 				**legacy_pending,
 				"recommendedScope": "plan",
-				"allowedScopes": _allowed_permission_scopes("plan"),
+				"allowedScopes": session_permissions.allowed_permission_scopes("plan"),
 			}
 		else:
 			snapshot["pendingPermissionRequest"] = None
@@ -1239,7 +1242,7 @@ def _normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pa
 			"contextRef", snapshot["pendingPermissionRequest"].get("id")
 		)
 		snapshot["pendingPermissionRequest"].setdefault("recommendedScope", "plan")
-		snapshot["pendingPermissionRequest"]["allowedScopes"] = _allowed_permission_scopes(
+		snapshot["pendingPermissionRequest"]["allowedScopes"] = session_permissions.allowed_permission_scopes(
 			snapshot["pendingPermissionRequest"].get("recommendedScope")
 		)
 		snapshot["pendingPermissionRequest"].setdefault(
@@ -1367,10 +1370,6 @@ def _append_user_turn(
 	)
 
 
-def _current_permission_scope(model: dict[str, Any]) -> str:
-	return model["snapshot"].get("permissionScope") or "unset"
-
-
 def _append_error(
 	model: dict[str, Any],
 	title: str,
@@ -1419,10 +1418,6 @@ def _remember_request(session: dict[str, Any], request_id: str | None, command: 
 	_processed_request_ids(session)[request_id] = {"command": command, "handledAt": now}
 
 
-def _parse_received_at(value: str | None) -> Any:
-	return session_state.parse_received_at(value)
-
-
 def _is_snapshot_stale(snapshot: dict[str, Any], now: str) -> bool:
 	return session_state.is_snapshot_stale(snapshot, now)
 
@@ -1439,34 +1434,6 @@ def _session_ref_matches(model: dict[str, Any], provided_session_ref: str | None
 	return session_state.session_ref_matches(model, provided_session_ref)
 
 
-def _permission_rank(scope: str | None) -> int:
-	return session_state.permission_rank(scope)
-
-
-def _scope_satisfies(current_scope: str | None, required_scope: str | None) -> bool:
-	return session_state.scope_satisfies(current_scope, required_scope)
-
-
-def _allowed_permission_scopes(required_scope: str | None) -> list[str]:
-	return session_state.allowed_permission_scopes(required_scope)
-
-
-def _format_permission_scope(scope: str | None) -> str:
-	return session_state.format_permission_scope(scope)
-
-
-def _should_request_execute_for_accepted_continuation(
-	model: dict[str, Any], semantic_context_flags: dict[str, Any] | None
-) -> bool:
-	return bool(
-		model.get("acceptedIntakeSummary")
-		and model["snapshot"].get("permissionScope") == "plan"
-		and model["snapshot"].get("currentStage") == "plan_ready"
-		and isinstance(semantic_context_flags, dict)
-		and semantic_context_flags.get("used_accepted_intake_summary")
-	)
-
-
 def _permission_request(
 	recommended_scope: str,
 	now: str,
@@ -1476,20 +1443,15 @@ def _permission_request(
 	pending_normalized_text: str | None = None,
 	foreground_request_id: str | None = None,
 ) -> dict[str, Any]:
-	request_id = _next_id("permission")
-	return {
-		"id": request_id,
-		"contextRef": request_id,
-		"title": "Permission needed",
-		"body": f"Choose {recommended_scope} if you want Corgi to continue this request.",
-		"recommendedScope": recommended_scope,
-		"allowedScopes": _allowed_permission_scopes(recommended_scope),
-		"continuationKind": continuation_kind,
-		"pendingPrompt": pending_prompt,
-		"pendingNormalizedText": pending_normalized_text,
-		"foregroundRequestId": foreground_request_id,
-		"requestedAt": now,
-	}
+	return session_permissions.permission_request(
+		recommended_scope,
+		now,
+		next_id=_next_id,
+		continuation_kind=continuation_kind,
+		pending_prompt=pending_prompt,
+		pending_normalized_text=pending_normalized_text,
+		foreground_request_id=foreground_request_id,
+	)
 
 
 def _build_plan_ready_request(
@@ -1628,7 +1590,7 @@ def _auto_execute_revised_plan(
 		"review_inconclusive",
 	}:
 		return False
-	if not _scope_satisfies(model["snapshot"].get("permissionScope"), "execute"):
+	if not session_permissions.scope_satisfies(model["snapshot"].get("permissionScope"), "execute"):
 		return False
 	context_ref = plan_ready.get("contextRef")
 	if not isinstance(context_ref, str) or not context_ref.strip():
@@ -1732,7 +1694,7 @@ def _maybe_replan_after_review(
 		runtime_kind="plan",
 		governor_runtime=governor_runtime,
 		auto_execute_revised_plan=auto_consume_executor
-		and _scope_satisfies(model["snapshot"].get("permissionScope"), "execute"),
+		and session_permissions.scope_satisfies(model["snapshot"].get("permissionScope"), "execute"),
 		auto_consume_executor_after_plan=auto_consume_executor,
 		auto_governor_runtime_after_plan=governor_runtime,
 		return_runtime_request=return_runtime_request,
@@ -1920,26 +1882,6 @@ def _set_plan_ready_request(
 	model["planReadyRequest"] = _build_plan_ready_request(
 		model, now, foreground_request_id=foreground_request_id
 	)
-
-
-def _recommended_permission_scope(prompt: str) -> str:
-	lower = prompt.lower().strip()
-	if any(
-		lower == token or lower.startswith(f"{token} ")
-		for token in (
-			"implement",
-			"build",
-			"create",
-			"refactor",
-			"fix",
-			"debug",
-			"update",
-			"change",
-			"write",
-		)
-	):
-		return "execute"
-	return "plan"
 
 
 def _supersede_pending_permission_request(
@@ -2345,7 +2287,9 @@ def handle_submit_prompt(
 	if request_id is not None:
 		model["activeForegroundRequestId"] = request_id
 	if resolved_turn_type == "governor_dialogue":
-		if not _scope_satisfies(_current_permission_scope(model), "observe"):
+		if not session_permissions.scope_satisfies(
+			session_permissions.current_permission_scope(model), "observe"
+		):
 			_append_user_turn(
 				model,
 				now,
@@ -2450,7 +2394,7 @@ def handle_submit_prompt(
 		)
 		return
 
-	if _should_request_execute_for_accepted_continuation(model, semantic_context_flags):
+	if session_permissions.should_request_execute_for_accepted_continuation(model, semantic_context_flags):
 		_append_user_turn(
 			model,
 			now,
@@ -2610,8 +2554,10 @@ def handle_submit_prompt(
 		return
 
 	model["activeClarification"] = None
-	required_scope = _recommended_permission_scope(semantic_prompt)
-	if _scope_satisfies(_current_permission_scope(model), required_scope):
+	required_scope = session_permissions.recommended_permission_scope(semantic_prompt)
+	if session_permissions.scope_satisfies(
+		session_permissions.current_permission_scope(model), required_scope
+	):
 		model["snapshot"]["pendingPermissionRequest"] = _permission_request(
 			required_scope,
 			now,
@@ -2624,7 +2570,7 @@ def handle_submit_prompt(
 			session,
 			now,
 			repo_root=repo_root,
-			permission_scope=_current_permission_scope(model),
+			permission_scope=session_permissions.current_permission_scope(model),
 			request_id=request_id,
 			turn_type=resolved_turn_type,
 			semantic_input_version=semantic_input_version,
@@ -2798,8 +2744,10 @@ def handle_answer_clarification(
 		)
 	)
 	model["activeClarification"] = None
-	required_scope = _recommended_permission_scope(semantic_answer)
-	if _scope_satisfies(_current_permission_scope(model), required_scope):
+	required_scope = session_permissions.recommended_permission_scope(semantic_answer)
+	if session_permissions.scope_satisfies(
+		session_permissions.current_permission_scope(model), required_scope
+	):
 		model["snapshot"]["pendingPermissionRequest"] = _permission_request(
 			required_scope,
 			now,
@@ -2812,7 +2760,7 @@ def handle_answer_clarification(
 			session,
 			now,
 			repo_root=repo_root,
-			permission_scope=_current_permission_scope(model),
+			permission_scope=session_permissions.current_permission_scope(model),
 			request_id=request_id,
 			turn_type="clarification_reply",
 			semantic_input_version=semantic_input_version,
@@ -2952,11 +2900,11 @@ def handle_set_permission_scope(
 		else {}
 	)
 	recommended_scope = pending_permission.get("recommendedScope") or "plan"
-	if not _scope_satisfies(permission_scope, recommended_scope):
+	if not session_permissions.scope_satisfies(permission_scope, recommended_scope):
 		_append_error(
 			model,
 			"Permission scope too low",
-			f"Choose {_format_permission_scope(recommended_scope)} or higher to continue this request.",
+			f"Choose {session_permissions.format_permission_scope(recommended_scope)} or higher to continue this request.",
 			now,
 			in_response_to_request_id=request_id,
 			presentation_key="error.permission_scope_too_low",
@@ -3196,7 +3144,7 @@ def handle_execute_plan(
 			presentation_args={"kind": "plan", "reason": "stage_changed"},
 		)
 		return
-	if not _scope_satisfies(model["snapshot"].get("permissionScope"), "plan"):
+	if not session_permissions.scope_satisfies(model["snapshot"].get("permissionScope"), "plan"):
 		block_plan_execution(
 			"Plan permission needed",
 			"Return to Plan scope before executing this plan checkpoint.",
