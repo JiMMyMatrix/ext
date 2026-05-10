@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from orchestration.harness import governor_semantic
+from orchestration.harness import session_context
 from orchestration.harness import session_permissions
 from orchestration.harness.intake import start_intake
 from orchestration.harness.paths import git_branch_name, summarize, trim_text, utc_now
@@ -391,7 +392,7 @@ def complete_governor_semantic_intake(
 	supersede_pending_permission_request: SupersedePendingPermissionRequest,
 	reset_work_loop_state: ResetWorkLoopState,
 ) -> None:
-	governor_meta = session.setdefault("meta", {}).setdefault("governorDialogue", {})
+	governor_meta = session_context.governor_dialogue_meta(session)
 	if app_server_thread_id:
 		governor_meta["appServerThreadId"] = app_server_thread_id
 	if app_server_turn_id:

@@ -186,6 +186,7 @@ def handle_fallback_governor_turn(
 		pending,
 		body,
 		now,
+		repo_root=repo_root,
 		runtime_source="exec-fallback",
 	)
 	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
