@@ -18,6 +18,7 @@ from orchestration.harness import session_context
 from orchestration.harness import session_execution
 from orchestration.harness import session_guards
 from orchestration.harness import session_permissions
+from orchestration.harness import session_surfaces
 from orchestration.harness import session_work_lifecycle
 from orchestration.harness.paths import (
 	default_lane,
@@ -1303,71 +1304,8 @@ def public_model(session: dict[str, Any]) -> dict[str, Any]:
 	return session["model"]
 
 
-def _semantic_provenance(
-	*,
-	turn_type: str | None = None,
-	semantic_input_version: str | None = None,
-	semantic_summary_ref: str | None = None,
-	semantic_context_flags: dict[str, Any] | None = None,
-	semantic_route_type: str | None = None,
-	semantic_confidence: str | None = None,
-	semantic_block_reason: str | None = None,
-	semantic_paraphrase: str | None = None,
-	semantic_normalized_text: str | None = None,
-	in_response_to_request_id: str | None = None,
-) -> dict[str, Any]:
-	return {
-		"turn_type": turn_type,
-		"semantic_input_version": semantic_input_version,
-		"semantic_summary_ref": semantic_summary_ref,
-		"semantic_context_flags": semantic_context_flags,
-		"semantic_route_type": semantic_route_type,
-		"semantic_confidence": semantic_confidence,
-		"semantic_block_reason": semantic_block_reason,
-		"semantic_paraphrase": semantic_paraphrase,
-		"semantic_normalized_text": semantic_normalized_text,
-		"in_response_to_request_id": in_response_to_request_id,
-	}
-
-
-def _append_user_turn(
-	model: dict[str, Any],
-	now: str,
-	*,
-	title: str,
-	body: str,
-	turn_type: str | None = None,
-	semantic_input_version: str | None = None,
-	semantic_summary_ref: str | None = None,
-	semantic_context_flags: dict[str, Any] | None = None,
-	semantic_route_type: str | None = None,
-	semantic_confidence: str | None = None,
-	semantic_block_reason: str | None = None,
-	semantic_paraphrase: str | None = None,
-	semantic_normalized_text: str | None = None,
-	in_response_to_request_id: str | None = None,
-) -> None:
-	model["feed"].append(
-		_feed_item(
-			"user_message",
-			title,
-			body,
-			authoritative=False,
-			now=now,
-			**_semantic_provenance(
-				turn_type=turn_type,
-				semantic_input_version=semantic_input_version,
-				semantic_summary_ref=semantic_summary_ref,
-				semantic_context_flags=semantic_context_flags,
-				semantic_route_type=semantic_route_type,
-				semantic_confidence=semantic_confidence,
-				semantic_block_reason=semantic_block_reason,
-				semantic_paraphrase=semantic_paraphrase,
-				semantic_normalized_text=semantic_normalized_text,
-				in_response_to_request_id=in_response_to_request_id,
-			),
-		)
-	)
+_semantic_provenance = session_surfaces.semantic_provenance
+_append_user_turn = session_surfaces.append_user_turn
 
 
 def _append_error(
@@ -1381,20 +1319,17 @@ def _append_error(
 	presentation_args: dict[str, Any] | None = None,
 	source_artifact_ref: str | None = None,
 ) -> None:
-	model["feed"].append(
-		_feed_item(
-			"error",
-			title,
-			body,
-			authoritative=True,
-			now=now,
-			source_artifact_ref=source_artifact_ref,
-			in_response_to_request_id=in_response_to_request_id,
-			presentation_key=presentation_key,
-			presentation_args=presentation_args or {"title": title, "body": body},
-		)
+	session_surfaces.append_error(
+		model,
+		title,
+		body,
+		now,
+		refresh_snapshot=_refresh_snapshot,
+		in_response_to_request_id=in_response_to_request_id,
+		presentation_key=presentation_key,
+		presentation_args=presentation_args,
+		source_artifact_ref=source_artifact_ref,
 	)
-	_refresh_snapshot(model, now)
 
 
 def _permission_request(
