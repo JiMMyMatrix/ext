@@ -142,6 +142,19 @@ function readJson(pathValue) {
 	return JSON.parse(fs.readFileSync(pathValue, 'utf8'));
 }
 
+function commandSpecText(commandSpec) {
+	if (typeof commandSpec === 'string') {
+		return commandSpec;
+	}
+	if (Array.isArray(commandSpec?.argv)) {
+		return commandSpec.argv.join(' ');
+	}
+	if (typeof commandSpec?.argv === 'string') {
+		return commandSpec.argv;
+	}
+	return '';
+}
+
 function repoPath(relPath) {
 	return path.join(repoRoot, relPath);
 }
@@ -993,6 +1006,13 @@ function runScratchBugfixExistingAppModule(options) {
 		dispatchInfo.request.dispatch_ref,
 		'src-app-js.patch'
 	);
+	const patchSpecPath = path.join(
+		scratchRoot,
+		'.agent',
+		'patch_specs',
+		dispatchInfo.request.dispatch_ref,
+		'pet_diary_entry_fix.json'
+	);
 	const fixedApp = fs.readFileSync(appPath, 'utf8');
 	assertCondition(
 		fixedApp.includes('diaryEntries.push'),
@@ -1030,6 +1050,16 @@ function runScratchBugfixExistingAppModule(options) {
 		fs.existsSync(patchPath),
 		'scratch-bugfix-existing-app: patch artifact was not written'
 	);
+	assertCondition(
+		fs.existsSync(patchSpecPath),
+		'scratch-bugfix-existing-app: patch spec artifact was not written'
+	);
+	const patchSpec = readJson(patchSpecPath);
+	assertCondition(
+		patchSpec.schema_version === 'corgi.patch-spec.v1' &&
+			patchSpec.operations?.[0]?.path === 'src/app.js',
+		'scratch-bugfix-existing-app: patch spec does not target src/app.js'
+	);
 	const patchSource = fs.readFileSync(patchPath, 'utf8');
 	assertCondition(
 		patchSource.includes('--- a/src/app.js') && patchSource.includes('+++ b/src/app.js'),
@@ -1042,6 +1072,24 @@ function runScratchBugfixExistingAppModule(options) {
 	assertCondition(
 		request.execution_payload.evidence.some((ref) => ref.endsWith('src-app-js.patch')),
 		'scratch-bugfix-existing-app: patch artifact missing from dispatch evidence'
+	);
+	assertCondition(
+		request.execution_payload.evidence.some(
+			(ref) => ref.includes('.agent/patch_specs/') && ref.endsWith('pet_diary_entry_fix.json')
+		),
+		'scratch-bugfix-existing-app: patch spec missing from dispatch evidence'
+	);
+	assertCondition(
+		request.execution_payload.commands.some((command) =>
+			commandSpecText(command).includes('executor_apply_patch_spec.py')
+		),
+		'scratch-bugfix-existing-app: dispatch did not use generic patch spec executor'
+	);
+	assertCondition(
+		!request.execution_payload.commands.some((command) =>
+			commandSpecText(command).includes('executor_fix_pet_diary_entry.py')
+		),
+		'scratch-bugfix-existing-app: dispatch still uses bug-specific executor helper'
 	);
 	const validation = readJson(validationPath);
 	assertCondition(

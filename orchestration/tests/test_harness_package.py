@@ -543,9 +543,24 @@ class HarnessPackageTests(unittest.TestCase):
             for output_ref in session_execution.PET_DIARY_BUGFIX_OUTPUTS:
                 self.assertIn(output_ref, args)
             self.assertIn("--validator-command", args)
+            self.assertIn("executor_apply_patch_spec.py", " ".join(args))
+            self.assertNotIn("executor_fix_pet_diary_entry.py", " ".join(args))
             self.assertIn("validate_pet_diary_entry.py", " ".join(args))
+            patch_spec_path = (
+                paths.agent_root
+                / "patch_specs"
+                / "lane"
+                / "intake"
+                / "dispatch-001"
+                / "pet_diary_entry_fix.json"
+            )
+            self.assertTrue(patch_spec_path.exists())
+            patch_spec = load_json(patch_spec_path)
+            self.assertEqual(patch_spec["schema_version"], "corgi.patch-spec.v1")
+            self.assertEqual(patch_spec["dispatch_ref"], "lane/intake/dispatch-001")
+            self.assertEqual(patch_spec["operations"][0]["path"], "src/app.js")
 
-    def test_pet_diary_bugfix_executor_writes_patch_artifact(self) -> None:
+    def test_patch_spec_executor_writes_patch_artifact(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp_dir:
             scratch_root = Path(tmp_dir).resolve()
@@ -572,17 +587,43 @@ class HarnessPackageTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            patch_spec_path = (
+                scratch_root
+                / ".agent"
+                / "patch_specs"
+                / "lane"
+                / "intake"
+                / "dispatch-001"
+                / "pet_diary_entry_fix.json"
+            )
+            write_json(
+                patch_spec_path,
+                {
+                    "schema_version": "corgi.patch-spec.v1",
+                    "dispatch_ref": "lane/intake/dispatch-001",
+                    "operations": [
+                        {
+                            "path": "src/app.js",
+                            "old_text": session_execution.PET_DIARY_BUGFIX_OLD_SNIPPET,
+                            "new_text": session_execution.PET_DIARY_BUGFIX_NEW_SNIPPET,
+                            "expected_replacements": 1,
+                            "forbidden_text": "diaryEntries.push",
+                            "patch_artifact": ".agent/patches/lane/intake/dispatch-001/src-app-js.patch",
+                        }
+                    ],
+                },
+            )
 
             result = subprocess.run(
                 [
                     sys.executable,
-                    str(repo_root / "orchestration" / "scripts" / "executor_fix_pet_diary_entry.py"),
+                    str(repo_root / "orchestration" / "scripts" / "executor_apply_patch_spec.py"),
                     "--repo-root",
                     str(scratch_root),
                     "--dispatch-ref",
                     "lane/intake/dispatch-001",
-                    "--objective",
-                    "Fix the pet diary app so adding a diary entry updates the visible list.",
+                    "--spec",
+                    ".agent/patch_specs/lane/intake/dispatch-001/pet_diary_entry_fix.json",
                 ],
                 text=True,
                 capture_output=True,
@@ -606,7 +647,7 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertIn("+++ b/src/app.js", patch_source)
             self.assertIn("+\tdiaryEntries.push({", patch_source)
 
-    def test_pet_diary_bugfix_executor_rejects_already_fixed_app(self) -> None:
+    def test_patch_spec_executor_rejects_already_fixed_app(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp_dir:
             scratch_root = Path(tmp_dir).resolve()
@@ -637,17 +678,43 @@ class HarnessPackageTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            patch_spec_path = (
+                scratch_root
+                / ".agent"
+                / "patch_specs"
+                / "lane"
+                / "intake"
+                / "dispatch-001"
+                / "pet_diary_entry_fix.json"
+            )
+            write_json(
+                patch_spec_path,
+                {
+                    "schema_version": "corgi.patch-spec.v1",
+                    "dispatch_ref": "lane/intake/dispatch-001",
+                    "operations": [
+                        {
+                            "path": "src/app.js",
+                            "old_text": session_execution.PET_DIARY_BUGFIX_OLD_SNIPPET,
+                            "new_text": session_execution.PET_DIARY_BUGFIX_NEW_SNIPPET,
+                            "expected_replacements": 1,
+                            "forbidden_text": "diaryEntries.push",
+                            "patch_artifact": ".agent/patches/lane/intake/dispatch-001/src-app-js.patch",
+                        }
+                    ],
+                },
+            )
 
             result = subprocess.run(
                 [
                     sys.executable,
-                    str(repo_root / "orchestration" / "scripts" / "executor_fix_pet_diary_entry.py"),
+                    str(repo_root / "orchestration" / "scripts" / "executor_apply_patch_spec.py"),
                     "--repo-root",
                     str(scratch_root),
                     "--dispatch-ref",
                     "lane/intake/dispatch-001",
-                    "--objective",
-                    "Fix the pet diary app so adding a diary entry updates the visible list.",
+                    "--spec",
+                    ".agent/patch_specs/lane/intake/dispatch-001/pet_diary_entry_fix.json",
                 ],
                 text=True,
                 capture_output=True,
@@ -655,7 +722,7 @@ class HarnessPackageTests(unittest.TestCase):
             )
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("already appends diary entries", result.stderr)
+            self.assertIn("already contains forbidden text", result.stderr)
 
     def test_pet_diary_validation_requires_append_inside_submit_handler(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
