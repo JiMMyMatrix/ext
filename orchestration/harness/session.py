@@ -20,6 +20,7 @@ from orchestration.harness import session_execution
 from orchestration.harness import session_guards
 from orchestration.harness import session_governor_requests
 from orchestration.harness import session_model
+from orchestration.harness import session_permission_flows
 from orchestration.harness import session_permissions
 from orchestration.harness import session_surfaces
 from orchestration.harness import session_work_lifecycle
@@ -1505,20 +1506,8 @@ def _set_plan_ready_request(
 def _supersede_pending_permission_request(
 	model: dict[str, Any], now: str, *, request_id: str | None = None
 ) -> None:
-	pending = model["snapshot"].get("pendingPermissionRequest")
-	if not pending:
-		return
-	model["snapshot"]["pendingPermissionRequest"] = None
-	model["feed"].append(
-		_feed_item(
-			"system_status",
-			"Pending permission request superseded",
-			"A new request replaced the previous permission checkpoint.",
-			authoritative=True,
-			now=now,
-			in_response_to_request_id=request_id,
-			presentation_key="permission.superseded",
-		)
+	session_permission_flows.supersede_pending_permission_request(
+		model, now, request_id=request_id
 	)
 
 
@@ -1769,47 +1758,12 @@ def _apply_governor_dialogue_permission(
 	semantic_normalized_text: str | None = None,
 	governor_runtime: str = "exec",
 ) -> bool:
-	model = session["model"]
-	pending_permission = model["snapshot"].get("pendingPermissionRequest")
-	if not pending_permission:
-		_append_error(
-			model,
-			"No permission request is active",
-			"There is no permission request to apply.",
-			now,
-			in_response_to_request_id=request_id,
-		)
-		return False
-
-	prompt = trim_text(
-		pending_permission.get("pendingNormalizedText")
-		or pending_permission.get("pendingPrompt")
-	)
-	if not prompt:
-		_append_error(
-			model,
-			"Pending dialogue request unavailable",
-			"Corgi lost the pending Governor request before this permission choice was applied. Send the request again.",
-			now,
-			in_response_to_request_id=request_id,
-		)
-		return False
-
-	model["snapshot"]["permissionScope"] = permission_scope
-	model["snapshot"]["pendingPermissionRequest"] = None
-	model["snapshot"]["pendingInterrupt"] = None
-	continuation_request_id = (
-		pending_permission.get("foregroundRequestId")
-		or model.get("activeForegroundRequestId")
-		or request_id
-	)
-	model["activeForegroundRequestId"] = continuation_request_id
-	return _append_governor_dialogue_response(
+	return session_permission_flows.apply_governor_dialogue_permission(
 		session,
-		prompt,
 		now,
 		repo_root=repo_root,
-		request_id=continuation_request_id,
+		permission_scope=permission_scope,
+		request_id=request_id,
 		turn_type=turn_type,
 		semantic_input_version=semantic_input_version,
 		semantic_summary_ref=semantic_summary_ref,
@@ -1820,6 +1774,8 @@ def _apply_governor_dialogue_permission(
 		semantic_paraphrase=semantic_paraphrase,
 		semantic_normalized_text=semantic_normalized_text,
 		governor_runtime=governor_runtime,
+		append_error=_append_error,
+		append_governor_dialogue_response=_append_governor_dialogue_response,
 	)
 
 
