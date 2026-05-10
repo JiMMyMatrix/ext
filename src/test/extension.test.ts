@@ -442,6 +442,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(launchScriptSource.includes('Unsafe Corgi scratch workspace id'));
 		assert.ok(launchScriptSource.includes('ORCHESTRATION_TARGET_WORKSPACE_MODE'));
 		assert.ok(launchScriptSource.includes('ORCHESTRATION_TEST_PROMPT_PRESET'));
+		assert.ok(launchScriptSource.includes('pet-diary-fixture.cjs'));
+		assert.ok(launchScriptSource.includes('pet-life-diary-bugfix'));
 		assert.ok(launchScriptSource.includes('scratch-workspaces'));
 		assert.ok(launchScriptSource.includes('current-run.json'));
 		assert.ok(launchScriptSource.includes('ORCHESTRATION_SOURCE_ROOT'));
@@ -640,6 +642,10 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:window:scratch:auto'],
 			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-static CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:project:auto'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-bugfix CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:close'],
