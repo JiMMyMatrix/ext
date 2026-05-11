@@ -45,6 +45,7 @@ import {
 	MCP_SERVER_ENTRYPOINT_PATH,
 	PACKAGE_JSON_PATH,
 	PROCESS_REPLAN_HELPER_PATH,
+	PROCESS_SCRATCH_RETRY_HELPER_PATH,
 	PROCESS_TEST_SCRIPT_PATH,
 	REPO_ROOT,
 	RUNTIME_ERGONOMICS_KERNEL_TS_PATH,
@@ -515,9 +516,11 @@ suite('Corgi Webview UX', () => {
 		assert.ok(processTestSource.includes('scratch-static-app'));
 		assert.ok(processTestSource.includes('scratch-bugfix-existing-app'));
 		assert.ok(processTestSource.includes('scratch-feature-existing-app'));
+		assert.ok(processTestSource.includes('scratch-review-retry-existing-app'));
 		assert.ok(processTestSource.includes('pet-life-diary-static'));
 		assert.ok(processTestSource.includes('pet-life-diary-bugfix'));
 		assert.ok(processTestSource.includes('pet-life-diary-filter'));
+		assert.ok(processTestSource.includes('pet-life-diary-filter-review-retry'));
 		assert.ok(processTestSource.includes('seedFilterPetDiaryApp'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(processTestSource.includes('--auto-consume-executor'));
@@ -526,7 +529,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(processTestSource.includes('assertReviewerArtifacts'));
 		assert.ok(processTestSource.includes('runReviewReplanModule'));
 		assert.ok(processTestSource.includes('corgi-review-replan-process-test.py'));
+		assert.ok(processTestSource.includes('corgi-scratch-review-retry-process-test.py'));
 		assert.ok(fs.existsSync(PROCESS_REPLAN_HELPER_PATH));
+		assert.ok(fs.existsSync(PROCESS_SCRATCH_RETRY_HELPER_PATH));
 		assert.strictEqual(promptCatalog.defaultPromptId, 'analyze-repo');
 		assert.ok(promptCatalog.prompts.length >= 8);
 		for (const prompt of promptCatalog.prompts) {
@@ -544,6 +549,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-static'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-bugfix'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-filter'));
+		assert.ok(
+			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-filter-review-retry')
+		);
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'progress'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'mixed-stop-work'));
 		assert.strictEqual(
@@ -581,6 +589,10 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:process:feature'],
 			'node scripts/corgi-process-test.cjs --module scratch-feature-existing-app'
+		);
+		assert.strictEqual(
+			scripts['test:process:project-retry'],
+			'node scripts/corgi-process-test.cjs --module scratch-review-retry-existing-app'
 		);
 		assert.strictEqual(
 			scripts['test:process:completion'],

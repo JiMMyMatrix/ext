@@ -60,6 +60,10 @@ export const PROCESS_REPLAN_HELPER_PATH = path.resolve(
 	__dirname,
 	'../../scripts/corgi-review-replan-process-test.py'
 );
+export const PROCESS_SCRATCH_RETRY_HELPER_PATH = path.resolve(
+	__dirname,
+	'../../scripts/corgi-scratch-review-retry-process-test.py'
+);
 export const CODEX_APP_SERVER_CLIENT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/codexAppServerClient.ts'

@@ -174,7 +174,7 @@ case "$WORKSPACE_MODE" in
 		fi
 		if [[ "$AUTO_PROMPT_PRESET" == "pet-life-diary-bugfix" ]]; then
 			node "$ROOT_DIR/scripts/pet-diary-fixture.cjs" seed-bugfix "$SCRATCH_ROOT"
-		elif [[ "$AUTO_PROMPT_PRESET" == "pet-life-diary-filter" ]]; then
+		elif [[ "$AUTO_PROMPT_PRESET" == "pet-life-diary-filter" || "$AUTO_PROMPT_PRESET" == "pet-life-diary-filter-review-retry" ]]; then
 			node "$ROOT_DIR/scripts/pet-diary-fixture.cjs" seed-filter "$SCRATCH_ROOT"
 		fi
 		WORKSPACE_ROOT="$SCRATCH_ROOT"

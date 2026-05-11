@@ -685,6 +685,81 @@ class HarnessPackageTests(unittest.TestCase):
             )
             self.assertFalse(patch_spec_path.exists())
 
+    def test_pet_diary_filter_retry_requires_explicit_scratch_test_metadata(self) -> None:
+        objective = "Add a simple species filter to the existing pet diary app."
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(
+                session_execution.is_pet_diary_filter_retry_test_dispatch(
+                    objective,
+                    ".agent/intakes/20260511-pet-life-diary-filter-review-retry/accepted_intake.json",
+                )
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-filter-review-retry",
+            },
+            clear=True,
+        ):
+            self.assertTrue(
+                session_execution.is_pet_diary_filter_retry_test_dispatch(
+                    objective,
+                    ".agent/intakes/20260511-pet-life-diary-filter-review-retry/accepted_intake.json",
+                )
+            )
+
+    def test_pet_diary_filter_retry_first_attempt_uses_partial_patch_without_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            paths = resolve_paths(repo_root)
+            args: list[str] = []
+
+            session_execution.extend_pet_diary_filter_retry_dispatch_args(
+                args,
+                paths,
+                dispatch_ref="lane/intake/dispatch-001",
+                objective="Add a simple species filter to the existing pet diary app.",
+                attempt_number=1,
+            )
+
+            args_text = " ".join(args)
+            self.assertIn("--authorship-evidence-required", args)
+            self.assertIn("index.html", args)
+            self.assertIn("src/app.js", args)
+            self.assertIn("pet_diary_species_filter_partial", args_text)
+            self.assertIn("pet_diary_species_filter_partial-index-html.patch", args_text)
+            self.assertIn("pet_diary_species_filter_partial-src-app-js.patch", args_text)
+            self.assertIn("scratch_pet_diary_filter_review_retry", args)
+            self.assertNotIn("--validator-command", args)
+            self.assertNotIn("validate_pet_diary_filter.py", args_text)
+
+    def test_pet_diary_filter_retry_second_attempt_uses_completion_patch_and_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            paths = resolve_paths(repo_root)
+            args: list[str] = []
+
+            session_execution.extend_pet_diary_filter_retry_dispatch_args(
+                args,
+                paths,
+                dispatch_ref="lane/intake/dispatch-002",
+                objective="Add a simple species filter to the existing pet diary app.",
+                attempt_number=2,
+            )
+
+            args_text = " ".join(args)
+            self.assertIn("--authorship-evidence-required", args)
+            self.assertIn("src/app.js", args)
+            self.assertIn("index.html", args)
+            self.assertEqual(args.count("--required-output"), 1)
+            self.assertIn("pet_diary_species_filter_complete", args_text)
+            self.assertIn("pet_diary_species_filter_complete.patch", args_text)
+            self.assertIn("--validator-command", args)
+            self.assertIn("validate_pet_diary_filter.py", args_text)
+            self.assertIn("pet_diary_species_filter.json", args_text)
+
     def test_patch_spec_proposer_writes_executor_proposal_artifact(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp_dir:

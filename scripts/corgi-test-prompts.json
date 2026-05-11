@@ -134,6 +134,32 @@
       "tags": ["scratch", "feature", "existing-app", "executor", "reviewer"]
     },
     {
+      "id": "pet-life-diary-filter-review-retry",
+      "label": "Pet life diary filter retry",
+      "prompt": "Add a simple species filter to the existing pet diary app so users can show all entries or only Corgi/Cat entries. Keep the UI simple and preserve the existing app structure.",
+      "category": "scratch_retry",
+      "requiresScenario": "fresh-session",
+      "purpose": "Non-happy-path scratch-workspace benchmark proving Reviewer feedback returns control to Governor, Governor revises under the same workRef, and attempt 2 passes.",
+      "expectedFlow": [
+        "understanding_request",
+        "plan_permission",
+        "governor_plan",
+        "execute_permission",
+        "executor_mutates_incomplete_feature",
+        "reviewer_requests_changes",
+        "governor_revises_same_work",
+        "executor_mutates_retry",
+        "reviewer_passes",
+        "governor_decision_recorded"
+      ],
+      "assertions": [
+        "Attempt 1 and attempt 2 remain under the same workRef.",
+        "Attempt 2 links revision_of_dispatch_ref to attempt 1.",
+        "Executor authorship evidence proves real project-file mutation on both attempts."
+      ],
+      "tags": ["scratch", "retry", "reviewer", "governor", "executor"]
+    },
+    {
       "id": "question-work",
       "label": "Question-shaped work",
       "prompt": "can we develop the internet feature?",

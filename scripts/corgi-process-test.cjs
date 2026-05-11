@@ -57,7 +57,7 @@ function printUsage() {
 			'',
 			'Runs phase-1 command-only process tests without opening VS Code.',
 			'',
-			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-bugfix-existing-app, scratch-feature-existing-app, completion, all',
+			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-bugfix-existing-app, scratch-feature-existing-app, scratch-review-retry-existing-app, completion, all',
 		].join('\n') + '\n'
 	);
 }
@@ -1326,6 +1326,81 @@ function runScratchFeatureExistingAppModule(options) {
 	};
 }
 
+function runScratchReviewRetryExistingAppModule(options) {
+	const prompt = promptById('pet-life-diary-filter-review-retry');
+	assertCondition(prompt, 'scratch-review-retry-existing-app: prompt preset missing');
+	const runName = `module-scratch-review-retry-existing-app-${runId}`;
+	const { agentRoot, runDir, scratchRoot } = createScratchTestEnv(
+		runName,
+		'pet-life-diary-filter-review-retry'
+	);
+	seedFilterPetDiaryApp(scratchRoot);
+	const baselineIndex = fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8');
+	const baselineApp = fs.readFileSync(path.join(scratchRoot, 'src/app.js'), 'utf8');
+	assertCondition(
+		!baselineIndex.includes('species-filter') && !baselineApp.includes('visibleEntries'),
+		'scratch-review-retry-existing-app: seeded app unexpectedly starts with species filter'
+	);
+
+	const result = spawnSync(
+		commandPython(),
+		[
+			path.join(repoRoot, 'scripts/corgi-scratch-review-retry-process-test.py'),
+			'--source-root',
+			repoRoot,
+			'--scratch-root',
+			scratchRoot,
+			'--agent-root',
+			agentRoot,
+		],
+		{
+			cwd: repoRoot,
+			env: {
+				...process.env,
+				ORCHESTRATION_APPROVED_PYTHON: approvedPython(),
+			},
+			encoding: 'utf8',
+			maxBuffer: 1024 * 1024 * 12,
+		}
+	);
+	if (result.status !== 0) {
+		throw new Error(
+			`scratch-review-retry-existing-app helper failed:\n${result.stderr || result.stdout}`
+		);
+	}
+	let payload;
+	try {
+		payload = JSON.parse(result.stdout);
+	} catch {
+		throw new Error(`Invalid JSON from scratch-review-retry-existing-app helper:\n${result.stdout}`);
+	}
+
+	const updatedIndex = fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8');
+	const updatedApp = fs.readFileSync(path.join(scratchRoot, 'src/app.js'), 'utf8');
+	assertCondition(
+		updatedIndex.includes('id="species-filter"'),
+		'scratch-review-retry-existing-app: final index.html lacks species filter'
+	);
+	assertCondition(
+		updatedApp.includes('function visibleEntries()'),
+		'scratch-review-retry-existing-app: final app.js lacks visibleEntries helper'
+	);
+	assertCondition(
+		updatedApp.includes('.filter((entry) => entry.species === selectedSpecies)'),
+		'scratch-review-retry-existing-app: final app.js does not filter by species'
+	);
+	for (const devRef of ['index.html', path.join('data', 'sample-pets.json'), path.join('src', 'app.js')]) {
+		assertCondition(
+			!fs.existsSync(path.join(repoRoot, devRef)),
+			`scratch-review-retry-existing-app: wrote ${devRef} to Corgi source repo`
+		);
+	}
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return payload;
+}
+
 function runModule(moduleName, options) {
 	switch (moduleName) {
 		case 'executor':
@@ -1340,11 +1415,14 @@ function runModule(moduleName, options) {
 			return [runScratchBugfixExistingAppModule(options)];
 		case 'scratch-feature-existing-app':
 			return [runScratchFeatureExistingAppModule(options)];
+		case 'scratch-review-retry-existing-app':
+			return [runScratchReviewRetryExistingAppModule(options)];
 		case 'completion':
 			return [
 				runScratchStaticAppModule(options),
 				runScratchBugfixExistingAppModule(options),
 				runScratchFeatureExistingAppModule(options),
+				runScratchReviewRetryExistingAppModule(options),
 			];
 		case 'all':
 			return [

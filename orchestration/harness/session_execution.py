@@ -116,6 +116,14 @@ def is_pet_diary_filter_test_dispatch(objective: str, accepted_ref: str | None) 
     )
 
 
+def is_pet_diary_filter_retry_test_dispatch(objective: str, accepted_ref: str | None) -> bool:
+    return (
+        os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-filter-review-retry"
+        and matches_pet_diary_filter_request(objective, accepted_ref)
+    )
+
+
 def extend_static_pet_diary_dispatch_args(
     args: list[str],
     paths: Any,
@@ -352,6 +360,118 @@ def extend_pet_diary_filter_dispatch_args(
     )
 
 
+def extend_pet_diary_filter_retry_dispatch_args(
+    args: list[str],
+    paths: Any,
+    *,
+    dispatch_ref: str,
+    objective: str,
+    attempt_number: int,
+) -> None:
+    recipe = (
+        "pet_diary_species_filter_partial"
+        if attempt_number <= 1
+        else "pet_diary_species_filter_complete"
+    )
+    validation_ref = repo_relative(
+        paths.agent_root / "validations" / Path(dispatch_ref) / "pet_diary_species_filter.json",
+        paths.repo_root,
+    )
+    patch_stem = "pet_diary_species_filter_partial" if attempt_number <= 1 else "pet_diary_species_filter_complete"
+    patch_ref = repo_relative(
+        paths.agent_root / "patches" / Path(dispatch_ref) / f"{patch_stem}.patch",
+        paths.repo_root,
+    )
+    patch_base = patch_ref.removesuffix(".patch")
+    patch_spec_ref = repo_relative(
+        paths.agent_root / "patch_specs" / Path(dispatch_ref) / f"{patch_stem}.json",
+        paths.repo_root,
+    )
+    outputs = PET_DIARY_FILTER_OUTPUTS if attempt_number <= 1 else ["src/app.js"]
+    evidence_refs = [
+        patch_spec_ref,
+        f"{patch_base}-index-html.patch" if attempt_number <= 1 else patch_ref,
+        f"{patch_base}-src-app-js.patch" if attempt_number <= 1 else validation_ref,
+    ]
+    if attempt_number > 1:
+        # The first retry attempt already changed index.html. Keep that file
+        # inside the same work-family scope without requiring fresh mutation
+        # evidence from a later app.js-only corrective attempt.
+        args.extend(["--scope-reservation", "index.html"])
+        args.extend(["--scope-reservation", "src/app.js"])
+    for output_ref in outputs:
+        args.extend(["--run-produce", output_ref])
+        args.extend(["--run-touch", output_ref])
+        args.extend(["--required-output", output_ref])
+    args.extend(
+        [
+            "--authorship-evidence-required",
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_propose_patch_spec.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                    "--recipe",
+                    recipe,
+                    "--spec",
+                    command_arg(patch_spec_ref),
+                    "--patch-artifact",
+                    command_arg(patch_ref),
+                ]
+            ),
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_apply_patch_spec.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--spec",
+                    command_arg(patch_spec_ref),
+                ]
+            ),
+            "--execution-summary",
+            "Executor advanced the species-filter retry benchmark for the existing Pet Life Diary app.",
+            "--execution-claim",
+            "Executor mutated declared Pet Life Diary project files for this retry attempt.",
+            "--execution-claim",
+            "This dispatch stayed within the same work family instead of creating a new intake.",
+            "--execution-evidence",
+            "index.html" if attempt_number <= 1 else "src/app.js",
+            "--execution-note",
+            "scratch_pet_diary_filter_review_retry",
+            "--execution-next-action",
+            "Reviewer should verify whether the species filter is complete before Governor finalizes.",
+        ]
+    )
+    if attempt_number > 1:
+        args.extend(
+            [
+                "--validator-command",
+                " ".join(
+                    [
+                        command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                        command_arg(script_ref("validate_pet_diary_filter.py", paths.repo_root)),
+                        "--repo-root",
+                        command_arg(str(paths.repo_root)),
+                        "--report",
+                        command_arg(validation_ref),
+                    ]
+                ),
+            ]
+        )
+    for evidence_ref in evidence_refs:
+        args.extend(["--execution-evidence", evidence_ref])
+
+
 def emit_plan_execution_dispatch(
     session: dict[str, Any],
     now: str,
@@ -405,6 +525,7 @@ def emit_plan_execution_dispatch(
     is_static_pet_diary = is_pet_diary_static_test_dispatch(objective, accepted_ref)
     is_pet_diary_bugfix = is_pet_diary_bugfix_test_dispatch(objective, accepted_ref)
     is_pet_diary_filter = is_pet_diary_filter_test_dispatch(objective, accepted_ref)
+    is_pet_diary_filter_retry = is_pet_diary_filter_retry_test_dispatch(objective, accepted_ref)
     args = [
         "--dispatch-ref",
         dispatch_ref,
@@ -453,6 +574,14 @@ def emit_plan_execution_dispatch(
             paths,
             dispatch_ref=dispatch_ref,
             objective=objective,
+        )
+    elif is_pet_diary_filter_retry:
+        extend_pet_diary_filter_retry_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+            attempt_number=attempt_number,
         )
     else:
         args.extend(
