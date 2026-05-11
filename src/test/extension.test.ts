@@ -657,6 +657,10 @@ suite('Corgi Webview UX', () => {
 			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-bugfix CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh'
 		);
 		assert.strictEqual(
+			scripts['test:window:feature-app:auto'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-filter CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh'
+		);
+		assert.strictEqual(
 			scripts['test:window:close'],
 			'bash scripts/close-corgi-test-window.sh'
 		);
