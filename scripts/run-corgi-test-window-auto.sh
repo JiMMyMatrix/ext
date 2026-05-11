@@ -41,7 +41,20 @@ while (( SECONDS < deadline )); do
 		echo "Corgi test window reached plan_ready."
 		exit 0
 	fi
-	if [[ "$AUTO_STEPS" == "execute" && "$stage" =~ ^(governor_decision_recorded|reviewer_completed|executor_completed|executor_blocked|reviewer_blocked)$ ]]; then
+	if [[ "$AUTO_STEPS" == "execute" && "$PROMPT_PRESET" == "pet-life-diary-filter-review-retry" ]]; then
+		if [[ "$stage" =~ ^(executor_blocked|reviewer_blocked)$ ]]; then
+			echo "Corgi reviewer-retry auto-run reached a blocker instead of final acceptance: $stage." >&2
+			exit 1
+		fi
+		if [[ "$stage" == "governor_decision_recorded" ]]; then
+			if node -e "const s=JSON.parse(process.argv[1]); process.exit(Number(s.currentAttemptNumber || 0) >= 2 && s.latestGovernorDecision === 'accept' ? 0 : 1)" "$status_json"; then
+				echo "Corgi reviewer-retry auto-run reached final acceptance after retry."
+				exit 0
+			fi
+			echo "Corgi reviewer-retry auto-run finalized without proving a retry." >&2
+			exit 1
+		fi
+	elif [[ "$AUTO_STEPS" == "execute" && "$stage" =~ ^(governor_decision_recorded|reviewer_completed|executor_completed|executor_blocked|reviewer_blocked)$ ]]; then
 		echo "Corgi test window reached post-execute checkpoint: $stage."
 		exit 0
 	fi

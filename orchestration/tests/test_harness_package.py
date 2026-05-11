@@ -735,6 +735,55 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertNotIn("--validator-command", args)
             self.assertNotIn("validate_pet_diary_filter.py", args_text)
 
+    def test_pet_diary_filter_retry_helper_review_requests_changes_for_partial_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            (repo_root / "src").mkdir(parents=True)
+            (repo_root / "index.html").write_text(
+                '<form id="diary-form"><select id="species-filter"></select></form>',
+                encoding="utf-8",
+            )
+            (repo_root / "src" / "app.js").write_text(
+                '\n'.join(
+                    [
+                        'const speciesFilter = document.querySelector("#species-filter");',
+                        "const diaryEntries = [];",
+                        "function renderEntries() {",
+                        "\tfor (const entry of diaryEntries) {",
+                        "\t\tconsole.log(entry);",
+                        "\t}",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            request = {
+                "dispatch_ref": "lane/intake/dispatch-001",
+                "attempt_number": 1,
+                "task_track": "patch",
+            }
+            result = {
+                "status": "completed",
+                "scope_respected": True,
+                "written_or_updated": ["index.html", "src/app.js"],
+                "auto_validated": [],
+            }
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-filter-review-retry",
+                },
+                clear=True,
+            ):
+                review = dispatch.build_helper_review(repo_root, request, result)
+
+            self.assertEqual(review["verdict"], "request_changes")
+            self.assertEqual(review["recommendation"], "redispatch_or_reject")
+            self.assertTrue(any("visibleEntries" in finding for finding in review["findings"]))
+            self.assertIn("pet_diary_filter_retry=partial_filter_detected", review["validator_assessment"])
+
     def test_pet_diary_filter_retry_second_attempt_uses_completion_patch_and_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()

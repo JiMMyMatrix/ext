@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -478,6 +479,12 @@ def build_helper_review(
             "runtime behavior changed but helper-backed review has no accepted acceptance-review artifact to verify semantics"
         )
 
+    retry_filter_finding = pet_diary_filter_retry_partial_finding(repo_root, request)
+    if retry_filter_finding:
+        verdict = "request_changes"
+        findings.append(retry_filter_finding)
+        validator_assessment.append("pet_diary_filter_retry=partial_filter_detected")
+
     review_focus = request.get("review_focus", [])
     if isinstance(review_focus, list) and review_focus:
         residual_risks.append(
@@ -501,6 +508,33 @@ def build_helper_review(
         "residual_risks": residual_risks,
         "recommendation": recommendation,
     }
+
+
+def pet_diary_filter_retry_partial_finding(repo_root: Path, request: Dict[str, Any]) -> str | None:
+    if (
+        os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") != "scratch"
+        or os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") != "pet-life-diary-filter-review-retry"
+        or request.get("attempt_number") != 1
+    ):
+        return None
+
+    index_path = repo_root / "index.html"
+    app_path = repo_root / "src" / "app.js"
+    if not index_path.exists() or not app_path.exists():
+        return "Pet Life Diary retry review could not inspect index.html and src/app.js."
+
+    index_source = index_path.read_text(encoding="utf-8")
+    app_source = app_path.read_text(encoding="utf-8")
+    if (
+        'id="species-filter"' in index_source
+        and "speciesFilter" in app_source
+        and "function visibleEntries()" not in app_source
+    ):
+        return (
+            "The species filter control is present, but src/app.js still renders all entries; "
+            "retry with a visibleEntries filtering pass."
+        )
+    return None
 
 
 def build_reviewer_parser() -> argparse.ArgumentParser:

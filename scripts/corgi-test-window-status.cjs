@@ -207,6 +207,7 @@ function summarize() {
 	const snapshot = readJson(snapshotPath);
 	const payload = snapshot?.payload || {};
 	const state = payload.state || {};
+	const modelSnapshot = payload.model?.snapshot || {};
 	const feed = Array.isArray(payload.model?.feed) ? payload.model.feed : [];
 	const messages = Array.isArray(payload.messages) ? payload.messages : [];
 	const progress = Array.isArray(payload.progress) ? payload.progress : [];
@@ -257,6 +258,11 @@ function summarize() {
 		actor: state.currentActor || '',
 		runState: state.runState || '',
 		permissionScope: state.permissionScope || '',
+		currentAttemptNumber: state.currentAttemptNumber ?? modelSnapshot.currentAttemptNumber ?? null,
+		currentPlanVersion: state.currentPlanVersion ?? modelSnapshot.currentPlanVersion ?? null,
+		latestReviewVerdict: state.latestReviewVerdict || modelSnapshot.latestReviewVerdict || '',
+		latestGovernorDecision:
+			state.latestGovernorDecision || modelSnapshot.latestGovernorDecision || '',
 		workspaceMode: currentRun.workspaceMode || 'repo',
 		workspaceRoot: currentRun.workspaceRoot || null,
 		workspaceFile: currentRun.workspaceFile || null,
@@ -293,6 +299,7 @@ if (process.argv.includes('--json')) {
 			`Workspace file: ${summary.workspaceFile || '(none)'}`,
 			`Goal: ${summary.goalStrip || '(none)'}`,
 			`State: actor=${summary.actor || '(none)'} stage=${summary.stage || '(none)'} run=${summary.runState || '(none)'} scope=${summary.permissionScope || '(none)'}`,
+			`Lifecycle: attempt=${summary.currentAttemptNumber ?? '(none)'} plan=${summary.currentPlanVersion ?? '(none)'} review=${summary.latestReviewVerdict || '(none)'} decision=${summary.latestGovernorDecision || '(none)'}`,
 			`Auto-step: ${summary.autoStep?.mode || 'off'} (${summary.autoStep?.appliedCount ?? 0} applied)`,
 			`Actions: ${summary.actions.length ? summary.actions.join(', ') : '(none)'}`,
 			summary.isolationError

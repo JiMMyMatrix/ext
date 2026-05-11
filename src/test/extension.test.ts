@@ -472,6 +472,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(autoScriptSource.includes('WORKSPACE_MODE="${CORGI_TEST_WINDOW_WORKSPACE_MODE:-scratch}"'));
 		assert.ok(autoScriptSource.includes('governor_decision_recorded'));
 		assert.ok(autoScriptSource.includes('executor_completed'));
+		assert.ok(autoScriptSource.includes('pet-life-diary-filter-review-retry'));
+		assert.ok(autoScriptSource.includes('currentAttemptNumber'));
+		assert.ok(autoScriptSource.includes('latestGovernorDecision'));
 		assert.ok(autoScriptSource.includes('exited before reaching the expected checkpoint'));
 		assert.ok(!autoScriptSource.includes('run_state'));
 		assert.ok(promptScriptSource.includes('validateCatalog'));
@@ -507,6 +510,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(statusScriptSource.includes('processAlive'));
 		assert.ok(statusScriptSource.includes('feedHasError'));
 		assert.ok(statusScriptSource.includes('knownBlockingError'));
+		assert.ok(statusScriptSource.includes('currentAttemptNumber'));
+		assert.ok(statusScriptSource.includes('latestReviewVerdict'));
+		assert.ok(statusScriptSource.includes('latestGovernorDecision'));
 		assert.ok(!statusScriptSource.includes('visibleError'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_AGENT_ROOT'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_SOURCE_ROOT'));
@@ -671,6 +677,10 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:window:feature-app:auto'],
 			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-filter CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:project-retry:auto'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-filter-review-retry CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:close'],
