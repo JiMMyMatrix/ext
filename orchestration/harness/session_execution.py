@@ -74,6 +74,7 @@ PET_DIARY_OUTPUTS = [
 ]
 
 PET_DIARY_BUGFIX_OUTPUTS = ["src/app.js"]
+PET_DIARY_FILTER_OUTPUTS = ["index.html", "src/app.js"]
 
 
 def matches_pet_diary_static_request(objective: str, accepted_ref: str | None) -> bool:
@@ -99,6 +100,19 @@ def is_pet_diary_bugfix_test_dispatch(objective: str, accepted_ref: str | None) 
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
         and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-bugfix"
         and matches_pet_diary_bugfix_request(objective, accepted_ref)
+    )
+
+
+def matches_pet_diary_filter_request(objective: str, accepted_ref: str | None) -> bool:
+    combined = f"{objective} {accepted_ref or ''}".lower()
+    return "pet" in combined and "diary" in combined and ("filter" in combined or "species" in combined)
+
+
+def is_pet_diary_filter_test_dispatch(objective: str, accepted_ref: str | None) -> bool:
+    return (
+        os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-filter"
+        and matches_pet_diary_filter_request(objective, accepted_ref)
     )
 
 
@@ -240,6 +254,104 @@ def extend_pet_diary_bugfix_dispatch_args(
     )
 
 
+def extend_pet_diary_filter_dispatch_args(
+    args: list[str],
+    paths: Any,
+    *,
+    dispatch_ref: str,
+    objective: str,
+) -> None:
+    validation_ref = repo_relative(
+        paths.agent_root / "validations" / Path(dispatch_ref) / "pet_diary_species_filter.json",
+        paths.repo_root,
+    )
+    patch_ref = repo_relative(
+        paths.agent_root / "patches" / Path(dispatch_ref) / "pet_diary_species_filter.patch",
+        paths.repo_root,
+    )
+    patch_base = patch_ref.removesuffix(".patch")
+    index_patch_ref = f"{patch_base}-index-html.patch"
+    app_patch_ref = f"{patch_base}-src-app-js.patch"
+    patch_spec_ref = repo_relative(
+        paths.agent_root / "patch_specs" / Path(dispatch_ref) / "pet_diary_species_filter.json",
+        paths.repo_root,
+    )
+    for output_ref in PET_DIARY_FILTER_OUTPUTS:
+        args.extend(["--run-produce", output_ref])
+        args.extend(["--run-touch", output_ref])
+        args.extend(["--required-output", output_ref])
+    args.extend(
+        [
+            "--authorship-evidence-required",
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_propose_patch_spec.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                    "--recipe",
+                    "pet_diary_species_filter",
+                    "--spec",
+                    command_arg(patch_spec_ref),
+                    "--patch-artifact",
+                    command_arg(patch_ref),
+                ]
+            ),
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_apply_patch_spec.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--spec",
+                    command_arg(patch_spec_ref),
+                ]
+            ),
+            "--validator-command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("validate_pet_diary_filter.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--report",
+                    command_arg(validation_ref),
+                ]
+            ),
+            "--execution-summary",
+            "Executor added a species filter to the existing Pet Life Diary scratch app.",
+            "--execution-claim",
+            "Executor mutated index.html and src/app.js so visible diary entries can be filtered by species.",
+            "--execution-claim",
+            "This dispatch added a feature to an existing project without recreating the app.",
+            "--execution-evidence",
+            "index.html",
+            "--execution-evidence",
+            "src/app.js",
+            "--execution-evidence",
+            patch_spec_ref,
+            "--execution-evidence",
+            index_patch_ref,
+            "--execution-evidence",
+            app_patch_ref,
+            "--execution-evidence",
+            validation_ref,
+            "--execution-note",
+            "scratch_pet_diary_filter_feature",
+            "--execution-next-action",
+            "Reviewer should verify the species filter behavior evidence before Governor finalizes.",
+        ]
+    )
+
+
 def emit_plan_execution_dispatch(
     session: dict[str, Any],
     now: str,
@@ -292,6 +404,7 @@ def emit_plan_execution_dispatch(
     ]
     is_static_pet_diary = is_pet_diary_static_test_dispatch(objective, accepted_ref)
     is_pet_diary_bugfix = is_pet_diary_bugfix_test_dispatch(objective, accepted_ref)
+    is_pet_diary_filter = is_pet_diary_filter_test_dispatch(objective, accepted_ref)
     args = [
         "--dispatch-ref",
         dispatch_ref,
@@ -329,6 +442,13 @@ def emit_plan_execution_dispatch(
         )
     elif is_pet_diary_bugfix:
         extend_pet_diary_bugfix_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+        )
+    elif is_pet_diary_filter:
+        extend_pet_diary_filter_dispatch_args(
             args,
             paths,
             dispatch_ref=dispatch_ref,

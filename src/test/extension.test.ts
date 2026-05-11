@@ -444,6 +444,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(launchScriptSource.includes('ORCHESTRATION_TEST_PROMPT_PRESET'));
 		assert.ok(launchScriptSource.includes('pet-diary-fixture.cjs'));
 		assert.ok(launchScriptSource.includes('pet-life-diary-bugfix'));
+		assert.ok(launchScriptSource.includes('pet-life-diary-filter'));
 		assert.ok(launchScriptSource.includes('scratch-workspaces'));
 		assert.ok(launchScriptSource.includes('current-run.json'));
 		assert.ok(launchScriptSource.includes('ORCHESTRATION_SOURCE_ROOT'));
@@ -513,8 +514,11 @@ suite('Corgi Webview UX', () => {
 		assert.ok(processTestSource.includes('createScratchTestEnv'));
 		assert.ok(processTestSource.includes('scratch-static-app'));
 		assert.ok(processTestSource.includes('scratch-bugfix-existing-app'));
+		assert.ok(processTestSource.includes('scratch-feature-existing-app'));
 		assert.ok(processTestSource.includes('pet-life-diary-static'));
 		assert.ok(processTestSource.includes('pet-life-diary-bugfix'));
+		assert.ok(processTestSource.includes('pet-life-diary-filter'));
+		assert.ok(processTestSource.includes('seedFilterPetDiaryApp'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(processTestSource.includes('--auto-consume-executor'));
 		assert.ok(processTestSource.includes('--module'));
@@ -539,6 +543,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'develop-internet'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-static'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-bugfix'));
+		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-filter'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'progress'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'mixed-stop-work'));
 		assert.strictEqual(
@@ -572,6 +577,10 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:process:project'],
 			'node scripts/corgi-process-test.cjs --module scratch-bugfix-existing-app'
+		);
+		assert.strictEqual(
+			scripts['test:process:feature'],
+			'node scripts/corgi-process-test.cjs --module scratch-feature-existing-app'
 		);
 		assert.strictEqual(
 			scripts['test:process:completion'],

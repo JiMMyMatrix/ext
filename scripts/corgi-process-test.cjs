@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { seedBuggyPetDiaryApp } = require('./pet-diary-fixture.cjs');
+const { seedBuggyPetDiaryApp, seedFilterPetDiaryApp } = require('./pet-diary-fixture.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const catalog = JSON.parse(
@@ -57,7 +57,7 @@ function printUsage() {
 			'',
 			'Runs phase-1 command-only process tests without opening VS Code.',
 			'',
-			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-bugfix-existing-app, completion, all',
+			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-bugfix-existing-app, scratch-feature-existing-app, completion, all',
 		].join('\n') + '\n'
 	);
 }
@@ -1145,6 +1145,187 @@ function runScratchBugfixExistingAppModule(options) {
 	};
 }
 
+function runScratchFeatureExistingAppModule(options) {
+	const prompt = promptById('pet-life-diary-filter');
+	assertCondition(prompt, 'scratch-feature-existing-app: prompt preset missing');
+	const runName = `module-scratch-feature-existing-app-${runId}`;
+	const { agentRoot, runDir, scratchRoot, env } = createScratchTestEnv(
+		runName,
+		'pet-life-diary-filter'
+	);
+	seedFilterPetDiaryApp(scratchRoot);
+	const baselineIndex = fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8');
+	const baselineApp = fs.readFileSync(path.join(scratchRoot, 'src/app.js'), 'utf8');
+	assertCondition(
+		!baselineIndex.includes('species-filter') && !baselineApp.includes('visibleEntries'),
+		'scratch-feature-existing-app: seeded app unexpectedly starts with species filter'
+	);
+	const model = runGovernedWorkFlow(prompt, env, true);
+	const dispatchInfo = latestDispatchInfo(agentRoot);
+	const request = readJson(dispatchInfo.requestPath);
+	const state = readJson(path.join(dispatchInfo.dispatchDir, 'state.json'));
+	const result = readJson(path.join(dispatchInfo.dispatchDir, 'result.json'));
+	const outputSignatures = result.output_signatures;
+	const validationPath = path.join(
+		scratchRoot,
+		'.agent',
+		'validations',
+		dispatchInfo.request.dispatch_ref,
+		'pet_diary_species_filter.json'
+	);
+	const patchSpecPath = path.join(
+		scratchRoot,
+		'.agent',
+		'patch_specs',
+		dispatchInfo.request.dispatch_ref,
+		'pet_diary_species_filter.json'
+	);
+	const indexPatchPath = path.join(
+		scratchRoot,
+		'.agent',
+		'patches',
+		dispatchInfo.request.dispatch_ref,
+		'pet_diary_species_filter-index-html.patch'
+	);
+	const appPatchPath = path.join(
+		scratchRoot,
+		'.agent',
+		'patches',
+		dispatchInfo.request.dispatch_ref,
+		'pet_diary_species_filter-src-app-js.patch'
+	);
+	const updatedIndex = fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8');
+	const updatedApp = fs.readFileSync(path.join(scratchRoot, 'src/app.js'), 'utf8');
+	assertCondition(
+		updatedIndex.includes('id="species-filter"'),
+		'scratch-feature-existing-app: index.html did not add species filter control'
+	);
+	assertCondition(
+		updatedApp.includes('function visibleEntries()'),
+		'scratch-feature-existing-app: src/app.js did not add visibleEntries helper'
+	);
+	assertCondition(
+		updatedApp.includes('.filter((entry) => entry.species === selectedSpecies)'),
+		'scratch-feature-existing-app: src/app.js did not filter entries by species'
+	);
+	for (const outputRef of ['index.html', 'src/app.js']) {
+		assertCondition(
+			request.required_outputs.includes(outputRef),
+			`scratch-feature-existing-app: ${outputRef} missing from required_outputs`
+		);
+		assertCondition(
+			result.written_or_updated.includes(outputRef),
+			`scratch-feature-existing-app: ${outputRef} missing from executor result`
+		);
+		assertCondition(
+			outputSignatures?.required_outputs?.[outputRef]?.classification === 'mutated',
+			`scratch-feature-existing-app: ${outputRef} missing mutated authorship evidence`
+		);
+	}
+	assertCondition(
+		outputSignatures?.verified === true,
+		'scratch-feature-existing-app: authorship evidence was not verified'
+	);
+	assertCondition(
+		Array.isArray(outputSignatures?.blockers) && outputSignatures.blockers.length === 0,
+		'scratch-feature-existing-app: authorship evidence reported blockers'
+	);
+	for (const artifactPath of [validationPath, patchSpecPath, indexPatchPath, appPatchPath]) {
+		assertCondition(fs.existsSync(artifactPath), `scratch-feature-existing-app: missing ${artifactPath}`);
+	}
+	const patchSpec = readJson(patchSpecPath);
+	const operations = Array.isArray(patchSpec.operations) ? patchSpec.operations : [];
+	const operationPaths = operations.map((operation) => operation.path);
+	assertCondition(
+		patchSpec.schema_version === 'corgi.patch-spec.v1' &&
+			patchSpec.proposed_by === 'executor' &&
+			operationPaths.includes('index.html') &&
+			operationPaths.includes('src/app.js') &&
+			operations.every(
+				(operation) =>
+					typeof operation.before_sha256 === 'string' &&
+					Number.isInteger(operation.before_size)
+			),
+		'scratch-feature-existing-app: patch spec does not cover index.html and src/app.js'
+	);
+	const indexPatch = fs.readFileSync(indexPatchPath, 'utf8');
+	const appPatch = fs.readFileSync(appPatchPath, 'utf8');
+	assertCondition(
+		indexPatch.includes('--- a/index.html') &&
+			indexPatch.includes('+++ b/index.html') &&
+			indexPatch.includes('+				<label for="species-filter">Filter entries by species</label>'),
+		'scratch-feature-existing-app: index patch does not add the filter control'
+	);
+	assertCondition(
+		appPatch.includes('--- a/src/app.js') &&
+			appPatch.includes('+++ b/src/app.js') &&
+			appPatch.includes('+function visibleEntries()'),
+		'scratch-feature-existing-app: app patch does not add filter logic'
+	);
+	assertCondition(
+		request.execution_payload.evidence.some((ref) => ref.endsWith('pet_diary_species_filter.json')),
+		'scratch-feature-existing-app: patch spec or validation missing from dispatch evidence'
+	);
+	assertCondition(
+		request.execution_payload.evidence.some((ref) => ref.endsWith('pet_diary_species_filter-index-html.patch')) &&
+			request.execution_payload.evidence.some((ref) =>
+				ref.endsWith('pet_diary_species_filter-src-app-js.patch')
+			),
+		'scratch-feature-existing-app: patch artifacts missing from dispatch evidence'
+	);
+	assertCondition(
+		request.execution_payload.commands.some((command) =>
+			commandSpecText(command).includes('executor_propose_patch_spec.py')
+		),
+		'scratch-feature-existing-app: dispatch did not use executor patch proposal command'
+	);
+	assertCondition(
+		request.execution_payload.commands.some((command) =>
+			commandSpecText(command).includes('executor_apply_patch_spec.py')
+		),
+		'scratch-feature-existing-app: dispatch did not use generic patch spec executor'
+	);
+	const validation = readJson(validationPath);
+	assertCondition(
+		validation.status === 'pass',
+		`scratch-feature-existing-app: validation did not pass (${validation.failures?.join(', ')})`
+	);
+	assertCondition(
+		request.execution_mode === 'command_chain',
+		'scratch-feature-existing-app: unexpected execution mode'
+	);
+	assertCondition(
+		request.execution_payload.notes.includes('scratch_pet_diary_filter_feature'),
+		'scratch-feature-existing-app: missing scratch feature execution note'
+	);
+	assertCondition(
+		state.status === 'completed' || state.status === 'validated',
+		'scratch-feature-existing-app: executor state did not complete'
+	);
+	assertReviewerArtifacts('scratch-feature-existing-app', model, dispatchInfo, {
+		expectFeed: false,
+		repoRoot: scratchRoot,
+	});
+	assertGovernorDecision('scratch-feature-existing-app', model, dispatchInfo, {
+		expectFeed: false,
+	});
+	for (const devRef of ['index.html', path.join('data', 'sample-pets.json'), path.join('src', 'app.js')]) {
+		assertCondition(
+			!fs.existsSync(path.join(repoRoot, devRef)),
+			`scratch-feature-existing-app: wrote ${devRef} to Corgi source repo`
+		);
+	}
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: 'module:scratch-feature-existing-app',
+		stage: model.snapshot.currentStage,
+		permissionScope: model.snapshot.permissionScope,
+		dispatchRef: dispatchInfo.request.dispatch_ref,
+	};
+}
+
 function runModule(moduleName, options) {
 	switch (moduleName) {
 		case 'executor':
@@ -1157,8 +1338,14 @@ function runModule(moduleName, options) {
 			return [runScratchStaticAppModule(options)];
 		case 'scratch-bugfix-existing-app':
 			return [runScratchBugfixExistingAppModule(options)];
+		case 'scratch-feature-existing-app':
+			return [runScratchFeatureExistingAppModule(options)];
 		case 'completion':
-			return [runScratchStaticAppModule(options), runScratchBugfixExistingAppModule(options)];
+			return [
+				runScratchStaticAppModule(options),
+				runScratchBugfixExistingAppModule(options),
+				runScratchFeatureExistingAppModule(options),
+			];
 		case 'all':
 			return [
 				runExecutorModule(options),

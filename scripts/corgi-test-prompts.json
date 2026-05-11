@@ -111,6 +111,29 @@
       "tags": ["scratch", "bugfix", "existing-app", "executor", "reviewer"]
     },
     {
+      "id": "pet-life-diary-filter",
+      "label": "Pet life diary filter",
+      "prompt": "Add a simple species filter to the existing pet diary app so users can show all entries or only Corgi/Cat entries. Keep the UI simple and preserve the existing app structure.",
+      "category": "scratch_feature",
+      "requiresScenario": "fresh-session",
+      "purpose": "Real-world scratch-workspace benchmark that proves Executor can add a feature across existing project files and Reviewer can validate behavior evidence.",
+      "expectedFlow": [
+        "understanding_request",
+        "plan_permission",
+        "governor_plan",
+        "execute_permission",
+        "executor_mutates_existing_files",
+        "reviewer_checks",
+        "governor_decision_recorded"
+      ],
+      "assertions": [
+        "Target workspace is a seeded scratch app, not the Corgi source repo.",
+        "Executor mutates index.html and src/app.js instead of recreating the app.",
+        "Reviewer and Governor decision artifacts are recorded after species-filter validation evidence passes."
+      ],
+      "tags": ["scratch", "feature", "existing-app", "executor", "reviewer"]
+    },
+    {
       "id": "question-work",
       "label": "Question-shaped work",
       "prompt": "can we develop the internet feature?",

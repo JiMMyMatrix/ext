@@ -625,6 +625,66 @@ class HarnessPackageTests(unittest.TestCase):
             )
             self.assertFalse(patch_spec_path.exists())
 
+    def test_pet_diary_filter_executor_requires_explicit_scratch_test_metadata(self) -> None:
+        objective = "Add a simple species filter to the existing pet diary app."
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(
+                session_execution.is_pet_diary_filter_test_dispatch(
+                    objective,
+                    ".agent/intakes/20260511-pet-life-diary-filter/accepted_intake.json",
+                )
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-filter",
+            },
+            clear=True,
+        ):
+            self.assertTrue(
+                session_execution.is_pet_diary_filter_test_dispatch(
+                    objective,
+                    ".agent/intakes/20260511-pet-life-diary-filter/accepted_intake.json",
+                )
+            )
+
+    def test_pet_diary_filter_dispatch_requires_mutation_authorship_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            paths = resolve_paths(repo_root)
+            args: list[str] = []
+
+            session_execution.extend_pet_diary_filter_dispatch_args(
+                args,
+                paths,
+                dispatch_ref="lane/intake/dispatch-001",
+                objective="Add a simple species filter to the existing pet diary app.",
+            )
+
+            args_text = " ".join(args)
+            self.assertIn("--authorship-evidence-required", args)
+            for output_ref in session_execution.PET_DIARY_FILTER_OUTPUTS:
+                self.assertIn(output_ref, args)
+            self.assertIn("--validator-command", args)
+            self.assertIn("executor_propose_patch_spec.py", args_text)
+            self.assertIn("executor_apply_patch_spec.py", args_text)
+            self.assertIn("validate_pet_diary_filter.py", args_text)
+            self.assertIn("pet_diary_species_filter", args_text)
+            self.assertIn("pet_diary_species_filter-index-html.patch", args_text)
+            self.assertIn("pet_diary_species_filter-src-app-js.patch", args_text)
+            self.assertIn("scratch_pet_diary_filter_feature", args)
+            patch_spec_path = (
+                paths.agent_root
+                / "patch_specs"
+                / "lane"
+                / "intake"
+                / "dispatch-001"
+                / "pet_diary_species_filter.json"
+            )
+            self.assertFalse(patch_spec_path.exists())
+
     def test_patch_spec_proposer_writes_executor_proposal_artifact(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp_dir:

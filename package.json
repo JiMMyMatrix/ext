@@ -86,6 +86,7 @@
     "test:process:reviewer": "node scripts/corgi-process-test.cjs --module reviewer",
     "test:process:scratch": "node scripts/corgi-process-test.cjs --module scratch-static-app",
     "test:process:project": "node scripts/corgi-process-test.cjs --module scratch-bugfix-existing-app",
+    "test:process:feature": "node scripts/corgi-process-test.cjs --module scratch-feature-existing-app",
     "test:process:completion": "node scripts/corgi-process-test.cjs --module completion",
     "test:prompts": "node scripts/corgi-test-prompt.cjs validate",
     "test:prompts:list": "node scripts/corgi-test-prompt.cjs list",
