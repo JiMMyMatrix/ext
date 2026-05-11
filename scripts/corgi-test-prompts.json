@@ -88,6 +88,52 @@
       "tags": ["scratch", "static-app", "e2e", "executor"]
     },
     {
+      "id": "pet-life-diary-app-store-demo",
+      "label": "Pet life diary App Store demo",
+      "prompt": "Create a polished static Pet Life Diary demo project from scratch, similar to something that could be presented on an iOS App Store listing. Include an elegant landing UI, sample pet diary data, lightweight interactions, and a README that explains the demo.",
+      "category": "scratch_showcase",
+      "requiresScenario": "fresh-session",
+      "purpose": "Live goal demo proving Corgi can take one ambitious product-style goal, decompose it, build project files, review them, and leave the result open for inspection.",
+      "expectedFlow": [
+        "understanding_request",
+        "plan_permission",
+        "governor_plan",
+        "execute_permission",
+        "executor_writes_files",
+        "reviewer_checks",
+        "governor_decision_recorded",
+        "window_remains_open_for_review"
+      ],
+      "assertions": [
+        "Target workspace is a clean scratch folder, not the Corgi source repo.",
+        "Executor writes README.md, index.html, src/app.js, src/styles.css, and data/sample-pets.json.",
+        "The final test window remains open after Governor acceptance so the user can inspect the demo."
+      ],
+      "tags": ["scratch", "showcase", "live-demo", "executor", "reviewer"]
+    },
+    {
+      "id": "pet-life-diary-goal-program",
+      "label": "Pet life diary goal program",
+      "prompt": "Build a polished Pet Life Diary web app demo from scratch, then improve it through multiple development steps until it is ready to show as a small portfolio demo.",
+      "category": "scratch_goal_program",
+      "requiresScenario": "fresh-session",
+      "purpose": "Command-only multi-step goal benchmark proving Corgi can decompose one larger goal into sequential G/E/R work items.",
+      "expectedFlow": [
+        "goal_plan_created",
+        "step_1_execute_review_accept",
+        "step_2_execute_review_accept",
+        "step_3_execute_review_accept",
+        "final_goal_decision_recorded"
+      ],
+      "assertions": [
+        "At least three goal steps run under one goalRef.",
+        "At least two distinct workRef values link to the same goal.",
+        "Executor creates and mutates real scratch project files across steps.",
+        "Reviewer and Governor artifacts exist for every step before the final goal decision."
+      ],
+      "tags": ["scratch", "goal", "multi-step", "executor", "reviewer"]
+    },
+    {
       "id": "pet-life-diary-bugfix",
       "label": "Pet life diary bugfix",
       "prompt": "Fix the pet diary app so adding a diary entry updates the visible list. Keep the UI simple and preserve the existing app structure.",

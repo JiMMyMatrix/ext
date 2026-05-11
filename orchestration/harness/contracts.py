@@ -31,7 +31,13 @@ ACCEPTED_REQUIRED = {
 	"constraints",
 	"lane",
 }
-ACCEPTED_ALLOWED = ACCEPTED_REQUIRED | {"branch", "task"}
+ACCEPTED_ALLOWED = ACCEPTED_REQUIRED | {
+	"branch",
+	"task",
+	"goal_ref",
+	"goal_step_ref",
+	"goal_step_index",
+}
 FORBIDDEN_OVERREACH_KEYS = {
 	"request_ref",
 	"request_path",

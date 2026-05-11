@@ -113,6 +113,9 @@ def ensure_work_bundle(
 		index = {
 			"work_ref": work_ref,
 			"accepted_intake_ref": session_execution.accepted_intake_ref(session, repo_root),
+			"goal_ref": model.get("currentGoalRef") or model["snapshot"].get("currentGoalRef"),
+			"goal_step_ref": model.get("currentGoalStepRef") or model["snapshot"].get("currentGoalStepRef"),
+			"goal_step_index": model.get("currentGoalStepIndex") or model["snapshot"].get("currentGoalStepIndex"),
 			"lane": model["snapshot"].get("lane"),
 			"task": model["snapshot"].get("task"),
 			"status": "planning",
@@ -129,6 +132,9 @@ def ensure_work_bundle(
 	else:
 		index.setdefault("work_ref", work_ref)
 		index.setdefault("accepted_intake_ref", session_execution.accepted_intake_ref(session, repo_root))
+		index.setdefault("goal_ref", model.get("currentGoalRef") or model["snapshot"].get("currentGoalRef"))
+		index.setdefault("goal_step_ref", model.get("currentGoalStepRef") or model["snapshot"].get("currentGoalStepRef"))
+		index.setdefault("goal_step_index", model.get("currentGoalStepIndex") or model["snapshot"].get("currentGoalStepIndex"))
 		index.setdefault("status", "planning")
 		index.setdefault("current_plan_version", 0)
 		index.setdefault("current_plan_ref", None)

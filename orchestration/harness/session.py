@@ -20,6 +20,7 @@ from orchestration.harness import session_guards
 from orchestration.harness import session_governor_requests
 from orchestration.harness import session_governor_semantic_flows
 from orchestration.harness import session_governor_turn_actions
+from orchestration.harness import session_goal_lifecycle
 from orchestration.harness import session_model
 from orchestration.harness import session_permission_flows
 from orchestration.harness import session_permissions
@@ -565,6 +566,7 @@ def _append_error(
 	in_response_to_request_id: str | None = None,
 	presentation_key: str = "error.generic",
 	presentation_args: dict[str, Any] | None = None,
+	activity: dict[str, Any] | None = None,
 	source_artifact_ref: str | None = None,
 ) -> None:
 	session_surfaces.append_error(
@@ -576,6 +578,7 @@ def _append_error(
 		in_response_to_request_id=in_response_to_request_id,
 		presentation_key=presentation_key,
 		presentation_args=presentation_args,
+		activity=activity,
 		source_artifact_ref=source_artifact_ref,
 	)
 
@@ -2121,6 +2124,178 @@ def handle_execute_plan(
 		maybe_replan_after_review=_maybe_replan_after_review,
 		post_execution_actor_stage=_post_execution_actor_stage,
 	)
+	if auto_consume_executor:
+		_auto_continue_goal_program(
+			session,
+			repo_root=repo_root,
+			governor_runtime=governor_runtime,
+		)
+
+
+def _auto_continue_goal_program(
+	session: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+	governor_runtime: str = "exec",
+) -> None:
+	model = session["model"]
+	for _ in range(8):
+		if model["snapshot"].get("currentStage") != "governor_decision_recorded":
+			goal_ref = model.get("currentGoalRef") or session.get("meta", {}).get("activeGoalRef")
+			if (
+				isinstance(goal_ref, str)
+				and goal_ref.strip()
+				and session_goal_lifecycle.goal_stage_is_blocked(model["snapshot"].get("currentStage"))
+			):
+				session_goal_lifecycle.mark_goal_blocked(
+					session,
+					goal_ref,
+					utc_now(),
+					"current_step_blocked",
+					repo_root=repo_root,
+				)
+			break
+		now = utc_now()
+		outcome = session_goal_lifecycle.advance_goal_after_decision(
+			session,
+			now,
+			next_id=_next_id,
+			artifact_factory=_artifact,
+			feed_item=_feed_item,
+			repo_root=repo_root,
+		)
+		if outcome != "next_step":
+			break
+		plan_ready = model.get("planReadyRequest")
+		if not isinstance(plan_ready, dict):
+			break
+		session_plan_actions.handle_execute_plan(
+			session,
+			repo_root=repo_root,
+			session_ref=model["snapshot"].get("sessionRef"),
+			request_id=_next_id("request"),
+			context_ref=plan_ready.get("contextRef"),
+			governor_runtime=governor_runtime,
+			auto_consume_executor=True,
+			append_error=_append_error,
+			refresh_snapshot=_refresh_snapshot,
+			emit_plan_execution_dispatch=_emit_plan_execution_dispatch,
+			dispatch_artifacts=_dispatch_artifacts,
+			feed_item=_feed_item,
+			consume_executor_dispatch=_consume_executor_dispatch,
+			consume_reviewer_dispatch=_consume_reviewer_dispatch,
+			finalize_dispatch=_finalize_dispatch,
+			maybe_replan_after_review=_maybe_replan_after_review,
+			post_execution_actor_stage=_post_execution_actor_stage,
+		)
+
+
+def handle_start_goal(
+	session: dict[str, Any],
+	text: str,
+	*,
+	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
+	request_id: str | None = None,
+	auto_consume_executor: bool = False,
+	governor_runtime: str = "exec",
+) -> None:
+	now = utc_now()
+	model = session["model"]
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
+		_append_error(
+			model,
+			"Session changed",
+			"The active session changed before this goal was started. Refresh and try again.",
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key="error.session_changed",
+		)
+		return
+	goal_text = trim_text(text)
+	if not goal_text:
+		_append_error(
+			model,
+			"Goal required",
+			"Enter a goal before starting a goal program.",
+			now,
+			in_response_to_request_id=request_id,
+		)
+		return
+	active_goal_ref = model.get("currentGoalRef") or model["snapshot"].get("currentGoalRef")
+	if (
+		isinstance(active_goal_ref, str)
+		and active_goal_ref.strip()
+		and model["snapshot"].get("goalStatus") == "active"
+	):
+		_append_error(
+			model,
+			"Goal already active",
+			"Finish, block, or stop the current goal before starting another goal program.",
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key="goal.blocked",
+			presentation_args={"reason": "active_goal_exists"},
+		)
+		return
+	if request_id:
+		model["activeForegroundRequestId"] = request_id
+	_append_user_turn(
+		model,
+		now,
+		title="Goal submitted",
+		body=goal_text,
+		turn_type="governed_work_intent",
+		in_response_to_request_id=request_id,
+	)
+	goal = session_goal_lifecycle.create_goal_program(
+		session,
+		now,
+		goal_text,
+		next_id=_next_id,
+		repo_root=repo_root,
+	)
+	first_step = goal["steps"][0] if goal["steps"] else None
+	if not first_step:
+		_append_error(
+			model,
+			"Goal plan missing",
+			"Governor did not produce any bounded goal steps.",
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key="goal.blocked",
+		)
+		return
+	session_goal_lifecycle.begin_goal_step(
+		session,
+		goal["goal_ref"],
+		first_step,
+		now,
+		next_id=_next_id,
+		artifact_factory=_artifact,
+		feed_item=_feed_item,
+		repo_root=repo_root,
+	)
+	_refresh_snapshot(
+		model,
+		now,
+		currentActor="governor",
+		currentStage="plan_ready",
+		runState="idle",
+		transportState="connected",
+	)
+	if auto_consume_executor:
+		plan_ready = model.get("planReadyRequest")
+		if isinstance(plan_ready, dict):
+			handle_execute_plan(
+				session,
+				repo_root=repo_root,
+				session_ref=model["snapshot"].get("sessionRef"),
+				request_id=_next_id("request"),
+				context_ref=plan_ready.get("contextRef"),
+				governor_runtime=governor_runtime,
+				auto_consume_executor=True,
+			)
 
 
 def handle_revise_plan(
@@ -2346,6 +2521,16 @@ def dispatch_session_action(
 			semantic_block_reason=semantic_block_reason,
 			governor_runtime=governor_runtime,
 			auto_consume_executor=auto_consume_executor,
+		)
+	elif command == "start_goal":
+		handle_start_goal(
+			session,
+			text or "",
+			repo_root=repo_root,
+			session_ref=session_ref,
+			request_id=request_id,
+			auto_consume_executor=auto_consume_executor,
+			governor_runtime=governor_runtime,
 		)
 	elif command == "answer_clarification":
 		handle_answer_clarification(

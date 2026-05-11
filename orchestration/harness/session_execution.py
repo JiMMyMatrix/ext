@@ -26,13 +26,21 @@ NextId = Callable[[str], str]
 
 
 def accepted_intake_ref(session: dict[str, Any], repo_root: str | Path | None = None) -> str | None:
-    intake_ref = session["meta"].get("activeIntakeRef")
-    if not isinstance(intake_ref, str) or not intake_ref:
-        return None
-    path = accepted_intake_path(intake_ref, repo_root=repo_root)
-    if not path.exists():
-        return None
-    return repo_relative(path, repo_root)
+	intake_ref = session["meta"].get("activeIntakeRef")
+	if not isinstance(intake_ref, str) or not intake_ref:
+		return None
+	path = accepted_intake_path(intake_ref, repo_root=repo_root)
+	if not path.exists():
+		return None
+	return repo_relative(path, repo_root)
+
+
+def accepted_intake_payload(session: dict[str, Any], repo_root: str | Path | None = None) -> dict[str, Any]:
+	intake_ref = session["meta"].get("activeIntakeRef")
+	if not isinstance(intake_ref, str) or not intake_ref:
+		return {}
+	path = accepted_intake_path(intake_ref, repo_root=repo_root)
+	return load_json(path) if path.exists() else {}
 
 
 def plan_execution_objective(model: dict[str, Any]) -> str:
@@ -73,8 +81,18 @@ PET_DIARY_OUTPUTS = [
     "data/sample-pets.json",
 ]
 
+PET_DIARY_STATIC_TEST_PRESETS = {"pet-life-diary-static", "pet-life-diary-app-store-demo"}
 PET_DIARY_BUGFIX_OUTPUTS = ["src/app.js"]
 PET_DIARY_FILTER_OUTPUTS = ["index.html", "src/app.js"]
+PET_DIARY_README_OUTPUTS = ["README.md"]
+
+
+def accepted_goal_step(payload: dict[str, Any], step_ref: str) -> bool:
+	return (
+		isinstance(payload, dict)
+		and isinstance(payload.get("goal_ref"), str)
+		and payload.get("goal_step_ref") == step_ref
+	)
 
 
 def matches_pet_diary_static_request(objective: str, accepted_ref: str | None) -> bool:
@@ -85,9 +103,16 @@ def matches_pet_diary_static_request(objective: str, accepted_ref: str | None) -
 def is_pet_diary_static_test_dispatch(objective: str, accepted_ref: str | None) -> bool:
     return (
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
-        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-static"
+        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") in PET_DIARY_STATIC_TEST_PRESETS
         and matches_pet_diary_static_request(objective, accepted_ref)
-    )
+	)
+
+
+def is_pet_diary_goal_base_dispatch(accepted_payload: dict[str, Any]) -> bool:
+	return (
+		os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+		and accepted_goal_step(accepted_payload, "step-01")
+	)
 
 
 def matches_pet_diary_bugfix_request(objective: str, accepted_ref: str | None) -> bool:
@@ -113,7 +138,14 @@ def is_pet_diary_filter_test_dispatch(objective: str, accepted_ref: str | None) 
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
         and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-filter"
         and matches_pet_diary_filter_request(objective, accepted_ref)
-    )
+	)
+
+
+def is_pet_diary_goal_filter_dispatch(accepted_payload: dict[str, Any]) -> bool:
+	return (
+		os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+		and accepted_goal_step(accepted_payload, "step-02")
+	)
 
 
 def is_pet_diary_filter_retry_test_dispatch(objective: str, accepted_ref: str | None) -> bool:
@@ -121,7 +153,65 @@ def is_pet_diary_filter_retry_test_dispatch(objective: str, accepted_ref: str | 
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
         and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-filter-review-retry"
         and matches_pet_diary_filter_request(objective, accepted_ref)
-    )
+	)
+
+
+def is_pet_diary_goal_readme_dispatch(accepted_payload: dict[str, Any]) -> bool:
+	return (
+		os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+		and accepted_goal_step(accepted_payload, "step-03")
+	)
+
+
+def extend_goal_pet_diary_base_dispatch_args(
+	args: list[str],
+	paths: Any,
+	*,
+	dispatch_ref: str,
+	objective: str,
+) -> None:
+	for output_ref in PET_DIARY_OUTPUTS:
+		args.extend(["--run-produce", output_ref])
+		args.extend(["--run-touch", output_ref])
+		args.extend(["--required-output", output_ref])
+	args.extend(
+		[
+			"--authorship-evidence-required",
+			"--command",
+			" ".join(
+				[
+					command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+					command_arg(script_ref("executor_create_goal_pet_diary_base.py", paths.repo_root)),
+					"--repo-root",
+					command_arg(str(paths.repo_root)),
+					"--dispatch-ref",
+					command_arg(dispatch_ref),
+					"--objective",
+					command_arg(objective),
+				]
+			),
+			"--execution-summary",
+			"Executor created the baseline Pet Life Diary app for the active goal.",
+			"--execution-claim",
+			"Executor created README.md, index.html, src/app.js, src/styles.css, and data/sample-pets.json.",
+			"--execution-claim",
+			"This dispatch completed step 1 of the multi-step goal program.",
+			"--execution-evidence",
+			"README.md",
+			"--execution-evidence",
+			"index.html",
+			"--execution-evidence",
+			"src/app.js",
+			"--execution-evidence",
+			"src/styles.css",
+			"--execution-evidence",
+			"data/sample-pets.json",
+			"--execution-note",
+			"goal_pet_diary_base_app",
+			"--execution-next-action",
+			"Reviewer should verify the baseline app files before Corgi advances to the next goal step.",
+		]
+	)
 
 
 def extend_static_pet_diary_dispatch_args(
@@ -360,6 +450,49 @@ def extend_pet_diary_filter_dispatch_args(
     )
 
 
+def extend_pet_diary_readme_polish_dispatch_args(
+	args: list[str],
+	paths: Any,
+	*,
+	dispatch_ref: str,
+	objective: str,
+) -> None:
+	for output_ref in PET_DIARY_README_OUTPUTS:
+		args.extend(["--run-produce", output_ref])
+		args.extend(["--run-touch", output_ref])
+		args.extend(["--required-output", output_ref])
+	args.extend(
+		[
+			"--authorship-evidence-required",
+			"--command",
+			" ".join(
+				[
+					command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+					command_arg(script_ref("executor_polish_pet_diary_readme.py", paths.repo_root)),
+					"--repo-root",
+					command_arg(str(paths.repo_root)),
+					"--dispatch-ref",
+					command_arg(dispatch_ref),
+					"--objective",
+					command_arg(objective),
+				]
+			),
+			"--execution-summary",
+			"Executor polished the Pet Life Diary README for the active goal.",
+			"--execution-claim",
+			"Executor mutated README.md with demo overview, project files, run instructions, and Corgi build notes.",
+			"--execution-claim",
+			"This dispatch completed the final documentation step of the multi-step goal program.",
+			"--execution-evidence",
+			"README.md",
+			"--execution-note",
+			"goal_pet_diary_readme_polish",
+			"--execution-next-action",
+			"Reviewer should verify the README handoff before Governor records the final goal decision.",
+		]
+	)
+
+
 def extend_pet_diary_filter_retry_dispatch_args(
     args: list[str],
     paths: Any,
@@ -496,6 +629,7 @@ def emit_plan_execution_dispatch(
     )
     objective = plan_execution_objective(model)
     accepted_ref = accepted_intake_ref(session, repo_root)
+    accepted_payload = accepted_intake_payload(session, repo_root)
     if not accepted_ref:
         append_error(
             model,
@@ -526,6 +660,9 @@ def emit_plan_execution_dispatch(
     is_pet_diary_bugfix = is_pet_diary_bugfix_test_dispatch(objective, accepted_ref)
     is_pet_diary_filter = is_pet_diary_filter_test_dispatch(objective, accepted_ref)
     is_pet_diary_filter_retry = is_pet_diary_filter_retry_test_dispatch(objective, accepted_ref)
+    is_goal_base = is_pet_diary_goal_base_dispatch(accepted_payload)
+    is_goal_filter = is_pet_diary_goal_filter_dispatch(accepted_payload)
+    is_goal_readme = is_pet_diary_goal_readme_dispatch(accepted_payload)
     args = [
         "--dispatch-ref",
         dispatch_ref,
@@ -553,7 +690,14 @@ def emit_plan_execution_dispatch(
         "--root",
         str(paths.repo_root),
     ]
-    if is_static_pet_diary:
+    if is_goal_base:
+        extend_goal_pet_diary_base_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+        )
+    elif is_static_pet_diary:
         extend_static_pet_diary_dispatch_args(
             args,
             paths,
@@ -568,7 +712,7 @@ def emit_plan_execution_dispatch(
             dispatch_ref=dispatch_ref,
             objective=objective,
         )
-    elif is_pet_diary_filter:
+    elif is_goal_filter or is_pet_diary_filter:
         extend_pet_diary_filter_dispatch_args(
             args,
             paths,
@@ -582,6 +726,13 @@ def emit_plan_execution_dispatch(
             dispatch_ref=dispatch_ref,
             objective=objective,
             attempt_number=attempt_number,
+        )
+    elif is_goal_readme:
+        extend_pet_diary_readme_polish_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
         )
     else:
         args.extend(
@@ -785,6 +936,74 @@ def executor_output_body(
     return body
 
 
+def load_executor_result_payload(state: dict[str, Any], *, repo_root: str | Path | None = None) -> dict[str, Any]:
+    result_ref = state.get("result_ref") if isinstance(state, dict) else None
+    if not isinstance(result_ref, str) or not result_ref.strip():
+        return {}
+    result_path = resolve_paths(repo_root).repo_root / result_ref
+    return load_json(result_path) if result_path.exists() else {}
+
+
+def list_count(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def output_signature_summary(result_payload: dict[str, Any]) -> dict[str, int]:
+    signatures = result_payload.get("output_signatures") if isinstance(result_payload, dict) else None
+    summary = signatures.get("summary") if isinstance(signatures, dict) else None
+    if not isinstance(summary, dict):
+        return {}
+    return {
+        key: int(value)
+        for key, value in summary.items()
+        if key in {"created", "mutated", "unchanged", "missing"} and isinstance(value, int)
+    }
+
+
+def compact_count_label(count: int, singular: str, plural: str | None = None) -> str | None:
+    if count <= 0:
+        return None
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def executor_activity_summary(report: dict[str, Any], result_payload: dict[str, Any]) -> str:
+    outputs_count = list_count(report.get("outputs") if isinstance(report, dict) else None)
+    signature_counts = output_signature_summary(result_payload)
+    parts = [
+        compact_count_label(outputs_count, "output"),
+        compact_count_label(signature_counts.get("created", 0), "created output", "created outputs"),
+        compact_count_label(signature_counts.get("mutated", 0), "mutated output", "mutated outputs"),
+    ]
+    signatures = result_payload.get("output_signatures") if isinstance(result_payload, dict) else None
+    if isinstance(signatures, dict):
+        parts.append("authorship verified" if signatures.get("verified") is True else "authorship unverified")
+    compact = [part for part in parts if part]
+    return " · ".join(compact) if compact else "Executor produced the bounded result."
+
+
+def reviewer_activity_summary(review: dict[str, Any]) -> str:
+    verdict = trim_text(review.get("verdict")) or "inconclusive"
+    findings_count = list_count(review.get("findings"))
+    risks_count = list_count(review.get("residual_risks"))
+    validation_count = list_count(review.get("validator_assessment"))
+    parts = [
+        f"Verdict {verdict.replace('_', ' ')}",
+        compact_count_label(findings_count, "finding"),
+        compact_count_label(risks_count, "residual risk", "residual risks"),
+        compact_count_label(validation_count, "validation check", "validation checks"),
+    ]
+    return " · ".join(part for part in parts if part)
+
+
+def governor_decision_activity_summary(decision: dict[str, Any]) -> str:
+    decision_value = trim_text(decision.get("decision")) or "unknown"
+    next_action = trim_text(decision.get("recommended_next_action"))
+    parts = [f"Decision {decision_value.replace('_', ' ')}"]
+    if next_action:
+        parts.append(f"Next {next_action.replace('_', ' ')}")
+    return " · ".join(parts)
+
+
 def executor_completion_body(report: dict[str, Any], output_body: str | None = None) -> str:
     summary = trim_text(report.get("summary") if isinstance(report, dict) else "")
     next_action = trim_text(report.get("next_action") if isinstance(report, dict) else "")
@@ -892,6 +1111,13 @@ def consume_executor_dispatch(
             f"Corgi created dispatch truth, but Executor launch failed: {exc}",
             now,
             in_response_to_request_id=request_id,
+            presentation_key="executor.blocked",
+            presentation_args={"actor": "executor", "reason": "launch_failed"},
+            activity={
+                "kind": "status",
+                "state": "failed",
+                "summary": "Executor launch failed.",
+            },
             source_artifact_ref=dispatch_refs["request_ref"],
         )
         return {
@@ -924,14 +1150,23 @@ def consume_executor_dispatch(
             "Executor could not complete this dispatch. View the source artifact for the blocker details.",
             now,
             in_response_to_request_id=request_id,
+            presentation_key="executor.blocked",
+            presentation_args={"actor": "executor", "reason": "dispatch_incomplete"},
+            activity={
+                "kind": "status",
+                "state": "failed",
+                "summary": "Executor could not complete the dispatch.",
+            },
             source_artifact_ref=source_ref,
         )
         return {"ok": False, "actor": "executor", "stage": "executor_blocked", "artifacts": artifacts}
 
     report = executor_report_payload(state, repo_root=repo_root)
+    result_payload = load_executor_result_payload(state, repo_root=repo_root)
     primary_output_ref = executor_primary_output_ref(report)
     primary_output_body = executor_output_body(primary_output_ref, repo_root=repo_root)
     result_ref = state.get("result_ref") if isinstance(state, dict) else None
+    executor_summary = executor_activity_summary(report, result_payload)
     model["feed"].append(
         feed_item(
             "system_status",
@@ -939,10 +1174,24 @@ def consume_executor_dispatch(
             executor_completion_body(report, primary_output_body),
             authoritative=True,
             now=now,
-            source_artifact_ref=primary_output_ref
-            or (result_ref if isinstance(result_ref, str) else dispatch_refs["state_ref"]),
+            activity={
+                "kind": "status",
+                "state": "completed",
+                "summary": executor_summary,
+            },
+            source_artifact_ref=(result_ref if isinstance(result_ref, str) else None)
+            or primary_output_ref
+            or dispatch_refs["state_ref"],
+            source_layer="orchestration",
+            source_actor="executor",
             turn_type="permission_action",
             in_response_to_request_id=request_id,
+            presentation_key="executor.completed",
+            presentation_args={
+                "summary": executor_summary,
+                "outputs": list_count(report.get("outputs") if isinstance(report, dict) else None),
+                "signatureSummary": output_signature_summary(result_payload),
+            },
         )
     )
     return {"ok": True, "actor": "executor", "stage": "executor_completed", "artifacts": artifacts}
@@ -980,6 +1229,13 @@ def consume_reviewer_dispatch(
             f"Corgi could not complete the advisory review for this dispatch: {exc}",
             now,
             in_response_to_request_id=request_id,
+            presentation_key="reviewer.blocked",
+            presentation_args={"actor": "reviewer", "reason": "launch_failed"},
+            activity={
+                "kind": "status",
+                "state": "failed",
+                "summary": "Reviewer launch failed.",
+            },
             source_artifact_ref=dispatch_refs.get("request_ref"),
         )
         return {"ok": False, "actor": "reviewer", "stage": "reviewer_blocked", "artifacts": []}
@@ -992,6 +1248,13 @@ def consume_reviewer_dispatch(
             "Reviewer did not produce the expected advisory review artifact.",
             now,
             in_response_to_request_id=request_id,
+            presentation_key="reviewer.blocked",
+            presentation_args={"actor": "reviewer", "reason": "missing_review"},
+            activity={
+                "kind": "status",
+                "state": "failed",
+                "summary": "Reviewer did not produce the expected review.",
+            },
             source_artifact_ref=dispatch_refs.get("request_ref"),
         )
         return {"ok": False, "actor": "reviewer", "stage": "reviewer_blocked", "artifacts": []}
@@ -1003,6 +1266,7 @@ def consume_reviewer_dispatch(
         authoritative=True,
         status=trim_text(review_payload.get("verdict")) or "completed",
     )
+    review_summary = reviewer_activity_summary(review_payload)
     model["feed"].append(
         feed_item(
             "system_status",
@@ -1010,9 +1274,23 @@ def consume_reviewer_dispatch(
             reviewer_completion_body(review_payload),
             authoritative=True,
             now=now,
+            activity={
+                "kind": "status",
+                "state": "completed",
+                "summary": review_summary,
+            },
             source_artifact_ref=review_ref,
+            source_layer="orchestration",
+            source_actor="reviewer",
             turn_type="permission_action",
             in_response_to_request_id=request_id,
+            presentation_key="reviewer.completed",
+            presentation_args={
+                "summary": review_summary,
+                "verdict": trim_text(review_payload.get("verdict")) or "inconclusive",
+                "findings": list_count(review_payload.get("findings")),
+                "residualRisks": list_count(review_payload.get("residual_risks")),
+            },
         )
     )
     return {"ok": True, "actor": "reviewer", "stage": "reviewer_completed", "artifacts": [review_artifact]}
@@ -1047,6 +1325,13 @@ def finalize_dispatch(
             f"Corgi completed Executor and Reviewer steps, but Governor finalization could not complete: {exc}",
             now,
             in_response_to_request_id=request_id,
+            presentation_key="governor.finalization_blocked",
+            presentation_args={"actor": "governor", "reason": "finalize_failed"},
+            activity={
+                "kind": "status",
+                "state": "failed",
+                "summary": "Governor finalization failed.",
+            },
             source_artifact_ref=dispatch_refs.get("review_ref") or dispatch_refs.get("request_ref"),
         )
         return {"ok": False, "actor": "governor", "stage": "governor_finalization_blocked", "artifacts": []}
@@ -1059,6 +1344,13 @@ def finalize_dispatch(
             "Governor finalization did not produce the expected decision artifact.",
             now,
             in_response_to_request_id=request_id,
+            presentation_key="governor.finalization_blocked",
+            presentation_args={"actor": "governor", "reason": "missing_decision"},
+            activity={
+                "kind": "status",
+                "state": "failed",
+                "summary": "Governor decision was not recorded.",
+            },
             source_artifact_ref=dispatch_refs.get("review_ref") or dispatch_refs.get("request_ref"),
         )
         return {"ok": False, "actor": "governor", "stage": "governor_finalization_blocked", "artifacts": []}
@@ -1071,6 +1363,7 @@ def finalize_dispatch(
         authoritative=True,
         status=trim_text(decision_payload.get("decision")) or "recorded",
     )
+    decision_summary = governor_decision_activity_summary(decision_payload)
     model["feed"].append(
         feed_item(
             "system_status",
@@ -1078,11 +1371,22 @@ def finalize_dispatch(
             governor_decision_body(decision_payload),
             authoritative=True,
             now=now,
+            activity={
+                "kind": "status",
+                "state": "completed",
+                "summary": decision_summary,
+            },
             source_layer="orchestration",
             source_actor="governor",
             source_artifact_ref=decision_ref,
             turn_type="permission_action",
             in_response_to_request_id=request_id,
+            presentation_key="governor.final_decision",
+            presentation_args={
+                "summary": decision_summary,
+                "decision": trim_text(decision_payload.get("decision")) or "unknown",
+                "nextAction": trim_text(decision_payload.get("recommended_next_action")),
+            },
         )
     )
     return {

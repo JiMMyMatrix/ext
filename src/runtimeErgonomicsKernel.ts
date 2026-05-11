@@ -18,6 +18,7 @@ export interface RuntimeActivityEvent {
 	summaryKey: string;
 	summaryArgs?: Record<string, unknown>;
 	summary: string;
+	detail?: string;
 	visibility: RuntimeActivityVisibility;
 	sourceRef?: string;
 }
@@ -51,12 +52,25 @@ const SUMMARY_COPY: Record<string, string> = {
 	dispatch_queued: 'Ready to write',
 	executor_running: 'Writing',
 	executor_completed: 'Changes written',
+	executor_blocked: 'Executor blocked',
 	reviewer_running: 'Checking',
 	reviewer_request_changes: 'Changes requested',
 	reviewer_completed: 'Checked result',
+	reviewer_blocked: 'Reviewer blocked',
 	plan_revision: 'Revising plan',
 	advisor_consulting: 'Consulting advisor',
 	governor_decision_recorded: 'Final decision recorded',
+	governor_finalization_blocked: 'Final decision blocked',
+};
+
+const PRESENTATION_ACTIVITY_KEYS: Record<string, string> = {
+	'dispatch.queued': 'dispatch_queued',
+	'executor.completed': 'executor_completed',
+	'executor.blocked': 'executor_blocked',
+	'reviewer.completed': 'reviewer_completed',
+	'reviewer.blocked': 'reviewer_blocked',
+	'governor.final_decision': 'governor_decision_recorded',
+	'governor.finalization_blocked': 'governor_finalization_blocked',
 };
 
 function titleOf(item: FeedItem): string {
@@ -111,6 +125,9 @@ export function runtimeVisibilityForFeedItem(
 		return 'transcript';
 	}
 	if (item.activity || activityKeyForFeedItem(item) !== undefined) {
+		return 'activity';
+	}
+	if (item.type === 'system_status') {
 		return 'activity';
 	}
 	if (item.type === 'actor_event' || isAdvisorItem(item)) {
@@ -171,6 +188,14 @@ function activityKeyForFeedItem(item: FeedItem): string | undefined {
 		return 'advisor_consulting';
 	}
 
+	const presentationKey = item.presentation_key;
+	if (
+		typeof presentationKey === 'string' &&
+		PRESENTATION_ACTIVITY_KEYS[presentationKey]
+	) {
+		return PRESENTATION_ACTIVITY_KEYS[presentationKey];
+	}
+
 	const title = normalizedTitle(item);
 	if (title === 'dispatch queued') {
 		return 'dispatch_queued';
@@ -214,13 +239,24 @@ function feedActivityEvent(
 	item: FeedItem
 ): RuntimeActivityEvent | undefined {
 	const activityKey = activityKeyForFeedItem(item);
-	if (!activityKey && !item.activity) {
+	if (!activityKey && !item.activity && item.type !== 'system_status') {
 		return undefined;
 	}
 
-	const summaryKey = activityKey ?? item.activity?.kind ?? 'activity';
+	const summaryKey = activityKey ?? item.activity?.kind ?? 'status';
 	const summaryArgs: Record<string, unknown> = {};
 	const state = item.activity?.state;
+	const activitySummary = item.activity?.summary;
+	const summary = activityKey
+		? summaryForActivity(summaryKey, summaryArgs)
+		: activitySummary ||
+			item.body ||
+			item.title ||
+			summaryForActivity(summaryKey, summaryArgs);
+	const detail =
+		activityKey && activitySummary && activitySummary !== summary
+			? activitySummary
+			: undefined;
 	return {
 		requestId: item.in_response_to_request_id,
 		workRef: model.snapshot.currentWorkRef,
@@ -230,7 +266,8 @@ function feedActivityEvent(
 		severity: severityForState(state),
 		summaryKey,
 		summaryArgs,
-		summary: item.activity?.summary || summaryForActivity(summaryKey, summaryArgs),
+		summary,
+		detail,
 		visibility: 'activity',
 		sourceRef: item.id,
 	};
@@ -356,48 +393,62 @@ function collapseActivities(
 function goalDisplay(model: ExecutionWindowModel): RuntimeGoalDisplay {
 	const snapshot = model.snapshot;
 	const goal =
+		snapshot.currentGoalTitle ||
 		snapshot.task ||
 		model.acceptedIntakeSummary?.body ||
 		model.acceptedIntakeSummary?.title ||
 		'Nothing active yet';
 	const attempt = attemptSuffix(model);
-	let step = snapshot.task ? 'Ready to continue' : 'Ready';
+	const goalStepPrefix =
+		typeof snapshot.currentGoalStepIndex === 'number' &&
+		typeof snapshot.goalStepCount === 'number' &&
+		snapshot.currentGoalStepIndex > 0 &&
+		snapshot.goalStepCount > 0
+			? `Step ${snapshot.currentGoalStepIndex}/${snapshot.goalStepCount}`
+			: '';
+	const goalStep = (label: string): string => (goalStepPrefix ? `${goalStepPrefix} · ${label}` : label);
+	let step =
+		snapshot.goalStatus === 'completed'
+			? 'Goal complete'
+			: snapshot.task
+				? goalStep('Ready to continue')
+				: 'Ready';
 
 	const liveEvent = liveActivityEvent(model);
 	if (liveEvent?.summaryKey === 'parallel_running') {
 		step = liveEvent.summary;
 	} else if (model.activeClarification) {
-		step = 'Clarification needed';
+		step = goalStep('Clarification needed');
 	} else if (snapshot.pendingPermissionRequest) {
-		step = 'Permission needed';
+		step = goalStep('Permission needed');
 	} else if (snapshot.pendingInterrupt) {
-		step = 'Stop requested';
+		step = goalStep('Stop requested');
 	} else if (snapshot.currentStage === 'semantic_intake') {
-		step = summaryForActivity('semantic_intake');
+		step = goalStep(summaryForActivity('semantic_intake'));
 	} else if (isPlanReady(model)) {
-		step = `Plan ready${nextAttemptSuffix(model)}`;
+		step = goalStep(`Plan ready${nextAttemptSuffix(model)}`);
 	} else if (snapshot.currentStage === 'plan_executing') {
-		step = `Writing${attempt}`;
+		step = goalStep(`Writing${attempt}`);
 	} else if (isDispatchQueued(model)) {
-		step = `Ready to write${attempt}`;
+		step = goalStep(`Ready to write${attempt}`);
 	} else if (isGovernorDecisionRecorded(model)) {
 		step = snapshot.latestGovernorDecision
-			? `Final decision ${summarizeToken(snapshot.latestGovernorDecision, '')}${attempt}`
-			: `Final decision recorded${attempt}`;
+			? goalStep(`Final decision ${summarizeToken(snapshot.latestGovernorDecision, '')}${attempt}`)
+			: goalStep(`Final decision recorded${attempt}`);
 	} else if (isReviewerCompleted(model)) {
 		step = snapshot.latestReviewVerdict
-			? `Check ${summarizeToken(snapshot.latestReviewVerdict, '')}${attempt}`
-			: `Checked result${attempt}`;
+			? goalStep(`Check ${summarizeToken(snapshot.latestReviewVerdict, '')}${attempt}`)
+			: goalStep(`Checked result${attempt}`);
 	} else if (isExecutorCompleted(model)) {
-		step = `Changes written${attempt}`;
+		step = goalStep(`Changes written${attempt}`);
 	} else if (snapshot.currentActor === 'governor' && snapshot.runState === 'running') {
-		step = 'Planning';
+		step = goalStep('Planning');
 	} else if (snapshot.currentActor === 'executor') {
-		step = `Writing${attempt}`;
+		step = goalStep(`Writing${attempt}`);
 	} else if (snapshot.currentActor === 'reviewer') {
-		step = `Checking${attempt}`;
+		step = goalStep(`Checking${attempt}`);
 	} else if (snapshot.runState === 'running') {
-		step = 'Corgi is working';
+		step = goalStep('Corgi is working');
 	}
 
 	let status = 'Attention';
@@ -407,6 +458,10 @@ function goalDisplay(model: ExecutionWindowModel): RuntimeGoalDisplay {
 		status = 'Permission needed';
 	} else if (model.activeClarification) {
 		status = 'Needs input';
+	} else if (snapshot.goalStatus === 'completed') {
+		status = 'Goal complete';
+	} else if (snapshot.goalStatus === 'blocked') {
+		status = 'Blocked';
 	} else if (snapshot.currentStage === 'plan_executing') {
 		status = 'Running';
 	} else if (isDispatchQueued(model)) {

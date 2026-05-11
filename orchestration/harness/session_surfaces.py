@@ -85,6 +85,7 @@ def append_error(
 	in_response_to_request_id: str | None = None,
 	presentation_key: str = "error.generic",
 	presentation_args: dict[str, Any] | None = None,
+	activity: dict[str, Any] | None = None,
 	source_artifact_ref: str | None = None,
 ) -> None:
 	model["feed"].append(
@@ -94,6 +95,7 @@ def append_error(
 			body,
 			authoritative=True,
 			now=now,
+			activity=activity,
 			source_artifact_ref=source_artifact_ref,
 			in_response_to_request_id=in_response_to_request_id,
 			presentation_key=presentation_key,

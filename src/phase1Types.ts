@@ -181,6 +181,13 @@ export interface ContextSnapshot {
 	currentWorkRef?: string;
 	currentParallelSetRef?: string;
 	activeParallelDispatchCount?: number;
+	currentGoalRef?: string;
+	currentGoalTitle?: string;
+	currentGoalStepRef?: string;
+	currentGoalStepIndex?: number;
+	goalStepCount?: number;
+	goalStatus?: 'active' | 'blocked' | 'completed';
+	latestGoalDecisionRef?: string;
 	currentPlanVersion?: number;
 	currentAttemptNumber?: number;
 	latestReviewRef?: string;

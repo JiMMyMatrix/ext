@@ -52,6 +52,14 @@ export const TEST_WINDOW_STATUS_SCRIPT_PATH = path.resolve(
 	__dirname,
 	'../../scripts/corgi-test-window-status.cjs'
 );
+export const PET_DIARY_DEMO_DRIVER_PATH = path.resolve(
+	__dirname,
+	'../../scripts/run-corgi-pet-diary-demo.cjs'
+);
+export const LIVE_GOAL_DEMO_DRIVER_PATH = path.resolve(
+	__dirname,
+	'../../scripts/run-corgi-live-goal-demo.cjs'
+);
 export const PROCESS_TEST_SCRIPT_PATH = path.resolve(
 	__dirname,
 	'../../scripts/corgi-process-test.cjs'

@@ -42,8 +42,10 @@ import {
 	GOVERNOR_RUNTIME_CONFIG_PATH,
 	GOVERNOR_RUNTIME_TS_PATH,
 	LAUNCH_JSON_PATH,
+	LIVE_GOAL_DEMO_DRIVER_PATH,
 	MCP_SERVER_ENTRYPOINT_PATH,
 	PACKAGE_JSON_PATH,
+	PET_DIARY_DEMO_DRIVER_PATH,
 	PROCESS_REPLAN_HELPER_PATH,
 	PROCESS_SCRATCH_RETRY_HELPER_PATH,
 	PROCESS_TEST_SCRIPT_PATH,
@@ -370,6 +372,8 @@ suite('Corgi Webview UX', () => {
 		const launchScriptSource = fs.readFileSync(TEST_WINDOW_SCRIPT_PATH, 'utf8');
 		const closeScriptSource = fs.readFileSync(TEST_WINDOW_CLOSE_SCRIPT_PATH, 'utf8');
 		const autoScriptSource = fs.readFileSync(TEST_WINDOW_AUTO_SCRIPT_PATH, 'utf8');
+		const petDiaryDemoDriverSource = fs.readFileSync(PET_DIARY_DEMO_DRIVER_PATH, 'utf8');
+		const liveGoalDemoDriverSource = fs.readFileSync(LIVE_GOAL_DEMO_DRIVER_PATH, 'utf8');
 		const promptCatalogSource = fs.readFileSync(TEST_WINDOW_PROMPT_CATALOG_PATH, 'utf8');
 		const promptScriptSource = fs.readFileSync(TEST_WINDOW_PROMPT_SCRIPT_PATH, 'utf8');
 		const statusScriptSource = fs.readFileSync(TEST_WINDOW_STATUS_SCRIPT_PATH, 'utf8');
@@ -407,6 +411,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('testWindowAutoStepMode'));
 		assert.ok(webviewSource.includes('auto-submit test prompt'));
 		assert.ok(webviewSource.includes('runTestWindowAutoStep'));
+		assert.ok(webviewSource.includes('submitTestWindowClarificationAnswer'));
+		assert.ok(webviewSource.includes('Keep the result polished, static, and isolated in the scratch workspace.'));
 		assert.ok(webviewSource.includes('return context.extensionMode === vscode.ExtensionMode.Development;'));
 		assert.ok(launchScriptSource.includes('seed_executor_test_session.py'));
 		assert.ok(launchScriptSource.includes('seed_reviewer_test_session.py'));
@@ -477,6 +483,22 @@ suite('Corgi Webview UX', () => {
 		assert.ok(autoScriptSource.includes('latestGovernorDecision'));
 		assert.ok(autoScriptSource.includes('exited before reaching the expected checkpoint'));
 		assert.ok(!autoScriptSource.includes('run_state'));
+		assert.ok(fs.existsSync(PET_DIARY_DEMO_DRIVER_PATH));
+		assert.ok(petDiaryDemoDriverSource.includes('pet-life-diary-filter-review-retry'));
+		assert.ok(petDiaryDemoDriverSource.includes('run-corgi-test-window-auto.sh'));
+		assert.ok(petDiaryDemoDriverSource.includes('latest-pet-life-diary-demo.md'));
+		assert.ok(petDiaryDemoDriverSource.includes('demo-reports'));
+		assert.ok(petDiaryDemoDriverSource.includes('currentAttemptNumber'));
+		assert.ok(petDiaryDemoDriverSource.includes('latestGovernorDecision'));
+		assert.ok(petDiaryDemoDriverSource.includes('--print-plan'));
+		assert.ok(fs.existsSync(LIVE_GOAL_DEMO_DRIVER_PATH));
+		assert.ok(liveGoalDemoDriverSource.includes('pet-life-diary-app-store-demo'));
+		assert.ok(liveGoalDemoDriverSource.includes('launch-corgi-test-window.sh'));
+		assert.ok(liveGoalDemoDriverSource.includes('close-corgi-test-window.sh'));
+		assert.ok(liveGoalDemoDriverSource.includes('latest-live-goal-demo.md'));
+		assert.ok(liveGoalDemoDriverSource.includes('The test window is still open for inspection.'));
+		assert.ok(liveGoalDemoDriverSource.includes('--close-on-success'));
+		assert.ok(liveGoalDemoDriverSource.includes('qualityChecks'));
 		assert.ok(promptScriptSource.includes('validateCatalog'));
 		assert.ok(statusScriptSource.includes('corgi_webview_snapshot.json'));
 		assert.ok(statusScriptSource.includes('current-run.json'));
@@ -553,10 +575,16 @@ suite('Corgi Webview UX', () => {
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'architecture'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'develop-internet'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-static'));
+		assert.ok(
+			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-app-store-demo')
+		);
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-bugfix'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-filter'));
 		assert.ok(
 			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-filter-review-retry')
+		);
+		assert.ok(
+			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-goal-program')
 		);
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'progress'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'mixed-stop-work'));
@@ -599,6 +627,10 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:process:project-retry'],
 			'node scripts/corgi-process-test.cjs --module scratch-review-retry-existing-app'
+		);
+		assert.strictEqual(
+			scripts['test:process:goal'],
+			'node scripts/corgi-process-test.cjs --module scratch-goal-program'
 		);
 		assert.strictEqual(
 			scripts['test:process:completion'],
@@ -693,6 +725,22 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:window:status'],
 			'node scripts/corgi-test-window-status.cjs'
+		);
+		assert.strictEqual(
+			scripts['demo:pet-diary'],
+			'node scripts/run-corgi-pet-diary-demo.cjs'
+		);
+		assert.strictEqual(
+			scripts['demo:pet-diary:plan'],
+			'node scripts/run-corgi-pet-diary-demo.cjs --print-plan'
+		);
+		assert.strictEqual(
+			scripts['demo:live-goal'],
+			'node scripts/run-corgi-live-goal-demo.cjs'
+		);
+		assert.strictEqual(
+			scripts['demo:live-goal:plan'],
+			'node scripts/run-corgi-live-goal-demo.cjs --print-plan'
 		);
 		assert.ok(!extensionSource.includes('CORGI_RESET_DEV_SESSION'));
 		assert.ok(!developmentSessionSource.includes('CORGI_RESET_DEV_SESSION'));
@@ -1037,6 +1085,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes("case 'permission.needed':"));
 		assert.ok(webviewSource.includes("case 'error.semantic_route_required':"));
 		assert.ok(webviewSource.includes("case 'error.stale_context':"));
+		assert.ok(webviewSource.includes("case 'executor.completed':"));
+		assert.ok(webviewSource.includes("case 'reviewer.completed':"));
+		assert.ok(webviewSource.includes("case 'governor.final_decision':"));
 		assert.ok(
 			webviewSource.includes(
 				"if (item.type === 'actor_event' && item.source_actor === 'governor') {"
@@ -1044,7 +1095,6 @@ suite('Corgi Webview UX', () => {
 		);
 		assert.ok(webviewSource.includes('const copy = displayCopy(item);'));
 		assert.ok(webviewSource.includes('renderStructuredAssistantBody(body)'));
-		assert.ok(webviewSource.includes("item.title === 'Executor completed'"));
 		assert.ok(webviewSource.includes('function renderCompactResultMessage(item, copy, renderedBody)'));
 		assert.ok(webviewSource.includes('message assistant result-summary'));
 		assert.ok(webviewSource.includes('Checked result'));
@@ -1153,7 +1203,18 @@ suite('Corgi Webview UX', () => {
 					body: 'Executor wrote details at .agent/executor/result.md.',
 					timestamp: '2026-04-10T10:00:20.000Z',
 					authoritative: true,
+					source_actor: 'executor',
 					source_artifact_ref: reviewArtifact.path,
+					activity: {
+						kind: 'status',
+						state: 'completed',
+						summary: '1 output · authorship verified',
+					},
+					presentation_key: 'executor.completed',
+					presentation_args: {
+						summary: '1 output · authorship verified',
+						outputs: 1,
+					},
 					in_response_to_request_id: 'corgi-request:test:execute',
 				},
 				{
@@ -1163,7 +1224,18 @@ suite('Corgi Webview UX', () => {
 					body: 'Reviewer completed the read-only check at .agent/reviews/review.md.',
 					timestamp: '2026-04-10T10:00:30.000Z',
 					authoritative: true,
+					source_actor: 'reviewer',
 					source_artifact_ref: reviewArtifact.path,
+					activity: {
+						kind: 'status',
+						state: 'completed',
+						summary: 'Verdict pass · 2 validation checks',
+					},
+					presentation_key: 'reviewer.completed',
+					presentation_args: {
+						summary: 'Verdict pass · 2 validation checks',
+						verdict: 'pass',
+					},
 					in_response_to_request_id: 'corgi-request:test:execute',
 				},
 			],
@@ -1179,8 +1251,12 @@ suite('Corgi Webview UX', () => {
 		assert.match(snapshot.goalStrip, /Done/);
 		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
 		assert.match(activityText, /Changes written/);
+		assert.match(activityText, /1 output · authorship verified/);
 		assert.match(messageText, /Checked result/);
+		assert.match(messageText, /Verdict pass · 2 validation checks/);
 		assert.match(transcriptText, /Objective: analyze the repository architecture/);
+		assert.ok(!transcriptText.includes('Executor wrote details'));
+		assert.ok(!transcriptText.includes('Reviewer completed the read-only check'));
 		assert.match(messageText, /View source/);
 		assert.ok(!messageText.includes('Execute plan'));
 		assert.ok(!transcriptText.includes('Accepted intake summary should not appear in transcript.'));
@@ -1217,6 +1293,45 @@ suite('Corgi Webview UX', () => {
 		assert.match(finalSnapshot.goalStrip, /Finalized/);
 	});
 
+	test('goal strip uses authoritative parent goal and step progress', () => {
+		const model: ExecutionWindowModel = {
+			...createInitialModel('2026-04-10T10:00:00.000Z'),
+			snapshot: {
+				...createInitialModel('2026-04-10T10:00:00.000Z').snapshot,
+				task: 'Add species filtering',
+				currentGoalRef: 'goal-123',
+				currentGoalTitle: 'Build a polished Pet Life Diary web app demo.',
+				currentGoalStepRef: 'step-02',
+				currentGoalStepIndex: 2,
+				goalStepCount: 3,
+				goalStatus: 'active',
+				currentStage: 'plan_ready',
+				currentActor: 'governor',
+				permissionScope: 'plan',
+				runState: 'idle',
+			},
+			planReadyRequest: {
+				id: 'plan-ready',
+				contextRef: 'plan-ready-context',
+				title: 'Plan ready',
+				body: 'Ready for the next step.',
+				requestedAt: '2026-04-10T10:00:00.000Z',
+				acceptedIntakeSummary: {
+					title: 'Add species filtering',
+					body: 'Add a species filter.',
+				},
+				allowedActions: ['execute_plan', 'revise_plan'],
+			},
+		};
+
+		const snapshot = renderWebviewSnapshot(model);
+		assert.match(snapshot.goalStrip, /Goal: Build a polished Pet Life Diary web app demo\./);
+		assert.match(snapshot.goalStrip, /Step: Step 2\/3 · Plan ready/);
+		assert.match(snapshot.goalStrip, /Plan ready/);
+		assert.ok(!snapshot.goalStrip.includes('goal-123'));
+		assert.ok(snapshot.actions.some((action) => action.text === 'Execute plan'));
+	});
+
 	test('runtime ergonomics kernel separates transcript, activity, detail, and internal surfaces', () => {
 		const model: ExecutionWindowModel = {
 			...createInitialModel('2026-04-10T10:00:00.000Z'),
@@ -1246,7 +1361,17 @@ suite('Corgi Webview UX', () => {
 					body: 'Executor wrote .agent/dispatches/lane/main/dispatch-1/result.json.',
 					timestamp: '2026-04-10T10:00:10.000Z',
 					authoritative: true,
+					source_actor: 'executor',
 					source_artifact_ref: '.agent/dispatches/lane/main/dispatch-1/result.json',
+					activity: {
+						kind: 'status',
+						state: 'completed',
+						summary: '1 mutated output · authorship verified',
+					},
+					presentation_key: 'executor.completed',
+					presentation_args: {
+						summary: '1 mutated output · authorship verified',
+					},
 				},
 				{
 					id: 'artifact',
@@ -1283,13 +1408,16 @@ suite('Corgi Webview UX', () => {
 		};
 
 		const kernel = buildRuntimeErgonomicsKernel(model);
-		const activityText = kernel.activities.map((activity) => activity.summary).join('\n');
+		const activityText = kernel.activities
+			.map((activity) => [activity.summary, activity.detail].filter(Boolean).join('\n'))
+			.join('\n');
 
 		assert.deepStrictEqual(kernel.transcriptFeedItemIds, ['governor']);
 		assert.deepStrictEqual(kernel.activityFeedItemIds, ['executor']);
 		assert.deepStrictEqual(kernel.detailFeedItemIds, ['artifact']);
 		assert.deepStrictEqual(kernel.internalFeedItemIds, ['permission-action', 'accepted-ready']);
 		assert.match(activityText, /Changes written/);
+		assert.match(activityText, /1 mutated output · authorship verified/);
 		assert.ok(!activityText.includes('dispatch-1'));
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[0]), 'transcript');
 		assert.strictEqual(runtimeVisibilityForFeedItem(model.feed[1]), 'activity');

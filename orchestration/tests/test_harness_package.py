@@ -26,6 +26,7 @@ from orchestration.harness import (
     runtime_support,
     session,
     session_execution,
+    session_goal_lifecycle,
     session_state,
     spawn_bridge,
     start_guard,
@@ -292,7 +293,15 @@ class HarnessPackageTests(unittest.TestCase):
         ]
         self.assertTrue(executor_items)
         executor_item = executor_items[-1]
-        self.assertEqual(executor_item["source_artifact_ref"], readout_refs[0])
+        result_ref = state_payload.get("result_ref")
+        self.assertIsInstance(result_ref, str)
+        self.assertTrue((repo_root / result_ref).exists())
+        self.assertEqual(executor_item["source_artifact_ref"], result_ref)
+        self.assertEqual(executor_item["source_actor"], "executor")
+        self.assertEqual(executor_item["presentation_key"], "executor.completed")
+        self.assertEqual(executor_item["activity"]["kind"], "status")
+        self.assertEqual(executor_item["activity"]["state"], "completed")
+        self.assertIn("summary", executor_item["presentation_args"])
         self.assertIn("## Architecture Boundaries", executor_item["body"])
         self.assertIn("## Execution Readiness", executor_item["body"])
         return readout_path
@@ -311,6 +320,11 @@ class HarnessPackageTests(unittest.TestCase):
         self.assertTrue(reviewer_items)
         reviewer_item = reviewer_items[-1]
         self.assertEqual(reviewer_item["source_artifact_ref"], review_ref)
+        self.assertEqual(reviewer_item["source_actor"], "reviewer")
+        self.assertEqual(reviewer_item["presentation_key"], "reviewer.completed")
+        self.assertEqual(reviewer_item["activity"]["kind"], "status")
+        self.assertEqual(reviewer_item["activity"]["state"], "completed")
+        self.assertEqual(reviewer_item["presentation_args"]["verdict"], review_payload["verdict"])
         self.assertIn("# Reviewer Readout", reviewer_item["body"])
         self.assertIn("Verdict:", reviewer_item["body"])
         return review_path
@@ -329,6 +343,10 @@ class HarnessPackageTests(unittest.TestCase):
         decision_item = decision_items[-1]
         self.assertEqual(decision_item["source_artifact_ref"], decision_ref)
         self.assertEqual(decision_item["source_actor"], "governor")
+        self.assertEqual(decision_item["presentation_key"], "governor.final_decision")
+        self.assertEqual(decision_item["activity"]["kind"], "status")
+        self.assertEqual(decision_item["activity"]["state"], "completed")
+        self.assertEqual(decision_item["presentation_args"]["decision"], decision_payload["decision"])
         self.assertIn("# Governor Decision", decision_item["body"])
         return decision_path
 
@@ -4829,3 +4847,115 @@ class HarnessPackageTests(unittest.TestCase):
         )
 
         self.assertIn("parallel_dispatch_set.json max_active must be an integer between 1 and 2", failures)
+
+    def test_goal_program_advances_serial_steps_to_final_decision(self) -> None:
+        source_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo_root, check=False, capture_output=True)
+            exclude = repo_root / ".git" / "info" / "exclude"
+            if exclude.exists():
+                exclude.write_text(exclude.read_text(encoding="utf-8") + "\n.agent/\n", encoding="utf-8")
+            env = {
+                "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                "ORCHESTRATION_SOURCE_ROOT": str(source_root),
+                "ORCHESTRATION_AGENT_ROOT": str(repo_root / ".agent"),
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-goal-program",
+                "ORCHESTRATION_APPROVED_PYTHON": sys.executable,
+            }
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                runtime_support,
+                "APPROVED_PYTHON",
+                Path(sys.executable),
+            ):
+                model = session.dispatch_session_action(
+                    "start_goal",
+                    text=(
+                        "Build a polished Pet Life Diary web app demo from scratch, "
+                        "then improve it through multiple development steps until it is "
+                        "ready to show as a small portfolio demo."
+                    ),
+                    repo_root=repo_root,
+                    request_id="goal-program-test",
+                    governor_runtime="external",
+                    auto_consume_executor=True,
+                )
+
+            snapshot = model["snapshot"]
+            self.assertEqual(snapshot["goalStatus"], "completed")
+            self.assertEqual(snapshot["currentStage"], "governor_decision_recorded")
+            goal_ref = snapshot["currentGoalRef"]
+            self.assertIsInstance(goal_ref, str)
+            goal_dir = repo_root / ".agent" / "goals" / goal_ref
+            goal_plan = load_json(goal_dir / "goal_plan.json")
+            goal_progress = load_json(goal_dir / "goal_progress.json")
+            goal_decision = load_json(goal_dir / "goal_decision.json")
+            self.assertEqual(goal_plan["schema_version"], "corgi.goal_plan.v1")
+            self.assertEqual(goal_plan["proposed_by"], "orchestration_template")
+            self.assertEqual(goal_plan["plan_source"], "orchestration_template")
+            self.assertGreaterEqual(len(goal_plan["steps"]), 3)
+            self.assertEqual(goal_progress["status"], "completed")
+            self.assertGreaterEqual(len(goal_progress["completed_steps"]), 3)
+            self.assertGreaterEqual(len(set(goal_progress["linked_work_refs"])), 2)
+            self.assertEqual(goal_decision["decision"], "accept")
+            self.assertTrue((repo_root / "README.md").exists())
+            self.assertIn("Demo highlights", (repo_root / "README.md").read_text(encoding="utf-8"))
+            self.assertIn('id="species-filter"', (repo_root / "index.html").read_text(encoding="utf-8"))
+            self.assertIn("function visibleEntries()", (repo_root / "src" / "app.js").read_text(encoding="utf-8"))
+
+    def test_start_goal_rejects_second_active_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            first = session.dispatch_session_action(
+                "start_goal",
+                text="Build a polished Pet Life Diary demo.",
+                repo_root=repo_root,
+                request_id="goal-start-1",
+            )
+            first_goal_ref = first["snapshot"]["currentGoalRef"]
+
+            second = session.dispatch_session_action(
+                "start_goal",
+                text="Start a different goal.",
+                repo_root=repo_root,
+                request_id="goal-start-2",
+            )
+
+            self.assertEqual(second["snapshot"]["currentGoalRef"], first_goal_ref)
+            self.assertEqual(second["snapshot"]["goalStatus"], "active")
+            self.assertTrue(
+                any(
+                    item.get("presentation_key") == "goal.blocked"
+                    and item.get("presentation_args", {}).get("reason") == "active_goal_exists"
+                    for item in second["feed"]
+                )
+            )
+
+    def test_goal_step_blocked_stage_blocks_parent_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            model = session.dispatch_session_action(
+                "start_goal",
+                text="Build a polished Pet Life Diary demo.",
+                repo_root=repo_root,
+                request_id="goal-start-block-test",
+            )
+            goal_ref = model["snapshot"]["currentGoalRef"]
+            payload = session.load_session(repo_root)
+            payload["model"]["snapshot"]["currentStage"] = "executor_blocked"
+
+            outcome = session_goal_lifecycle.advance_goal_after_decision(
+                payload,
+                "2026-04-10T10:00:00Z",
+                next_id=lambda prefix: f"{prefix}-test",
+                artifact_factory=lambda ref, **kwargs: {"ref": ref, **kwargs},
+                feed_item=lambda *args, **kwargs: {"kind": args[0] if args else "system_status"},
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(outcome, "blocked")
+            self.assertEqual(payload["model"]["snapshot"]["goalStatus"], "blocked")
+            goal_dir = repo_root / ".agent" / "goals" / goal_ref
+            self.assertEqual(load_json(goal_dir / "goal.json")["status"], "blocked")
+            self.assertEqual(load_json(goal_dir / "goal_progress.json")["status"], "blocked")

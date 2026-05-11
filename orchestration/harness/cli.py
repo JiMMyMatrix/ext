@@ -15,6 +15,7 @@ Route = Callable[[str, list[str]], int]
 def _session_command(command: str, argv: list[str]) -> int:
 	command_map = {
 		"state": ["state"],
+		"start-goal": ["start_goal"],
 		"submit-prompt": ["submit_prompt"],
 		"answer-clarification": ["answer_clarification"],
 		"set-permission-scope": ["set_permission_scope"],
@@ -80,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
 		"command",
 		choices=[
 			"state",
+			"start-goal",
 			"submit-prompt",
 			"answer-clarification",
 			"set-permission-scope",

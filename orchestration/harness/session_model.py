@@ -35,6 +35,13 @@ def initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str,
 			"latestReviewVerdict": None,
 			"latestGovernorDecisionRef": None,
 			"latestGovernorDecision": None,
+			"currentGoalRef": None,
+			"currentGoalTitle": None,
+			"currentGoalStepRef": None,
+			"currentGoalStepIndex": None,
+			"goalStepCount": None,
+			"goalStatus": None,
+			"latestGoalDecisionRef": None,
 			"snapshotFreshness": {"receivedAt": now},
 		},
 		"feed": [
@@ -59,6 +66,13 @@ def initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str,
 		"latestReviewVerdict": None,
 		"latestGovernorDecisionRef": None,
 		"latestGovernorDecision": None,
+		"currentGoalRef": None,
+		"currentGoalTitle": None,
+		"currentGoalStepRef": None,
+		"currentGoalStepIndex": None,
+		"goalStepCount": None,
+		"goalStatus": None,
+		"latestGoalDecisionRef": None,
 		"planVersion": 0,
 	}
 
@@ -117,6 +131,7 @@ def normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pat
 	session.setdefault("meta", {})
 	session["meta"].setdefault("activeIntakeRef", None)
 	session["meta"].setdefault("activeWorkRef", None)
+	session["meta"].setdefault("activeGoalRef", None)
 	session["meta"].setdefault("processedRequestIds", {})
 	session["meta"].setdefault("governorDialogue", {})
 	model = session.setdefault("model", initial_model(now, repo_root=repo_root))
@@ -156,6 +171,13 @@ def normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pat
 	snapshot.setdefault("latestReviewVerdict", model.get("latestReviewVerdict"))
 	snapshot.setdefault("latestGovernorDecisionRef", model.get("latestGovernorDecisionRef"))
 	snapshot.setdefault("latestGovernorDecision", model.get("latestGovernorDecision"))
+	snapshot.setdefault("currentGoalRef", model.get("currentGoalRef") or session["meta"].get("activeGoalRef"))
+	snapshot.setdefault("currentGoalTitle", model.get("currentGoalTitle"))
+	snapshot.setdefault("currentGoalStepRef", model.get("currentGoalStepRef"))
+	snapshot.setdefault("currentGoalStepIndex", model.get("currentGoalStepIndex"))
+	snapshot.setdefault("goalStepCount", model.get("goalStepCount"))
+	snapshot.setdefault("goalStatus", model.get("goalStatus"))
+	snapshot.setdefault("latestGoalDecisionRef", model.get("latestGoalDecisionRef"))
 	snapshot.setdefault("snapshotFreshness", {"receivedAt": now})
 	model.setdefault("feed", [])
 	model.setdefault("activeClarification", None)
@@ -171,6 +193,13 @@ def normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pat
 	model.setdefault("latestReviewVerdict", snapshot.get("latestReviewVerdict"))
 	model.setdefault("latestGovernorDecisionRef", snapshot.get("latestGovernorDecisionRef"))
 	model.setdefault("latestGovernorDecision", snapshot.get("latestGovernorDecision"))
+	model.setdefault("currentGoalRef", snapshot.get("currentGoalRef") or session["meta"].get("activeGoalRef"))
+	model.setdefault("currentGoalTitle", snapshot.get("currentGoalTitle"))
+	model.setdefault("currentGoalStepRef", snapshot.get("currentGoalStepRef"))
+	model.setdefault("currentGoalStepIndex", snapshot.get("currentGoalStepIndex"))
+	model.setdefault("goalStepCount", snapshot.get("goalStepCount"))
+	model.setdefault("goalStatus", snapshot.get("goalStatus"))
+	model.setdefault("latestGoalDecisionRef", snapshot.get("latestGoalDecisionRef"))
 	model.setdefault("planVersion", 0)
 	if isinstance(model.get("activeClarification"), dict):
 		model["activeClarification"].setdefault(

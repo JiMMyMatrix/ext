@@ -134,7 +134,7 @@ export function getExecutionWindowClientScript(
 				transcript: collectTextRows(feed, '.message'),
 				activity: collectTextRows(feed, '.activity-row'),
 				activityOverflow: collectTextRows(feed, '.activity-overflow'),
-				progress: collectTextRows(feed, '.progress-bullet, .activity-summary'),
+				progress: collectTextRows(feed, '.progress-bullet'),
 				detailsHidden: Array.from(
 					feed.querySelectorAll('details:not([open]), .inline-actions button')
 				).length,
@@ -216,6 +216,34 @@ export function getExecutionWindowClientScript(
 			);
 		}
 
+		function testWindowClarificationAnswer() {
+			const body = String(model?.activeClarification?.body || '').toLowerCase();
+			if (body.includes('non-negotiable') || body.includes('preserve')) {
+				return 'Keep the result polished, static, and isolated in the scratch workspace.';
+			}
+			return 'Keep the scope minimal, preserve the current artifact flow, and continue with the requested goal.';
+		}
+
+		function submitTestWindowClarificationAnswer(answer, key) {
+			if (!answer || testWindowAutoStepState.appliedKeys.has(key)) {
+				return false;
+			}
+			testWindowAutoStepState.appliedKeys.add(key);
+			const requestId = nextForegroundRequestKey();
+			ensureForegroundRequest('', '', requestId);
+			appendForegroundBullet('Clarification received', 'done', 'Applying your clarification...');
+			appendForegroundBullet('Continuing request', 'active', 'Applying your clarification...');
+			renderFeed();
+			renderComposer();
+			scheduleWebviewSnapshot('auto_step_clarification_text');
+			vscode.postMessage({
+				type: 'answer_clarification',
+				text: answer,
+				requestId,
+			});
+			return true;
+		}
+
 		function chooseTestWindowPermissionScope(permissionRequest) {
 			const allowedScopes = Array.isArray(permissionRequest?.allowedScopes)
 				? permissionRequest.allowedScopes
@@ -253,6 +281,11 @@ export function getExecutionWindowClientScript(
 					)
 				) {
 					return;
+				}
+				if (model.activeClarification.allowFreeText) {
+					if (submitTestWindowClarificationAnswer(testWindowClarificationAnswer(), key)) {
+						return;
+					}
 				}
 			}
 
@@ -428,6 +461,12 @@ export function getExecutionWindowClientScript(
 			if (model?.activeClarification) {
 				return 'Needs input';
 			}
+			if (snapshot.goalStatus === 'completed') {
+				return 'Goal complete';
+			}
+			if (snapshot.goalStatus === 'blocked') {
+				return 'Blocked';
+			}
 			if (snapshot.currentStage === 'plan_executing') {
 				return 'Running';
 			}
@@ -469,6 +508,9 @@ export function getExecutionWindowClientScript(
 		}
 
 		function railTitle(snapshot) {
+			if (snapshot.currentGoalTitle) {
+				return snapshot.currentGoalTitle;
+			}
 			if (snapshot.task) {
 				return snapshot.task;
 			}
@@ -514,55 +556,68 @@ export function getExecutionWindowClientScript(
 				typeof snapshot.currentAttemptNumber === 'number' && snapshot.currentAttemptNumber > 0
 					? ' · Attempt ' + (snapshot.currentAttemptNumber + 1)
 					: '';
+			const goalStepPrefix =
+				typeof snapshot.currentGoalStepIndex === 'number' &&
+				typeof snapshot.goalStepCount === 'number' &&
+				snapshot.currentGoalStepIndex > 0 &&
+				snapshot.goalStepCount > 0
+					? 'Step ' + snapshot.currentGoalStepIndex + '/' + snapshot.goalStepCount
+					: '';
+			function withGoalStep(label) {
+				return goalStepPrefix ? goalStepPrefix + ' · ' + label : label;
+			}
+			if (snapshot.goalStatus === 'completed') {
+				return 'Goal complete';
+			}
 			if (model?.activeClarification) {
-				return 'Clarification needed';
+				return withGoalStep('Clarification needed');
 			}
 			if (snapshot.pendingPermissionRequest) {
-				return 'Permission needed';
+				return withGoalStep('Permission needed');
 			}
 			if (snapshot.pendingInterrupt) {
-				return 'Stop requested';
+				return withGoalStep('Stop requested');
 			}
 			if (snapshot.currentStage === 'semantic_intake') {
-				return 'Understanding request';
+				return withGoalStep('Understanding request');
 			}
 			if (isPlanReady(snapshot)) {
-				return 'Plan ready' + nextAttempt;
+				return withGoalStep('Plan ready' + nextAttempt);
 			}
 			if (snapshot.currentStage === 'plan_executing') {
-				return 'Writing' + attempt;
+				return withGoalStep('Writing' + attempt);
 			}
 			if (isDispatchQueued(snapshot)) {
-				return 'Ready to write' + attempt;
+				return withGoalStep('Ready to write' + attempt);
 			}
 			if (isGovernorDecisionRecorded(snapshot)) {
 				if (snapshot.latestGovernorDecision) {
-					return 'Final decision ' + summarizeToken(snapshot.latestGovernorDecision, '') + attempt;
+					return withGoalStep('Final decision ' + summarizeToken(snapshot.latestGovernorDecision, '') + attempt);
 				}
-				return 'Final decision recorded' + attempt;
+				return withGoalStep('Final decision recorded' + attempt);
 			}
 			if (isReviewerCompleted(snapshot)) {
 				if (snapshot.latestReviewVerdict) {
-					return 'Check ' + summarizeToken(snapshot.latestReviewVerdict, '') + attempt;
+					return withGoalStep('Check ' + summarizeToken(snapshot.latestReviewVerdict, '') + attempt);
 				}
-				return 'Checked result' + attempt;
+				return withGoalStep('Checked result' + attempt);
 			}
 			if (isExecutorCompleted(snapshot)) {
-				return 'Changes written' + attempt;
+				return withGoalStep('Changes written' + attempt);
 			}
 			if (snapshot.currentActor === 'governor' && snapshot.runState === 'running') {
-				return 'Planning';
+				return withGoalStep('Planning');
 			}
 			if (snapshot.currentActor === 'executor') {
-				return 'Writing' + attempt;
+				return withGoalStep('Writing' + attempt);
 			}
 			if (snapshot.currentActor === 'reviewer') {
-				return 'Checking' + attempt;
+				return withGoalStep('Checking' + attempt);
 			}
 			if (snapshot.runState === 'running') {
-				return 'Corgi is working';
+				return withGoalStep('Corgi is working');
 			}
-			return snapshot.task ? 'Ready to continue' : 'Ready';
+			return snapshot.task ? withGoalStep('Ready to continue') : 'Ready';
 		}
 
 		function goalDisplayState(snapshot, stale) {
@@ -687,6 +742,22 @@ export function getExecutionWindowClientScript(
 			}
 
 			function lifecycleActivitySummaryKey(item) {
+				switch (item.presentation_key) {
+					case 'dispatch.queued':
+						return 'dispatch_queued';
+					case 'executor.completed':
+						return 'executor_completed';
+					case 'executor.blocked':
+						return 'executor_blocked';
+					case 'reviewer.completed':
+						return 'reviewer_completed';
+					case 'reviewer.blocked':
+						return 'reviewer_blocked';
+					case 'governor.final_decision':
+						return 'governor_decision_recorded';
+					case 'governor.finalization_blocked':
+						return 'governor_finalization_blocked';
+				}
 				const title = String(item.title || '').trim().toLowerCase();
 				if (title === 'dispatch queued') {
 					return 'dispatch_queued';
@@ -725,18 +796,24 @@ export function getExecutionWindowClientScript(
 						return 'Writing';
 					case 'executor_completed':
 						return 'Changes written';
+					case 'executor_blocked':
+						return 'Executor blocked';
 					case 'reviewer_running':
 						return 'Checking';
 					case 'reviewer_request_changes':
 						return 'Changes requested';
 					case 'reviewer_completed':
 						return 'Checked result';
+					case 'reviewer_blocked':
+						return 'Reviewer blocked';
 					case 'plan_revision':
 						return 'Revising plan';
 					case 'advisor_consulting':
 						return 'Consulting advisor';
 					case 'governor_decision_recorded':
 						return 'Final decision recorded';
+					case 'governor_finalization_blocked':
+						return 'Final decision blocked';
 					default:
 						return String(summaryKey || '').replace(/_/g, ' ');
 				}
@@ -1960,12 +2037,12 @@ export function getExecutionWindowClientScript(
 
 			function activityLabel(item) {
 				const runtimeActivity = runtimeActivityForItem(item);
-				if (runtimeActivity?.summary) {
-					return runtimeActivity.summary;
-				}
 				const lifecycleSummaryKey = lifecycleActivitySummaryKey(item);
 				if (lifecycleSummaryKey) {
 					return summaryForActivityKey(lifecycleSummaryKey, {});
+				}
+				if (runtimeActivity?.summary) {
+					return runtimeActivity.summary;
 				}
 				if (isAdvisorActivityItem(item)) {
 					return summaryForActivityKey('advisor_consulting', {});
@@ -2258,6 +2335,36 @@ export function getExecutionWindowClientScript(
 						title: 'Permission needed',
 						body: 'Choose ' + displayScope(args.scope) + ' to continue this request.',
 					};
+				case 'executor.completed':
+					return {
+						title: 'Changes written',
+						body: String(args.summary || 'Executor produced the bounded result.'),
+					};
+				case 'executor.blocked':
+					return {
+						title: 'Executor blocked',
+						body: 'Executor could not complete this dispatch. View source for details.',
+					};
+				case 'reviewer.completed':
+					return {
+						title: 'Checked result',
+						body: String(args.summary || 'Reviewer completed the read-only check.'),
+					};
+				case 'reviewer.blocked':
+					return {
+						title: 'Reviewer blocked',
+						body: 'Reviewer could not complete the read-only check. View source for details.',
+					};
+				case 'governor.final_decision':
+					return {
+						title: 'Final decision recorded',
+						body: String(args.summary || 'Governor recorded the final dispatch decision.'),
+					};
+				case 'governor.finalization_blocked':
+					return {
+						title: 'Final decision blocked',
+						body: 'Governor finalization did not complete. View source for details.',
+					};
 				case 'permission.declined':
 					return {
 						title: 'Permission declined',
@@ -2362,7 +2469,9 @@ export function getExecutionWindowClientScript(
 						: activity.state || 'completed';
 			const label = activityLabel(item);
 			const summaryCandidate =
-				runtimeActivity && runtimeActivity.summary !== label
+				runtimeActivity?.detail
+					? runtimeActivity.detail
+					: runtimeActivity && runtimeActivity.summary !== label
 					? runtimeActivity.summary
 					: item.type === 'artifact_reference'
 						? item.artifact.summary

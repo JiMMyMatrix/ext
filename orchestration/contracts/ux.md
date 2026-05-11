@@ -18,6 +18,13 @@ The orchestration layer may provide:
 - `recentArtifacts`
 - `snapshotFreshness`
 - `currentWorkRef`
+- `currentGoalRef`
+- `currentGoalTitle`
+- `currentGoalStepRef`
+- `currentGoalStepIndex`
+- `goalStepCount`
+- `goalStatus`
+- `latestGoalDecisionRef`
 - `currentPlanVersion`
 - `currentAttemptNumber`
 - `latestReviewRef`
@@ -60,6 +67,7 @@ Governor dialogue turns remain read-only by default.
 
 ## User Actions
 - `submit_prompt`
+- `start_goal`
 - `answer_clarification`
 - `set_permission_scope`
 - `decline_permission`
@@ -77,6 +85,7 @@ commands.
 Free-text commands:
 - `submit-prompt`
 - `answer-clarification`
+- `start-goal`
 
 Stateful control commands:
 - `set-permission-scope`
@@ -112,6 +121,17 @@ preconditions must fail closed and must not trigger route guessing.
   - may omit `session_ref`, including first-turn/bootstrap submission
   - must still carry a unique `request_id`
   - must fail closed if it does provide a mismatched `session_ref`
+- `start-goal`
+  - creates one authoritative parent goal and an ordered step plan with an
+    explicit source (`governor` or deterministic orchestration template)
+  - V1 supports one foreground goal at a time and serial step execution
+  - each goal step becomes one normal accepted work item with its own `workRef`
+  - after a step reaches accepted Governor decision, orchestration may advance
+    to the next step without asking the human
+  - must pause only for permission, clarification, safety/material blocker,
+    retry-limit failure, or final checkpoint
+  - goal progress must come from `.agent/goals/<goal_ref>/goal_progress.json`,
+    not local UI guesses
 - `answer-clarification`
   - requires an active clarification
   - should carry the current `session_ref` once a session exists
@@ -201,6 +221,24 @@ Commands tied to active session state should carry a current `context_ref`.
 - the extension must not infer actor authority, workflow legality, or progress
   certainty from local state
 
+## Goal Program Boundary
+
+Goal programs are a parent orchestration layer above existing accepted work:
+
+- `goal.json` is authoritative goal identity and status
+- `goal_plan.json` is the authoritative ordered step list; `proposed_by`
+  must identify whether the list came from Governor planning or a deterministic
+  orchestration test template
+- `goal_progress.json` is orchestration-owned progress truth
+- each goal step creates a normal accepted intake and `workRef`
+- `accepted_intake.json` remains step/intake truth only
+- `request.json` remains dispatch truth only
+- a parent goal completes only after every step has an accepted Governor
+  decision and a final goal decision artifact is recorded
+- Governor-proposed plans and deterministic test-template plans must both be
+  explicitly sourced; orchestration drives validated step sequencing and must
+  not skip blocked or failed steps
+
 ## Internal Provenance
 Meaningful feed items should carry internal provenance for traceability and
 debugging:
@@ -275,6 +313,23 @@ Visibility policy:
 Routine Executor, Reviewer, dispatch, advisor, validation, retry, and
 finalization events should render as brief activity first. Governor prose
 remains the main readable transcript layer.
+
+Actor readouts should use stable presentation keys when the data is available:
+
+- `executor.completed` / `executor.blocked`
+- `reviewer.completed` / `reviewer.blocked`
+- `governor.final_decision` / `governor.finalization_blocked`
+
+These feed items should include compact `activity` metadata and a
+`source_artifact_ref` when a source artifact exists. The compact activity copy is
+the default visible surface. Full Executor readouts, Reviewer artifacts,
+Governor decision JSON, authorship signatures, dispatch refs, review refs, and
+runtime evidence belong behind `View source` or details.
+
+Governor remains the human-facing communicator for work-plane prose, but
+orchestration owns the routing of workflow events into transcript, activity,
+detail, or internal surfaces. The webview must not promote Executor/Reviewer
+artifact bodies into normal transcript prose by guessing from titles.
 
 ## Command Boundary
 The extension should talk to the project orchestration layer through:

@@ -88,6 +88,7 @@
     "test:process:project": "node scripts/corgi-process-test.cjs --module scratch-bugfix-existing-app",
     "test:process:feature": "node scripts/corgi-process-test.cjs --module scratch-feature-existing-app",
     "test:process:project-retry": "node scripts/corgi-process-test.cjs --module scratch-review-retry-existing-app",
+    "test:process:goal": "node scripts/corgi-process-test.cjs --module scratch-goal-program",
     "test:process:completion": "node scripts/corgi-process-test.cjs --module completion",
     "test:prompts": "node scripts/corgi-test-prompt.cjs validate",
     "test:prompts:list": "node scripts/corgi-test-prompt.cjs list",
@@ -114,7 +115,11 @@
     "test:window:auto": "CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-static CORGI_TEST_WINDOW_AUTO_STEPS=execute bash scripts/run-corgi-test-window-auto.sh",
     "test:window:status": "node scripts/corgi-test-window-status.cjs",
     "test:vscode": "vscode-test",
-    "test:orchestration": "node scripts/run-orchestration-tests.cjs"
+    "test:orchestration": "node scripts/run-orchestration-tests.cjs",
+    "demo:pet-diary": "node scripts/run-corgi-pet-diary-demo.cjs",
+    "demo:pet-diary:plan": "node scripts/run-corgi-pet-diary-demo.cjs --print-plan",
+    "demo:live-goal": "node scripts/run-corgi-live-goal-demo.cjs",
+    "demo:live-goal:plan": "node scripts/run-corgi-live-goal-demo.cjs --print-plan"
   },
   "devDependencies": {
     "@types/vscode": "^1.115.0",

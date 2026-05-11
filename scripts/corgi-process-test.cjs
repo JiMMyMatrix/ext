@@ -57,7 +57,7 @@ function printUsage() {
 			'',
 			'Runs phase-1 command-only process tests without opening VS Code.',
 			'',
-			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-bugfix-existing-app, scratch-feature-existing-app, scratch-review-retry-existing-app, completion, all',
+			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-bugfix-existing-app, scratch-feature-existing-app, scratch-review-retry-existing-app, scratch-goal-program, completion, all',
 		].join('\n') + '\n'
 	);
 }
@@ -769,6 +769,20 @@ function latestDispatchInfo(agentRoot) {
 	};
 }
 
+function workIndexPath(agentRoot, workRef) {
+	return path.join(agentRoot, 'work', ...String(workRef).split('/'), 'work.json');
+}
+
+function dispatchInfoByRef(agentRoot, dispatchRef) {
+	const requestPath = path.join(agentRoot, 'dispatches', ...String(dispatchRef).split('/'), 'request.json');
+	assertCondition(fs.existsSync(requestPath), `module: dispatch request missing for ${dispatchRef}`);
+	return {
+		request: readJson(requestPath),
+		dispatchDir: path.dirname(requestPath),
+		requestPath,
+	};
+}
+
 function consumeExecutor(dispatchInfo, env, root = repoRoot) {
 	runCommand(
 		['dispatch', 'consume-executor', '--dispatch-dir', dispatchInfo.dispatchDir, '--root', root],
@@ -1401,6 +1415,143 @@ function runScratchReviewRetryExistingAppModule(options) {
 	return payload;
 }
 
+function runScratchGoalProgramModule(options) {
+	const prompt = promptById('pet-life-diary-goal-program');
+	assertCondition(prompt, 'scratch-goal-program: prompt preset missing');
+	const runName = `module-scratch-goal-program-${runId}`;
+	const { agentRoot, runDir, scratchRoot, env } = createScratchTestEnv(
+		runName,
+		'pet-life-diary-goal-program'
+	);
+	const model = runJson(
+		[
+			'start-goal',
+			'--text',
+			prompt.prompt,
+			'--request-id',
+			requestId(prompt, 'start-goal'),
+			'--governor-runtime',
+			'external',
+			'--auto-consume-executor',
+		],
+		env
+	);
+	assertCondition(
+		model.snapshot.goalStatus === 'completed',
+		`scratch-goal-program: expected completed goal, got ${model.snapshot.goalStatus}`
+	);
+	assertCondition(
+		model.snapshot.currentStage === 'governor_decision_recorded',
+		`scratch-goal-program: expected final governor decision stage, got ${model.snapshot.currentStage}`
+	);
+	const goalRef = model.snapshot.currentGoalRef;
+	assertCondition(typeof goalRef === 'string' && goalRef.length > 0, 'scratch-goal-program: goalRef missing');
+	const goalRoot = path.join(agentRoot, 'goals', goalRef);
+	const goal = readJson(path.join(goalRoot, 'goal.json'));
+	const goalPlan = readJson(path.join(goalRoot, 'goal_plan.json'));
+	const goalProgress = readJson(path.join(goalRoot, 'goal_progress.json'));
+	const goalDecision = readJson(path.join(goalRoot, 'goal_decision.json'));
+	assertCondition(goal.schema_version === 'corgi.goal.v1', 'scratch-goal-program: goal artifact invalid');
+	assertCondition(goal.status === 'completed', 'scratch-goal-program: goal did not complete');
+	assertCondition(
+		Array.isArray(goalPlan.steps) && goalPlan.steps.length >= 3,
+		'scratch-goal-program: goal plan did not contain at least three steps'
+	);
+	assertCondition(
+		goalProgress.status === 'completed' &&
+			Array.isArray(goalProgress.completed_steps) &&
+			goalProgress.completed_steps.length >= 3,
+		'scratch-goal-program: goal progress did not record completed steps'
+	);
+	assertCondition(
+		goalDecision.schema_version === 'corgi.goal_decision.v1' &&
+			goalDecision.decision === 'accept',
+		'scratch-goal-program: final goal decision missing or not accepted'
+	);
+	const linkedWorkRefs = [...new Set(goalProgress.linked_work_refs ?? [])];
+	assertCondition(
+		linkedWorkRefs.length >= 2,
+		'scratch-goal-program: expected at least two workRefs under the same goal'
+	);
+	const expectedFiles = [
+		'README.md',
+		'index.html',
+		'src/app.js',
+		'src/styles.css',
+		'data/sample-pets.json',
+	];
+	for (const fileRef of expectedFiles) {
+		assertCondition(fs.existsSync(path.join(scratchRoot, fileRef)), `scratch-goal-program: missing ${fileRef}`);
+	}
+	const readme = fs.readFileSync(path.join(scratchRoot, 'README.md'), 'utf8');
+	const index = fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8');
+	const app = fs.readFileSync(path.join(scratchRoot, 'src/app.js'), 'utf8');
+	assertCondition(readme.includes('Demo highlights'), 'scratch-goal-program: README was not polished');
+	assertCondition(index.includes('id="species-filter"'), 'scratch-goal-program: species filter control missing');
+	assertCondition(app.includes('function visibleEntries()'), 'scratch-goal-program: species filter logic missing');
+
+	const dispatchRefs = [];
+	for (const workRef of linkedWorkRefs) {
+		const workPath = workIndexPath(agentRoot, workRef);
+		assertCondition(fs.existsSync(workPath), `scratch-goal-program: work index missing for ${workRef}`);
+		const workIndex = readJson(workPath);
+		assertCondition(workIndex.goal_ref === goalRef, `scratch-goal-program: work ${workRef} not linked to goal`);
+		for (const attempt of workIndex.attempts ?? []) {
+			if (attempt?.dispatch_ref) {
+				dispatchRefs.push(attempt.dispatch_ref);
+			}
+		}
+	}
+	assertCondition(dispatchRefs.length >= 3, 'scratch-goal-program: expected dispatches for at least three steps');
+	const classifications = new Map();
+	for (const dispatchRef of dispatchRefs) {
+		const dispatchInfo = dispatchInfoByRef(agentRoot, dispatchRef);
+		const result = readJson(path.join(dispatchInfo.dispatchDir, 'result.json'));
+		const outputSignatures = result.output_signatures;
+		assertCondition(
+			outputSignatures?.verified === true,
+			`scratch-goal-program: authorship evidence not verified for ${dispatchRef}`
+		);
+		assertReviewerArtifacts('scratch-goal-program', model, dispatchInfo, {
+			expectFeed: false,
+			repoRoot: scratchRoot,
+		});
+		assertGovernorDecision('scratch-goal-program', model, dispatchInfo, {
+			expectFeed: false,
+		});
+		for (const [fileRef, signature] of Object.entries(outputSignatures.required_outputs ?? {})) {
+			classifications.set(fileRef, signature.classification);
+		}
+	}
+	assertCondition(
+		classifications.get('README.md') === 'mutated',
+		'scratch-goal-program: README.md did not record a final mutation'
+	);
+	assertCondition(
+		classifications.get('index.html') === 'mutated',
+		'scratch-goal-program: index.html did not record mutation evidence'
+	);
+	assertCondition(
+		classifications.get('src/app.js') === 'mutated',
+		'scratch-goal-program: src/app.js did not record mutation evidence'
+	);
+	for (const devRef of ['index.html', path.join('data', 'sample-pets.json'), path.join('src', 'app.js')]) {
+		assertCondition(
+			!fs.existsSync(path.join(repoRoot, devRef)),
+			`scratch-goal-program: wrote ${devRef} to Corgi source repo`
+		);
+	}
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: 'module:scratch-goal-program',
+		stage: model.snapshot.currentStage,
+		permissionScope: model.snapshot.permissionScope,
+		goalRef,
+	};
+}
+
 function runModule(moduleName, options) {
 	switch (moduleName) {
 		case 'executor':
@@ -1417,12 +1568,15 @@ function runModule(moduleName, options) {
 			return [runScratchFeatureExistingAppModule(options)];
 		case 'scratch-review-retry-existing-app':
 			return [runScratchReviewRetryExistingAppModule(options)];
+		case 'scratch-goal-program':
+			return [runScratchGoalProgramModule(options)];
 		case 'completion':
 			return [
 				runScratchStaticAppModule(options),
 				runScratchBugfixExistingAppModule(options),
 				runScratchFeatureExistingAppModule(options),
 				runScratchReviewRetryExistingAppModule(options),
+				runScratchGoalProgramModule(options),
 			];
 		case 'all':
 			return [

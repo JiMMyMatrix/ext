@@ -15,6 +15,13 @@ def build_parser() -> argparse.ArgumentParser:
 	def add_governor_runtime(command_parser: argparse.ArgumentParser) -> None:
 		command_parser.add_argument("--governor-runtime", choices=["exec", "external"], default="exec")
 
+	start_goal = subparsers.add_parser("start_goal")
+	start_goal.add_argument("--text", required=True)
+	start_goal.add_argument("--request-id")
+	start_goal.add_argument("--session-ref")
+	start_goal.add_argument("--auto-consume-executor", action="store_true")
+	add_governor_runtime(start_goal)
+
 	submit = subparsers.add_parser("submit_prompt")
 	submit.add_argument("--text", required=True)
 	submit.add_argument("--request-id")
