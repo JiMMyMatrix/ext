@@ -34,8 +34,32 @@ def repo_path(repo_root: Path, rel_path: str, *, label: str = "patch spec path")
     return candidate
 
 
+def validate_dispatch_ref(dispatch_ref: str) -> None:
+    if not isinstance(dispatch_ref, str) or not dispatch_ref.strip() or dispatch_ref != dispatch_ref.strip():
+        raise PatchSpecError("dispatch_ref must be a non-empty relative artifact ref")
+    if "\\" in dispatch_ref:
+        raise PatchSpecError("dispatch_ref must use forward-slash artifact refs")
+    if Path(dispatch_ref).is_absolute():
+        raise PatchSpecError("dispatch_ref must be relative")
+    parts = dispatch_ref.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise PatchSpecError("dispatch_ref must not contain empty, dot, or parent segments")
+
+
+def dispatch_family_dir(repo_root: Path, family: str, dispatch_ref: str) -> Path:
+    validate_dispatch_ref(dispatch_ref)
+    agent_root = resolve_paths(repo_root).agent_root
+    family_root = (agent_root / family).resolve()
+    candidate = (family_root / Path(*dispatch_ref.split("/"))).resolve()
+    try:
+        candidate.relative_to(family_root)
+    except ValueError as exc:
+        raise PatchSpecError(f"dispatch_ref escapes .agent/{family}: {dispatch_ref}") from exc
+    return candidate
+
+
 def dispatch_request_path(repo_root: Path, dispatch_ref: str) -> Path:
-    return resolve_paths(repo_root).agent_root / "dispatches" / Path(dispatch_ref) / "request.json"
+    return dispatch_family_dir(repo_root, "dispatches", dispatch_ref) / "request.json"
 
 
 def load_dispatch_request(repo_root: Path, dispatch_ref: str) -> dict[str, Any]:
@@ -96,13 +120,21 @@ def declared_patch_targets(request: dict[str, Any]) -> set[str]:
 
 def validate_patch_artifact_ref(repo_root: Path, dispatch_ref: str, artifact_ref: str) -> None:
     artifact_path = repo_path(repo_root, artifact_ref, label="patch_artifact")
-    expected_root = (resolve_paths(repo_root).agent_root / "patches" / Path(dispatch_ref)).resolve()
+    expected_root = dispatch_family_dir(repo_root, "patches", dispatch_ref)
     try:
         artifact_path.relative_to(expected_root)
     except ValueError as exc:
         raise PatchSpecError(
             f"patch_artifact must live under {expected_root}"
         ) from exc
+
+
+def validate_patch_spec_path(repo_root: Path, dispatch_ref: str, spec_path: Path) -> None:
+    expected_root = dispatch_family_dir(repo_root, "patch_specs", dispatch_ref)
+    try:
+        spec_path.resolve().relative_to(expected_root)
+    except ValueError as exc:
+        raise PatchSpecError(f"patch spec must live under {expected_root}") from exc
 
 
 def validate_patch_operation(

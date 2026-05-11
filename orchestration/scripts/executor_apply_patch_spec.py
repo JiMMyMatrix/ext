@@ -20,6 +20,7 @@ from orchestration.harness.patch_specs import (  # noqa: E402
     load_dispatch_request,
     load_json,
     repo_path,
+    validate_patch_spec_path,
     validate_patch_spec_payload,
 )
 
@@ -145,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         repo_root = Path(args.repo_root).resolve()
         spec_path = repo_path(repo_root, args.spec, label="patch spec path")
+        validate_patch_spec_path(repo_root, args.dispatch_ref, spec_path)
         changed = apply_spec(repo_root, args.dispatch_ref, spec_path)
         for rel_path in changed:
             print(rel_path)

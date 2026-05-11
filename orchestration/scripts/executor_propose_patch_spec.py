@@ -17,6 +17,7 @@ from orchestration.harness.patch_specs import (  # noqa: E402
     load_dispatch_request,
     operation_for_text_replacement,
     repo_path,
+    validate_patch_spec_path,
     validate_patch_spec_payload,
     write_json,
 )
@@ -81,7 +82,9 @@ def propose_pet_diary_entry_submit(
     }
     request = load_dispatch_request(repo_root, dispatch_ref)
     validate_patch_spec_payload(repo_root, payload, dispatch_ref=dispatch_ref, request=request)
-    write_json(repo_path(repo_root, spec_ref, label="patch proposal path"), payload)
+    spec_path = repo_path(repo_root, spec_ref, label="patch proposal path")
+    validate_patch_spec_path(repo_root, dispatch_ref, spec_path)
+    write_json(spec_path, payload)
     print(spec_ref)
 
 

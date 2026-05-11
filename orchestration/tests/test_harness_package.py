@@ -870,6 +870,69 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("not declared by dispatch", result.stderr)
 
+    def test_patch_spec_proposer_rejects_unsafe_dispatch_ref(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            self._write_minimal_buggy_pet_diary_app(scratch_root)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_propose_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "../outside-dispatch",
+                    "--objective",
+                    "Fix the pet diary app so adding a diary entry updates the visible list.",
+                    "--recipe",
+                    "pet_diary_entry_submit",
+                    "--spec",
+                    ".agent/patch_specs/outside-dispatch/pet_diary_entry_fix.json",
+                    "--patch-artifact",
+                    ".agent/patches/outside-dispatch/src-app-js.patch",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("dispatch_ref must not contain", result.stderr)
+
+    def test_patch_spec_proposer_rejects_spec_outside_patch_spec_family(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            self._write_minimal_buggy_pet_diary_app(scratch_root)
+            self._write_pet_diary_patch_request(scratch_root)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_propose_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--objective",
+                    "Fix the pet diary app so adding a diary entry updates the visible list.",
+                    "--recipe",
+                    "pet_diary_entry_submit",
+                    "--spec",
+                    "src/app.js",
+                    "--patch-artifact",
+                    ".agent/patches/lane/intake/dispatch-001/src-app-js.patch",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("patch spec must live under", result.stderr)
+
     def test_patch_spec_apply_rejects_stale_proposal(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -986,6 +1049,42 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertIn("no-op", noop.stderr)
             self.assertNotEqual(escaping.returncode, 0)
             self.assertIn("escapes repo root", escaping.stderr)
+
+    def test_patch_spec_apply_rejects_spec_outside_patch_spec_family(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            self._write_minimal_buggy_pet_diary_app(scratch_root)
+            self._write_pet_diary_patch_request(scratch_root)
+            spec_ref = "bad_patch_spec.json"
+            write_json(
+                scratch_root / spec_ref,
+                {
+                    "schema_version": "corgi.patch-spec.v1",
+                    "dispatch_ref": "lane/intake/dispatch-001",
+                    "proposed_by": "executor",
+                    "operations": [],
+                },
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_apply_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--spec",
+                    spec_ref,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("patch spec must live under", result.stderr)
 
     def test_patch_spec_apply_rejects_non_executor_and_bad_patch_artifact(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
