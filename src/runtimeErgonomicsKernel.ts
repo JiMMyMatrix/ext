@@ -48,6 +48,7 @@ export interface RuntimeErgonomicsState {
 
 const SUMMARY_COPY: Record<string, string> = {
 	semantic_intake: 'Understanding request',
+	goal_planning: 'Breaking goal into steps',
 	governor_drafting_plan: 'Drafting plan',
 	dispatch_queued: 'Ready to write',
 	executor_running: 'Writing',
@@ -425,6 +426,8 @@ function goalDisplay(model: ExecutionWindowModel): RuntimeGoalDisplay {
 		step = goalStep('Stop requested');
 	} else if (snapshot.currentStage === 'semantic_intake') {
 		step = goalStep(summaryForActivity('semantic_intake'));
+	} else if (snapshot.currentStage === 'goal_planning') {
+		step = goalStep(summaryForActivity('goal_planning'));
 	} else if (isPlanReady(model)) {
 		step = goalStep(`Plan ready${nextAttemptSuffix(model)}`);
 	} else if (snapshot.currentStage === 'plan_executing') {

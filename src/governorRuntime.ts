@@ -5,7 +5,7 @@ import {
 } from './codexAppServerClient';
 
 export type GovernorRuntimeRequest = {
-	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake';
+	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake' | 'goal_plan';
 	runtimeRequestId: string;
 	requestId?: string;
 	preferredAppServerThreadId?: string;

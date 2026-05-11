@@ -8,6 +8,7 @@ from orchestration.harness.paths import resolve_paths, trim_text, utc_now
 
 AppendCompletedGovernorDialogueResponse = Callable[..., bool]
 AppendError = Callable[..., None]
+CompleteGovernorGoalPlan = Callable[..., bool]
 CompleteGovernorSemanticIntake = Callable[..., None]
 GovernorDialogueMeta = Callable[[dict[str, Any]], dict[str, Any]]
 GovernorRuntimeSettings = Callable[..., tuple[str, str]]
@@ -28,6 +29,7 @@ def handle_complete_governor_turn(
 	runtime_source: str = "app-server",
 	pending_governor_runtime_request: PendingGovernorRuntimeRequest,
 	append_error: AppendError,
+	complete_governor_goal_plan: CompleteGovernorGoalPlan,
 	complete_governor_semantic_intake: CompleteGovernorSemanticIntake,
 	append_completed_governor_dialogue_response: AppendCompletedGovernorDialogueResponse,
 ) -> None:
@@ -46,6 +48,20 @@ def handle_complete_governor_turn(
 		return
 	if pending.get("runtimeKind") == "semantic_intake":
 		complete_governor_semantic_intake(
+			session,
+			pending,
+			body or "",
+			now,
+			repo_root=repo_root,
+			app_server_thread_id=thread_id,
+			app_server_turn_id=turn_id,
+			app_server_item_id=item_id,
+			runtime_source=runtime_source,
+		)
+		session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
+		return
+	if pending.get("runtimeKind") == "goal_plan":
+		complete_governor_goal_plan(
 			session,
 			pending,
 			body or "",
@@ -86,6 +102,7 @@ def handle_fallback_governor_turn(
 	run_governor_exec: RunGovernorExec,
 	append_error: AppendError,
 	refresh_snapshot: RefreshSnapshot,
+	complete_governor_goal_plan: CompleteGovernorGoalPlan,
 	complete_governor_semantic_intake: CompleteGovernorSemanticIntake,
 	append_completed_governor_dialogue_response: AppendCompletedGovernorDialogueResponse,
 ) -> None:
@@ -172,6 +189,17 @@ def handle_fallback_governor_turn(
 	governor_meta["threadId"] = thread_id
 	if pending.get("runtimeKind") == "semantic_intake":
 		complete_governor_semantic_intake(
+			session,
+			pending,
+			body,
+			now,
+			repo_root=repo_root,
+			runtime_source="exec-fallback",
+		)
+		session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
+		return
+	if pending.get("runtimeKind") == "goal_plan":
+		complete_governor_goal_plan(
 			session,
 			pending,
 			body,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -256,6 +257,28 @@ def _prepare_governor_semantic_intake_runtime_request(
 	)
 
 
+def _prepare_governor_goal_plan_runtime_request(
+	session: dict[str, Any],
+	goal_text: str,
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	auto_consume_executor_after_plan: bool = False,
+	auto_governor_runtime_after_plan: str = "exec",
+) -> dict[str, Any]:
+	return session_governor_requests.prepare_governor_goal_plan_runtime_request(
+		session,
+		goal_text,
+		now,
+		refresh_snapshot=_refresh_snapshot,
+		repo_root=repo_root,
+		request_id=request_id,
+		auto_consume_executor_after_plan=auto_consume_executor_after_plan,
+		auto_governor_runtime_after_plan=auto_governor_runtime_after_plan,
+	)
+
+
 def _append_completed_governor_dialogue_response(
 	session: dict[str, Any],
 	pending: dict[str, Any],
@@ -392,6 +415,119 @@ def _complete_governor_semantic_intake(
 		supersede_pending_permission_request=_supersede_pending_permission_request,
 		reset_work_loop_state=_reset_work_loop_state,
 	)
+
+
+def _complete_governor_goal_plan(
+	session: dict[str, Any],
+	pending: dict[str, Any],
+	body: str,
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	app_server_thread_id: str | None = None,
+	app_server_turn_id: str | None = None,
+	app_server_item_id: str | None = None,
+	runtime_source: str = "app-server",
+) -> bool:
+	model = session["model"]
+	try:
+		reply, steps = session_goal_lifecycle.parse_governor_goal_plan_response(body)
+	except session_goal_lifecycle.GoalPlanValidationError as exc:
+		_append_error(
+			model,
+			"Goal plan rejected",
+			"Corgi could not validate the Governor goal plan. Please revise the goal and try again.",
+			now,
+			in_response_to_request_id=pending.get("requestId"),
+			presentation_key="goal.blocked",
+			presentation_args={"reason": "invalid_goal_plan", "detail": str(exc)},
+		)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="orchestration",
+			currentStage="goal_blocked",
+			runState="idle",
+			transportState="connected",
+		)
+		model["activeForegroundRequestId"] = None
+		return False
+	governor_meta = _governor_dialogue_meta(session)
+	if app_server_thread_id:
+		governor_meta["appServerThreadId"] = app_server_thread_id
+	if app_server_turn_id:
+		governor_meta["lastAppServerTurnId"] = app_server_turn_id
+	if app_server_item_id:
+		governor_meta["lastAppServerItemId"] = app_server_item_id
+	governor_meta["lastRuntimeSource"] = runtime_source
+	governor_meta["lastUsedAt"] = utc_now()
+	goal = session_goal_lifecycle.create_goal_program(
+		session,
+		now,
+		str(pending.get("prompt") or ""),
+		next_id=_next_id,
+		repo_root=repo_root,
+		steps=steps,
+		plan_source="governor",
+	)
+	if reply:
+		model["feed"].append(
+			_feed_item(
+				"actor_event",
+				"Governor goal plan",
+				reply,
+				authoritative=True,
+				now=now,
+				details=pending.get("details") if isinstance(pending.get("details"), list) else [],
+				source_layer="governor",
+				source_actor="governor",
+				turn_type="goal_program",
+				in_response_to_request_id=pending.get("requestId"),
+			)
+		)
+	first_step = goal["steps"][0] if goal["steps"] else None
+	if not first_step:
+		_append_error(
+			model,
+			"Goal plan missing",
+			"Governor did not produce any bounded goal steps.",
+			now,
+			in_response_to_request_id=pending.get("requestId"),
+			presentation_key="goal.blocked",
+		)
+		return False
+	session_goal_lifecycle.begin_goal_step(
+		session,
+		goal["goal_ref"],
+		first_step,
+		now,
+		next_id=_next_id,
+		artifact_factory=_artifact,
+		feed_item=_feed_item,
+		repo_root=repo_root,
+	)
+	_refresh_snapshot(
+		model,
+		now,
+		currentActor="governor",
+		currentStage="plan_ready",
+		runState="idle",
+		transportState="connected",
+	)
+	if pending.get("autoConsumeExecutorAfterPlan"):
+		plan_ready = model.get("planReadyRequest")
+		if isinstance(plan_ready, dict):
+			handle_execute_plan(
+				session,
+				repo_root=repo_root,
+				session_ref=model["snapshot"].get("sessionRef"),
+				request_id=_next_id("request"),
+				context_ref=plan_ready.get("contextRef"),
+				governor_runtime=str(pending.get("autoGovernorRuntimeAfterPlan") or "exec"),
+				auto_consume_executor=True,
+			)
+	model["activeForegroundRequestId"] = None
+	return True
 
 
 def _append_governor_dialogue_response(
@@ -2190,6 +2326,18 @@ def _auto_continue_goal_program(
 		)
 
 
+def _should_use_template_goal_plan() -> bool:
+	configured_source = os.environ.get("CORGI_GOAL_PLAN_SOURCE", "").strip().lower()
+	if configured_source == "template":
+		return True
+	if configured_source == "governor":
+		return False
+	return (
+		os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+		and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-goal-program"
+	)
+
+
 def handle_start_goal(
 	session: dict[str, Any],
 	text: str,
@@ -2248,6 +2396,17 @@ def handle_start_goal(
 		turn_type="governed_work_intent",
 		in_response_to_request_id=request_id,
 	)
+	if governor_runtime == "external" and not _should_use_template_goal_plan():
+		_prepare_governor_goal_plan_runtime_request(
+			session,
+			goal_text,
+			now,
+			repo_root=repo_root,
+			request_id=request_id,
+			auto_consume_executor_after_plan=auto_consume_executor,
+			auto_governor_runtime_after_plan=governor_runtime,
+		)
+		return
 	goal = session_goal_lifecycle.create_goal_program(
 		session,
 		now,
@@ -2344,6 +2503,7 @@ def handle_complete_governor_turn(
 		runtime_source=runtime_source,
 		pending_governor_runtime_request=_pending_governor_runtime_request,
 		append_error=_append_error,
+		complete_governor_goal_plan=_complete_governor_goal_plan,
 		complete_governor_semantic_intake=_complete_governor_semantic_intake,
 		append_completed_governor_dialogue_response=_append_completed_governor_dialogue_response,
 	)
@@ -2367,6 +2527,7 @@ def handle_fallback_governor_turn(
 		run_governor_exec=_run_governor_exec,
 		append_error=_append_error,
 		refresh_snapshot=_refresh_snapshot,
+		complete_governor_goal_plan=_complete_governor_goal_plan,
 		complete_governor_semantic_intake=_complete_governor_semantic_intake,
 		append_completed_governor_dialogue_response=_append_completed_governor_dialogue_response,
 	)

@@ -817,8 +817,9 @@ suite('Corgi Webview UX', () => {
 		const transportSource = fs.readFileSync(EXECUTION_TRANSPORT_TS_PATH, 'utf8');
 		const clientSource = fs.readFileSync(CODEX_APP_SERVER_CLIENT_TS_PATH, 'utf8');
 
-		assert.ok(clientSource.includes("runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake'"));
+		assert.ok(clientSource.includes("runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake' | 'goal_plan'"));
 		assert.ok(clientSource.includes('firstDeltaMessage'));
+		assert.ok(clientSource.includes('Breaking goal into steps'));
 		assert.ok(clientSource.includes('Drafting plan'));
 		assert.ok(clientSource.includes('Plan draft preview'));
 		assert.ok(transportSource.includes('runtimeKind: event.runtimeKind'));
@@ -1330,6 +1331,20 @@ suite('Corgi Webview UX', () => {
 		assert.match(snapshot.goalStrip, /Plan ready/);
 		assert.ok(!snapshot.goalStrip.includes('goal-123'));
 		assert.ok(snapshot.actions.some((action) => action.text === 'Execute plan'));
+
+		const planningModel: ExecutionWindowModel = {
+			...model,
+			planReadyRequest: undefined,
+			snapshot: {
+				...model.snapshot,
+				currentStage: 'goal_planning',
+				currentActor: 'governor',
+				runState: 'running',
+			},
+		};
+
+		const planningSnapshot = renderWebviewSnapshot(planningModel);
+		assert.match(planningSnapshot.goalStrip, /Step: Step 2\/3 · Breaking goal into steps/);
 	});
 
 	test('runtime ergonomics kernel separates transcript, activity, detail, and internal surfaces', () => {

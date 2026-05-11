@@ -34,7 +34,7 @@ export type AppServerProgressEvent = {
 		| 'turn_completed';
 	requestId?: string;
 	runtimeRequestId?: string;
-	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake';
+	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake' | 'goal_plan';
 	elapsedMs?: number;
 	message?: string;
 	previewText?: string;
@@ -43,7 +43,7 @@ export type AppServerProgressEvent = {
 export type AppServerTurnRequest = {
 	requestId?: string;
 	runtimeRequestId?: string;
-	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake';
+	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake' | 'goal_plan';
 	previewEnabled?: boolean;
 	threadId?: string;
 	prompt: string;
@@ -60,7 +60,7 @@ type ActiveTurn = {
 	itemId?: string;
 	requestId?: string;
 	runtimeRequestId?: string;
-	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake';
+	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake' | 'goal_plan';
 	previewEnabled: boolean;
 	startedAt: number;
 	receivedDelta: boolean;
@@ -530,6 +530,9 @@ function firstDeltaMessage(runtimeKind: ActiveTurn['runtimeKind']): string {
 	if (runtimeKind === 'semantic_intake') {
 		return 'Understanding request';
 	}
+	if (runtimeKind === 'goal_plan') {
+		return 'Breaking goal into steps';
+	}
 	if (runtimeKind === 'plan') {
 		return 'Drafting plan';
 	}
@@ -539,6 +542,9 @@ function firstDeltaMessage(runtimeKind: ActiveTurn['runtimeKind']): string {
 function draftPreviewMessage(runtimeKind: ActiveTurn['runtimeKind']): string {
 	if (runtimeKind === 'plan') {
 		return 'Plan draft preview';
+	}
+	if (runtimeKind === 'goal_plan') {
+		return 'Goal plan draft preview';
 	}
 	return 'Draft preview';
 }

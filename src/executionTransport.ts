@@ -16,7 +16,7 @@ export type ExecutionRuntimeEvent = {
 	emittedAt?: string;
 	requestId?: string;
 	runtimeRequestId?: string;
-	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake';
+	runtimeKind?: 'dialogue' | 'plan' | 'semantic_intake' | 'goal_plan';
 	elapsedMs?: number;
 	totalElapsedMs?: number;
 	promptChars?: number;
@@ -39,6 +39,7 @@ export type GovernorRuntimeRoute = 'exec' | 'external';
 
 const EXTERNAL_GOVERNOR_COMMANDS = new Set([
 	'submit-prompt',
+	'start-goal',
 	'answer-clarification',
 	'set-permission-scope',
 	'execute-plan',

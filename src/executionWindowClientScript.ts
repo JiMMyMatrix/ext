@@ -676,9 +676,11 @@ export function getExecutionWindowClientScript(
 					return 'Checked result';
 				case 'permission_needed':
 					return 'Permission needed';
-				case 'semantic_intake':
-					return 'Understanding request';
-				case 'executor_completed':
+					case 'semantic_intake':
+						return 'Understanding request';
+					case 'goal_planning':
+						return 'Breaking goal into steps';
+					case 'executor_completed':
 					return 'Changes written';
 				case 'governor_decision_recorded':
 					return 'Finalized';
@@ -1166,15 +1168,22 @@ export function getExecutionWindowClientScript(
 			if (!requestKey) {
 				return;
 			}
-			const isSemanticIntake = event.runtimeKind === 'semantic_intake';
-			const isPlan = event.runtimeKind === 'plan';
-			const beats = isSemanticIntake
-				? [
-					[12000, 'Still understanding request', 'Still understanding the request...'],
-					[30000, 'Still checking workflow state', 'Still checking intent and workflow state...'],
-				]
-				: isPlan
+				const isSemanticIntake = event.runtimeKind === 'semantic_intake';
+				const isPlan = event.runtimeKind === 'plan';
+				const isGoalPlan = event.runtimeKind === 'goal_plan';
+				const beats = isSemanticIntake
 					? [
+						[12000, 'Still understanding request', 'Still understanding the request...'],
+						[30000, 'Still checking workflow state', 'Still checking intent and workflow state...'],
+					]
+					: isGoalPlan
+						? [
+							[12000, 'Still breaking goal into steps', 'Still breaking the goal into bounded steps...'],
+							[30000, 'Still shaping goal plan', 'Still shaping the goal plan...'],
+							[60000, 'Taking a deeper goal-planning pass', 'This model can take a little longer.'],
+						]
+					: isPlan
+						? [
 						[12000, 'Still drafting plan', 'Still drafting the plan...'],
 						[30000, 'Shaping the plan', 'Still shaping the plan checkpoint...'],
 						[60000, 'Taking a deeper planning pass', 'This model can take a little longer.'],
@@ -1441,40 +1450,47 @@ export function getExecutionWindowClientScript(
 					'The request is in progress...'
 				);
 				scheduleGovernorWaitHeartbeat(event);
-			} else if (event.stage === 'turn_started') {
-				ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
-				const isPlan = event.runtimeKind === 'plan';
-				replaceForegroundTail(
-					isPlan ? 'Reading plan request' : 'Reading request',
-					'active',
-					isPlan ? 'Reading the plan request...' : 'Reading the request...'
-				);
-				scheduleGovernorWaitHeartbeat(event);
-			} else if (event.stage === 'first_delta') {
-				clearGovernorWaitTimers();
-				const isSemanticIntake = event.runtimeKind === 'semantic_intake';
-				const isPlan = event.runtimeKind === 'plan';
-				replaceForegroundTail(
-					isSemanticIntake
-						? 'Understanding request'
-						: isPlan
-							? 'Drafting plan'
-							: 'Drafting reply',
-					'active',
-					isSemanticIntake
-						? 'Understanding request...'
-						: isPlan
-							? 'Drafting the plan...'
-							: 'Drafting a reply...'
-				);
-			} else if (event.stage === 'draft_preview') {
-				clearGovernorWaitTimers();
-				const isPlan = event.runtimeKind === 'plan';
-				replaceForegroundTail(
-					isPlan ? 'Drafting plan' : 'Drafting reply',
-					'active',
-					isPlan ? 'Drafting the plan...' : 'Drafting a reply...'
-				);
+				} else if (event.stage === 'turn_started') {
+					ui.foregroundRequest.runtimeRequestId = event.runtimeRequestId || '';
+					const isPlan = event.runtimeKind === 'plan';
+					const isGoalPlan = event.runtimeKind === 'goal_plan';
+					replaceForegroundTail(
+						isGoalPlan ? 'Reading goal' : isPlan ? 'Reading plan request' : 'Reading request',
+						'active',
+						isGoalPlan ? 'Reading the goal...' : isPlan ? 'Reading the plan request...' : 'Reading the request...'
+					);
+					scheduleGovernorWaitHeartbeat(event);
+				} else if (event.stage === 'first_delta') {
+					clearGovernorWaitTimers();
+					const isSemanticIntake = event.runtimeKind === 'semantic_intake';
+					const isPlan = event.runtimeKind === 'plan';
+					const isGoalPlan = event.runtimeKind === 'goal_plan';
+					replaceForegroundTail(
+						isSemanticIntake
+							? 'Understanding request'
+							: isGoalPlan
+								? 'Breaking goal into steps'
+							: isPlan
+								? 'Drafting plan'
+								: 'Drafting reply',
+						'active',
+						isSemanticIntake
+							? 'Understanding request...'
+							: isGoalPlan
+								? 'Breaking goal into bounded steps...'
+							: isPlan
+								? 'Drafting the plan...'
+								: 'Drafting a reply...'
+					);
+				} else if (event.stage === 'draft_preview') {
+					clearGovernorWaitTimers();
+					const isPlan = event.runtimeKind === 'plan';
+					const isGoalPlan = event.runtimeKind === 'goal_plan';
+					replaceForegroundTail(
+						isGoalPlan ? 'Breaking goal into steps' : isPlan ? 'Drafting plan' : 'Drafting reply',
+						'active',
+						isGoalPlan ? 'Breaking the goal into bounded steps...' : isPlan ? 'Drafting the plan...' : 'Drafting a reply...'
+					);
 				if (typeof event.previewText === 'string' && event.previewText.trim()) {
 					setDraftPreviewTarget(event.previewText);
 				}

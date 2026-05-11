@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -43,6 +44,12 @@ DEFAULT_GOAL_STEPS = [
 		"prompt_preset": "pet-life-diary-readme-polish",
 	},
 ]
+
+GOAL_PLAN_MAX_STEPS = 6
+
+
+class GoalPlanValidationError(ValueError):
+	pass
 
 
 def goals_root(repo_root: str | Path | None = None) -> Path:
@@ -124,6 +131,74 @@ def normalize_steps(steps: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
 			}
 		)
 	return normalized
+
+
+def parse_governor_goal_plan_response(body: str) -> tuple[str, list[dict[str, Any]]]:
+	payload = _extract_json_payload(body)
+	if not isinstance(payload, dict):
+		raise GoalPlanValidationError("Governor goal plan must be a JSON object.")
+	reply = trim_text(payload.get("user_visible_reply"))
+	steps = payload.get("steps")
+	if not isinstance(steps, list):
+		raise GoalPlanValidationError("Governor goal plan must include a steps array.")
+	return reply, validate_goal_steps(steps)
+
+
+def validate_goal_steps(steps: list[Any]) -> list[dict[str, Any]]:
+	if not steps:
+		raise GoalPlanValidationError("Goal plan must contain at least one step.")
+	if len(steps) > GOAL_PLAN_MAX_STEPS:
+		raise GoalPlanValidationError(f"Goal plan cannot contain more than {GOAL_PLAN_MAX_STEPS} steps.")
+	seen_refs: set[str] = set()
+	validated: list[dict[str, Any]] = []
+	for index, raw_step in enumerate(steps, start=1):
+		if not isinstance(raw_step, dict):
+			raise GoalPlanValidationError(f"Goal step {index} must be an object.")
+		title = trim_text(raw_step.get("title"))
+		objective = trim_text(raw_step.get("objective"))
+		expected_output = trim_text(raw_step.get("expected_output"))
+		if not title or not objective or not expected_output:
+			raise GoalPlanValidationError(
+				f"Goal step {index} must include title, objective, and expected_output."
+			)
+		if len(objective) > 700 or len(expected_output) > 500:
+			raise GoalPlanValidationError(f"Goal step {index} is too broad for a bounded step.")
+		step_ref = f"step-{index:02d}"
+		depends_on = raw_step.get("depends_on_step_ref")
+		if depends_on is not None:
+			depends_on = trim_text(depends_on)
+			if depends_on and depends_on not in seen_refs:
+				raise GoalPlanValidationError(
+					f"Goal step {index} depends on an unknown or later step."
+				)
+		validated.append(
+			{
+				"title": title,
+				"objective": objective,
+				"expected_output": expected_output,
+				"depends_on_step_ref": depends_on or None,
+				"prompt_preset": trim_text(raw_step.get("prompt_preset")) or None,
+			}
+		)
+		seen_refs.add(step_ref)
+	return validated
+
+
+def _extract_json_payload(body: str) -> Any:
+	text = trim_text(body)
+	if not text:
+		raise GoalPlanValidationError("Governor goal plan was empty.")
+	try:
+		return json.loads(text)
+	except json.JSONDecodeError:
+		start = text.find("{")
+		end = text.rfind("}")
+		if start < 0 or end <= start:
+			raise GoalPlanValidationError("Governor goal plan did not contain JSON.") from None
+		try:
+			return json.loads(text[start : end + 1])
+		except json.JSONDecodeError as exc:
+			raise GoalPlanValidationError("Governor goal plan JSON could not be parsed.") from exc
 
 
 def apply_goal_snapshot(

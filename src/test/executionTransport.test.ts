@@ -44,6 +44,7 @@ suite('Corgi Execution Transport', () => {
 	test('Governor runtime route resolution is explicit and action-bound', () => {
 		for (const command of [
 			'submit-prompt',
+			'start-goal',
 			'answer-clarification',
 			'set-permission-scope',
 			'execute-plan',

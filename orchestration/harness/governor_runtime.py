@@ -124,6 +124,44 @@ def resume_governor_semantic_intake_prompt(context_prompt: str) -> str:
 	)
 
 
+def initial_governor_goal_plan_prompt(goal_text: str) -> str:
+	return "\n\n".join(
+		[
+			"Governor goal-program planner for Corgi.",
+			"Purpose: decompose one large user goal into a small ordered set of bounded work steps.",
+			"Authority rules:\n"
+			"- You propose the goal plan; orchestration validates and sequences it.\n"
+			"- Do not create dispatch truth, start execution, or imply Execute permission.\n"
+			"- Each step must be executable through the existing Governor / Executor / Reviewer lifecycle.\n"
+			"- Prefer 3 to 5 serial steps. Keep every step bounded and testable.\n"
+			"- Return JSON only; no Markdown fences.",
+			"JSON shape:\n"
+			"{\n"
+			'  "user_visible_reply": "short explanation of the step plan",\n'
+			'  "steps": [\n'
+			"    {\n"
+			'      "title": "short step title",\n'
+			'      "objective": "specific bounded objective for Executor/Reviewer",\n'
+			'      "expected_output": "concrete output or validation evidence",\n'
+			'      "depends_on_step_ref": null\n'
+			"    }\n"
+			"  ]\n"
+			"}",
+			f"User goal: {trim_text(goal_text)}",
+		]
+	)
+
+
+def resume_governor_goal_plan_prompt(goal_text: str) -> str:
+	return "\n\n".join(
+		[
+			"Continue as the Governor goal-program planner for Corgi.",
+			"Return JSON only with user_visible_reply and steps. Do not execute or authorize execution.",
+			f"User goal: {trim_text(goal_text)}",
+		]
+	)
+
+
 def initial_governor_plan_prompt(context_prompt: str) -> str:
 	return "\n\n".join(
 		[
