@@ -5,11 +5,23 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from orchestration.harness.patch_specs import (  # noqa: E402
+    PATCH_SPEC_SCHEMA_VERSION,
+    PatchSpecError,
+    load_dispatch_request,
+    load_json,
+    repo_path,
+    validate_patch_spec_payload,
+)
 
 @dataclass(frozen=True)
 class PreparedPatch:
@@ -20,21 +32,6 @@ class PreparedPatch:
     patch_artifact: str | None
 
 
-def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def repo_path(repo_root: Path, rel_path: str) -> Path:
-    if Path(rel_path).is_absolute():
-        raise SystemExit(f"patch spec path must be repo-relative: {rel_path}")
-    candidate = (repo_root / rel_path).resolve()
-    try:
-        candidate.relative_to(repo_root)
-    except ValueError as exc:
-        raise SystemExit(f"patch spec path escapes repo root: {rel_path}") from exc
-    return candidate
-
-
 def write_patch_artifact(
     repo_root: Path,
     artifact_ref: str,
@@ -43,7 +40,7 @@ def write_patch_artifact(
     before: str,
     after: str,
 ) -> None:
-    artifact_path = repo_path(repo_root, artifact_ref)
+    artifact_path = repo_path(repo_root, artifact_ref, label="patch_artifact")
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     patch_source = "".join(
         difflib.unified_diff(
@@ -69,7 +66,7 @@ def prepare_operation(repo_root: Path, operation: dict[str, Any]) -> PreparedPat
     if not isinstance(new_text, str) or not new_text:
         raise SystemExit(f"patch operation for {rel_path} missing new_text")
 
-    target_path = repo_path(repo_root, rel_path)
+    target_path = repo_path(repo_root, rel_path, label="patch operation path")
     if not target_path.exists():
         raise SystemExit(f"patch target is missing: {rel_path}")
     before = target_path.read_text(encoding="utf-8")
@@ -105,11 +102,10 @@ def prepare_operation(repo_root: Path, operation: dict[str, Any]) -> PreparedPat
 
 def apply_spec(repo_root: Path, dispatch_ref: str, spec_path: Path) -> list[str]:
     spec = load_json(spec_path)
-    if spec.get("schema_version") != "corgi.patch-spec.v1":
+    request = load_dispatch_request(repo_root, dispatch_ref)
+    validate_patch_spec_payload(repo_root, spec, dispatch_ref=dispatch_ref, request=request)
+    if spec.get("schema_version") != PATCH_SPEC_SCHEMA_VERSION:
         raise SystemExit("unsupported patch spec schema_version")
-    spec_dispatch_ref = spec.get("dispatch_ref")
-    if spec_dispatch_ref != dispatch_ref:
-        raise SystemExit("patch spec dispatch_ref does not match")
     operations = spec.get("operations")
     if not isinstance(operations, list) or not operations:
         raise SystemExit("patch spec must contain at least one operation")
@@ -146,12 +142,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spec", required=True)
     args = parser.parse_args(argv)
 
-    repo_root = Path(args.repo_root).resolve()
-    spec_path = repo_path(repo_root, args.spec)
-    changed = apply_spec(repo_root, args.dispatch_ref, spec_path)
-    for rel_path in changed:
-        print(rel_path)
-    return 0
+    try:
+        repo_root = Path(args.repo_root).resolve()
+        spec_path = repo_path(repo_root, args.spec, label="patch spec path")
+        changed = apply_spec(repo_root, args.dispatch_ref, spec_path)
+        for rel_path in changed:
+            print(rel_path)
+        return 0
+    except PatchSpecError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

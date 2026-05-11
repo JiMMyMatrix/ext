@@ -21,6 +21,7 @@ from orchestration.harness import (
     governor_runtime,
     intake,
     parallel_dispatch,
+    patch_specs,
     reviewer,
     runtime_support,
     session,
@@ -150,6 +151,73 @@ class HarnessPackageTests(unittest.TestCase):
             },
         )
         return dispatch_dir
+
+    def _write_pet_diary_patch_request(
+        self,
+        repo_root: Path,
+        dispatch_ref: str = "lane/intake/dispatch-001",
+        *,
+        required_outputs: list[str] | None = None,
+        planned_touches: list[str] | None = None,
+    ) -> Path:
+        outputs = required_outputs if required_outputs is not None else ["src/app.js"]
+        touches = planned_touches if planned_touches is not None else ["src/app.js"]
+        return self._write_dispatch_request(
+            repo_root,
+            {
+                "dispatch_ref": dispatch_ref,
+                "from_role": "agentA",
+                "to_role": "agentB",
+                "task_kind": "bounded_task",
+                "lane": "lane/intake",
+                "objective": "Fix the pet diary app so adding a diary entry updates the visible list.",
+                "scope": ["src/app.js"],
+                "non_goals": [],
+                "inputs": [],
+                "required_outputs": outputs,
+                "acceptance_criteria": ["submitted diary entries update the visible list"],
+                "required_validators": [],
+                "stop_conditions": ["stop on stale patch proposal"],
+                "report_format": ["summary"],
+                "execution_mode": "command_chain",
+                "executor_run": {
+                    "run_ref": f"{dispatch_ref}/result/attempt-1",
+                    "objective": "Fix the pet diary app so adding a diary entry updates the visible list.",
+                    "scope": "src/app.js",
+                    "read_list": [],
+                    "produce_list": outputs,
+                    "planned_file_touch_list": touches,
+                    "non_goals": [],
+                    "stop_conditions": [],
+                },
+            },
+        )
+
+    def _write_minimal_buggy_pet_diary_app(self, repo_root: Path) -> Path:
+        app_path = repo_root / "src" / "app.js"
+        app_path.parent.mkdir(parents=True, exist_ok=True)
+        app_path.write_text(
+            '\n'.join(
+                [
+                    "const diaryEntries = [];",
+                    'const form = document.querySelector("#diary-form");',
+                    'const input = document.querySelector("#diary-entry-input");',
+                    "function renderEntries() {}",
+                    'form?.addEventListener("submit", (event) => {',
+                    "\tevent.preventDefault();",
+                    "\tconst text = input.value.trim();",
+                    "\tif (!text) {",
+                    "\t\treturn;",
+                    "\t}",
+                    '\tinput.value = "";',
+                    "\trenderEntries();",
+                    "});",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return app_path
 
     def _write_pre_dispatch_review(
         self,
@@ -584,6 +652,7 @@ class HarnessPackageTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            self._write_pet_diary_patch_request(scratch_root)
 
             result = subprocess.run(
                 [
@@ -651,6 +720,7 @@ class HarnessPackageTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            self._write_pet_diary_patch_request(scratch_root)
             spec_result = subprocess.run(
                 [
                     sys.executable,
@@ -737,6 +807,7 @@ class HarnessPackageTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            self._write_pet_diary_patch_request(scratch_root)
 
             result = subprocess.run(
                 [
@@ -762,6 +833,224 @@ class HarnessPackageTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("already appends diary entries", result.stderr)
+
+    def test_patch_spec_proposer_rejects_undeclared_target(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            self._write_minimal_buggy_pet_diary_app(scratch_root)
+            self._write_pet_diary_patch_request(
+                scratch_root,
+                required_outputs=["README.md"],
+                planned_touches=["README.md"],
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_propose_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--objective",
+                    "Fix the pet diary app so adding a diary entry updates the visible list.",
+                    "--recipe",
+                    "pet_diary_entry_submit",
+                    "--spec",
+                    ".agent/patch_specs/lane/intake/dispatch-001/pet_diary_entry_fix.json",
+                    "--patch-artifact",
+                    ".agent/patches/lane/intake/dispatch-001/src-app-js.patch",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not declared by dispatch", result.stderr)
+
+    def test_patch_spec_apply_rejects_stale_proposal(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            app_path = self._write_minimal_buggy_pet_diary_app(scratch_root)
+            self._write_pet_diary_patch_request(scratch_root)
+            propose = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_propose_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--objective",
+                    "Fix the pet diary app so adding a diary entry updates the visible list.",
+                    "--recipe",
+                    "pet_diary_entry_submit",
+                    "--spec",
+                    ".agent/patch_specs/lane/intake/dispatch-001/pet_diary_entry_fix.json",
+                    "--patch-artifact",
+                    ".agent/patches/lane/intake/dispatch-001/src-app-js.patch",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            app_path.write_text(app_path.read_text(encoding="utf-8") + "\n// unrelated drift\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_apply_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--spec",
+                    ".agent/patch_specs/lane/intake/dispatch-001/pet_diary_entry_fix.json",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(propose.returncode, 0, propose.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("is stale", result.stderr)
+
+    def test_patch_spec_apply_rejects_malformed_noop_and_path_escape(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            app_path = self._write_minimal_buggy_pet_diary_app(scratch_root)
+            self._write_pet_diary_patch_request(scratch_root)
+            signature = patch_specs.file_signature(app_path)
+            spec_ref = ".agent/patch_specs/lane/intake/dispatch-001/bad.json"
+            spec_path = scratch_root / spec_ref
+            write_json(
+                spec_path,
+                {
+                    "schema_version": "corgi.patch-spec.v1",
+                    "dispatch_ref": "lane/intake/dispatch-001",
+                    "proposed_by": "executor",
+                    "operations": [
+                        {
+                            "path": "src/app.js",
+                            "old_text": "function renderEntries() {}",
+                            "new_text": "function renderEntries() {}",
+                            "expected_replacements": 1,
+                            "patch_artifact": ".agent/patches/lane/intake/dispatch-001/bad.patch",
+                            "before_sha256": signature["sha256"],
+                            "before_size": signature["size"],
+                        }
+                    ],
+                },
+            )
+            noop = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_apply_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--spec",
+                    spec_ref,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload = load_json(spec_path)
+            payload["operations"][0]["path"] = "../outside.js"
+            payload["operations"][0]["new_text"] = "function renderEntries() { return true; }"
+            write_json(spec_path, payload)
+            escaping = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_apply_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--spec",
+                    spec_ref,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(noop.returncode, 0)
+            self.assertIn("no-op", noop.stderr)
+            self.assertNotEqual(escaping.returncode, 0)
+            self.assertIn("escapes repo root", escaping.stderr)
+
+    def test_patch_spec_apply_rejects_non_executor_and_bad_patch_artifact(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratch_root = Path(tmp_dir).resolve()
+            app_path = self._write_minimal_buggy_pet_diary_app(scratch_root)
+            self._write_pet_diary_patch_request(scratch_root)
+            signature = patch_specs.file_signature(app_path)
+            spec_ref = ".agent/patch_specs/lane/intake/dispatch-001/bad_authority.json"
+            spec_path = scratch_root / spec_ref
+            payload = {
+                "schema_version": "corgi.patch-spec.v1",
+                "dispatch_ref": "lane/intake/dispatch-001",
+                "proposed_by": "governor",
+                "operations": [
+                    {
+                        "path": "src/app.js",
+                        "old_text": "function renderEntries() {}",
+                        "new_text": "function renderEntries() { return true; }",
+                        "expected_replacements": 1,
+                        "patch_artifact": ".agent/patches/lane/intake/dispatch-001/bad.patch",
+                        "before_sha256": signature["sha256"],
+                        "before_size": signature["size"],
+                    }
+                ],
+            }
+            write_json(spec_path, payload)
+            non_executor = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_apply_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--spec",
+                    spec_ref,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload["proposed_by"] = "executor"
+            payload["operations"][0]["patch_artifact"] = ".agent/patches/other-dispatch/bad.patch"
+            write_json(spec_path, payload)
+            bad_artifact = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "orchestration" / "scripts" / "executor_apply_patch_spec.py"),
+                    "--repo-root",
+                    str(scratch_root),
+                    "--dispatch-ref",
+                    "lane/intake/dispatch-001",
+                    "--spec",
+                    spec_ref,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(non_executor.returncode, 0)
+            self.assertIn("proposed_by must be executor", non_executor.stderr)
+            self.assertNotEqual(bad_artifact.returncode, 0)
+            self.assertIn("patch_artifact must live under", bad_artifact.stderr)
 
     def test_pet_diary_validation_requires_append_inside_submit_handler(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

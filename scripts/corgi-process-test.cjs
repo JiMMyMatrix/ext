@@ -1057,8 +1057,15 @@ function runScratchBugfixExistingAppModule(options) {
 	const patchSpec = readJson(patchSpecPath);
 	assertCondition(
 		patchSpec.schema_version === 'corgi.patch-spec.v1' &&
-			patchSpec.operations?.[0]?.path === 'src/app.js',
+			patchSpec.proposed_by === 'executor' &&
+			patchSpec.operations?.[0]?.path === 'src/app.js' &&
+			typeof patchSpec.operations?.[0]?.before_sha256 === 'string' &&
+			Number.isInteger(patchSpec.operations?.[0]?.before_size),
 		'scratch-bugfix-existing-app: patch spec does not target src/app.js'
+	);
+	assertCondition(
+		patchSpec.operations[0].patch_artifact.endsWith('src-app-js.patch'),
+		'scratch-bugfix-existing-app: patch spec missing patch artifact target'
 	);
 	const patchSource = fs.readFileSync(patchPath, 'utf8');
 	assertCondition(
@@ -1078,6 +1085,12 @@ function runScratchBugfixExistingAppModule(options) {
 			(ref) => ref.includes('.agent/patch_specs/') && ref.endsWith('pet_diary_entry_fix.json')
 		),
 		'scratch-bugfix-existing-app: patch spec missing from dispatch evidence'
+	);
+	assertCondition(
+		request.execution_payload.commands.some((command) =>
+			commandSpecText(command).includes('executor_propose_patch_spec.py')
+		),
+		'scratch-bugfix-existing-app: dispatch did not use executor patch proposal command'
 	);
 	assertCondition(
 		request.execution_payload.commands.some((command) =>
