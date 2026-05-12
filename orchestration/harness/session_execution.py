@@ -18,6 +18,7 @@ from orchestration.harness.paths import (
     resolve_paths,
     script_ref,
     trim_text,
+    write_json,
 )
 
 FeedItemFactory = Callable[..., dict[str, Any]]
@@ -1361,6 +1362,20 @@ def finalize_dispatch(
     if trim_text(decision_payload.get("decision")) == "accept":
         blockers = accepted_dispatch_blockers(repo_root, dispatch_refs["dispatch_ref"])
         if blockers:
+            blocked_path = dispatch_dir / "governor_finalization_blocked.json"
+            blocked_ref = repo_relative(blocked_path, repo_root)
+            write_json(
+                blocked_path,
+                {
+                    "schema_version": "corgi.governor_finalization_blocked.v1",
+                    "created_at": now,
+                    "dispatch_ref": dispatch_refs["dispatch_ref"],
+                    "reason": "accepted_dispatch_invalid",
+                    "blockers": blockers,
+                    "attempted_decision": decision_payload,
+                },
+            )
+            decision_path.unlink(missing_ok=True)
             append_error(
                 model,
                 "Governor finalization blocked",
@@ -1377,7 +1392,7 @@ def finalize_dispatch(
                     "state": "failed",
                     "summary": "Finalization blocked by dispatch validation.",
                 },
-                source_artifact_ref=decision_ref,
+                source_artifact_ref=blocked_ref,
             )
             return {
                 "ok": False,

@@ -4490,6 +4490,40 @@ class HarnessPackageTests(unittest.TestCase):
                 )
             )
 
+    def test_finalize_dispatch_removes_accept_decision_when_accepted_validation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            dispatch_dir = self._write_accepted_dispatch_fixture(repo_root, create_outputs=False)
+            model = {"feed": []}
+
+            def append_error(model: dict, title: str, body: str, now: str, **kwargs) -> None:
+                model["feed"].append({"title": title, "body": body, **kwargs})
+
+            with mock.patch.object(session_execution.dispatch_harness, "run", return_value=0):
+                result = session_execution.finalize_dispatch(
+                    {"model": model},
+                    {
+                        "dispatch_ref": "lane/test/dispatch-accepted",
+                        "dispatch_dir": str(dispatch_dir),
+                        "request_ref": ".agent/dispatches/lane/test/dispatch-accepted/request.json",
+                        "review_ref": ".agent/reviews/lane/test/dispatch-accepted/review.json",
+                    },
+                    "2026-05-12T00:00:00Z",
+                    feed_item=lambda *args, **kwargs: {"kind": args[0] if args else "system_status", **kwargs},
+                    artifact=lambda ref, **kwargs: {"ref": ref, **kwargs},
+                    append_error=append_error,
+                    repo_root=repo_root,
+                    request_id="finalize-test",
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["stage"], "governor_finalization_blocked")
+            self.assertFalse((dispatch_dir / "governor_decision.json").exists())
+            blocked = load_json(dispatch_dir / "governor_finalization_blocked.json")
+            self.assertEqual(blocked["reason"], "accepted_dispatch_invalid")
+            self.assertIn("missing_required_output:README.md", blocked["blockers"])
+            self.assertEqual(model["feed"][0]["source_artifact_ref"], ".agent/dispatches/lane/test/dispatch-accepted/governor_finalization_blocked.json")
+
     def test_authorship_evidence_classifies_created_and_mutated_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
@@ -4645,6 +4679,26 @@ class HarnessPackageTests(unittest.TestCase):
                 )
 
             self.assertFalse((run_dir / "recovery_manifest.json").exists())
+            self.assertFalse((run_dir / "baseline_signatures.json").exists())
+
+    def test_recovery_manifest_shape_validation_rejects_repo_escaping_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            request = self._recovery_request(required_outputs=["../outside.txt"])
+            baseline = {"../outside.txt": {"present": True, "kind": "file"}}
+
+            with self.assertRaisesRegex(ValueError, "required_outputs must be repo-local"):
+                recovery.write_recovery_manifest(
+                    repo_root,
+                    request,
+                    run_dir=run_dir,
+                    baseline_signatures=baseline,
+                    baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+                )
+
+            self.assertFalse((run_dir / "recovery_manifest.json").exists())
+            self.assertFalse((run_dir / "baseline_signatures.json").exists())
 
     def test_recovery_manifest_deletes_created_declared_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

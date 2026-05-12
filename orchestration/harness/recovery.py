@@ -9,8 +9,6 @@ from typing import Any, Dict
 
 from orchestration.harness.authorship_evidence import (
     file_signature,
-    idempotent_output_allowlist,
-    normalized_required_outputs,
 )
 from orchestration.harness.paths import (
     validate_then_write,
@@ -46,6 +44,18 @@ def normalize_repo_rel(raw_path: str) -> str:
     return rel_path
 
 
+def _shape_repo_local_path(raw_path: str, failures: list[str], *, field: str) -> str | None:
+    rel_path = normalize_repo_rel(raw_path)
+    if not rel_path:
+        failures.append(f"invalid_recovery_manifest: {field} must be a non-empty repo-local path")
+        return None
+    path = Path(rel_path)
+    if path.is_absolute() or ".." in path.parts:
+        failures.append(f"invalid_recovery_manifest: {field} must be repo-local: {raw_path}")
+        return None
+    return rel_path
+
+
 def resolve_repo_local(repo_root: Path, raw_path: str) -> Path:
     rel_path = normalize_repo_rel(raw_path)
     if not rel_path:
@@ -61,9 +71,40 @@ def resolve_repo_local(repo_root: Path, raw_path: str) -> Path:
     return resolved
 
 
+def recovery_idempotent_outputs(request: Dict[str, Any]) -> set[str]:
+    raw_config = request.get("authorship_evidence")
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+    raw_outputs = raw_config.get("idempotent_output_allowed")
+    if not isinstance(raw_outputs, list):
+        return set()
+    return {
+        normalize_repo_rel(item)
+        for item in raw_outputs
+        if isinstance(item, str) and item.strip()
+    }
+
+
 def recovery_required_outputs(request: Dict[str, Any]) -> list[str]:
-    idempotent = idempotent_output_allowlist(request)
-    return [path for path in normalized_required_outputs(request) if path not in idempotent]
+    idempotent = recovery_idempotent_outputs(request)
+    refs: list[str] = []
+    seen: set[str] = set()
+    for item in request.get("required_outputs", []):
+        if not isinstance(item, str):
+            continue
+        rel_path = normalize_repo_rel(item)
+        if not rel_path or rel_path in seen or rel_path in idempotent:
+            continue
+        refs.append(rel_path)
+        seen.add(rel_path)
+    return refs
+
+
+def validate_recovery_request_paths(request: Dict[str, Any], failures: list[str]) -> None:
+    for rel_path in recovery_required_outputs(request):
+        _shape_repo_local_path(rel_path, failures, field="required_outputs")
+    for rel_path in recovery_idempotent_outputs(request):
+        _shape_repo_local_path(rel_path, failures, field="idempotent_output_allowed")
 
 
 def _blob_filename(rel_path: str) -> str:
@@ -146,6 +187,7 @@ def create_recovery_manifest(
     run_dir: Path,
     baseline_signatures: Dict[str, Dict[str, Any]],
     baseline_signatures_ref: str,
+    capture_blobs: bool = True,
 ) -> Dict[str, Any]:
     blob_dir = run_dir / "recovery_blobs"
     outputs: Dict[str, Dict[str, Any]] = {}
@@ -168,7 +210,9 @@ def create_recovery_manifest(
             if signature.get("kind") == "file":
                 source = resolve_repo_local(repo_root, rel_path)
                 size = signature.get("size")
-                if isinstance(size, int) and size <= MAX_RECOVERY_BLOB_BYTES and source.is_file() and not source.is_symlink():
+                if not capture_blobs:
+                    entry["reason"] = "baseline_blob_capture_pending"
+                elif isinstance(size, int) and size <= MAX_RECOVERY_BLOB_BYTES and source.is_file() and not source.is_symlink():
                     blob_path = blob_dir / _blob_filename(rel_path)
                     blob_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(source, blob_path)
@@ -192,7 +236,7 @@ def create_recovery_manifest(
         "attempt_number": request.get("attempt_number"),
         "plan_version": request.get("plan_version"),
         "required_outputs": recovery_required_outputs(request),
-        "idempotent_outputs_skipped": sorted(idempotent_output_allowlist(request)),
+        "idempotent_outputs_skipped": sorted(recovery_idempotent_outputs(request)),
         "baseline_signatures_ref": baseline_signatures_ref,
         "outputs": outputs,
     }
@@ -209,6 +253,9 @@ def validate_recovery_manifest_shape(payload: Any, failures: list[str]) -> None:
     for field in ["created_at", "work_ref", "dispatch_ref", "baseline_signatures_ref"]:
         if not isinstance(payload.get(field), str) or not payload.get(field).strip():
             failures.append(f"invalid_recovery_manifest: {field} must be a non-empty string")
+    baseline_ref = payload.get("baseline_signatures_ref")
+    if isinstance(baseline_ref, str) and baseline_ref.strip():
+        _shape_repo_local_path(baseline_ref, failures, field="baseline_signatures_ref")
     for field in ["attempt_number", "plan_version"]:
         value = payload.get(field)
         if not isinstance(value, int) or value < 1:
@@ -219,7 +266,12 @@ def validate_recovery_manifest_shape(payload: Any, failures: list[str]) -> None:
     ):
         failures.append("invalid_recovery_manifest: required_outputs must be a string list")
         required_outputs = []
-    allowed_outputs = {normalize_repo_rel(item) for item in required_outputs if isinstance(item, str)}
+    allowed_outputs: set[str] = set()
+    for item in required_outputs:
+        if isinstance(item, str):
+            rel_path = _shape_repo_local_path(item, failures, field="required_outputs")
+            if rel_path:
+                allowed_outputs.add(rel_path)
     skipped = payload.get("idempotent_outputs_skipped")
     if not isinstance(skipped, list) or not all(isinstance(item, str) for item in skipped):
         failures.append("invalid_recovery_manifest: idempotent_outputs_skipped must be a string list")
@@ -234,7 +286,9 @@ def validate_recovery_manifest_shape(payload: Any, failures: list[str]) -> None:
         if not isinstance(raw_path, str) or not raw_path.strip():
             failures.append("invalid_recovery_manifest: output keys must be non-empty strings")
             continue
-        rel_path = normalize_repo_rel(raw_path)
+        rel_path = _shape_repo_local_path(raw_path, failures, field="outputs")
+        if not rel_path:
+            continue
         if rel_path not in allowed_outputs:
             failures.append(f"invalid_recovery_manifest: undeclared output {raw_path}")
             continue
@@ -262,16 +316,31 @@ def write_recovery_manifest(
     baseline_signatures_ref: str,
 ) -> tuple[Dict[str, Any], str]:
     baseline_path = resolve_repo_local(repo_root, baseline_signatures_ref)
+    request_path_failures: list[str] = []
+    validate_recovery_request_paths(request, request_path_failures)
+    if request_path_failures:
+        raise ValueError("; ".join(request_path_failures))
+    planned_manifest = create_recovery_manifest(
+        repo_root,
+        request,
+        run_dir=run_dir,
+        baseline_signatures=baseline_signatures,
+        baseline_signatures_ref=baseline_signatures_ref,
+        capture_blobs=False,
+    )
+    failures: list[str] = []
+    validate_recovery_manifest_shape(planned_manifest, failures)
+    if failures:
+        raise ValueError("; ".join(failures))
+
+    baseline_payload = {
+        "schema_version": "corgi.recovery_baseline_signatures.v1",
+        "created_at": utc_now(),
+        "dispatch_ref": request.get("dispatch_ref"),
+        "required_outputs": baseline_signatures,
+    }
     if not baseline_path.exists():
-        write_json(
-            baseline_path,
-            {
-                "schema_version": "corgi.recovery_baseline_signatures.v1",
-                "created_at": utc_now(),
-                "dispatch_ref": request.get("dispatch_ref"),
-                "required_outputs": baseline_signatures,
-            },
-        )
+        write_json(baseline_path, baseline_payload)
     manifest = create_recovery_manifest(
         repo_root,
         request,
