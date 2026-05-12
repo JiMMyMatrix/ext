@@ -5828,6 +5828,36 @@ class HarnessPackageTests(unittest.TestCase):
                 )
             )
 
+    def test_goal_liveness_reports_governor_stall_for_unresolved_mid_goal_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            model = session.dispatch_session_action(
+                "start_goal",
+                text="Build a polished Pet Life Diary demo.",
+                repo_root=repo_root,
+                request_id="goal-stall-test",
+            )
+            goal_ref = model["snapshot"]["currentGoalRef"]
+            payload = session.load_session(repo_root)
+            payload["model"]["snapshot"]["currentStage"] = "executor_completed"
+            payload["model"]["snapshot"]["runState"] = "idle"
+
+            session._auto_continue_goal_program(payload, repo_root=repo_root)
+
+            self.assertEqual(payload["model"]["snapshot"]["goalStatus"], "blocked")
+            goal_dir = repo_root / ".agent" / "goals" / goal_ref
+            self.assertEqual(
+                load_json(goal_dir / "goal_progress.json")["blocked_reason"],
+                "governor_stall",
+            )
+            self.assertTrue(
+                any(
+                    item.get("presentation_key") == "goal.stalled"
+                    and item.get("presentation_args", {}).get("reason") == "governor_stall"
+                    for item in payload["model"]["feed"]
+                )
+            )
+
     def test_goal_progress_validation_rejects_current_step_mismatch_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()
