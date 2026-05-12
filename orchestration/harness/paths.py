@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 _MISSING = object()
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -94,12 +94,37 @@ def ensure_parent(path: Path) -> None:
 	ensure_dir(path.parent)
 
 
-def write_json(path: Path, payload: Any) -> None:
+JsonValidator = Callable[[Any, list[str]], None]
+
+
+def _json_text(payload: Any) -> str:
+	return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
 	ensure_parent(path)
-	path.write_text(
-		json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-		encoding="utf-8",
-	)
+	tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+	try:
+		tmp_path.write_text(text, encoding="utf-8")
+		os.replace(tmp_path, path)
+	except Exception:
+		try:
+			tmp_path.unlink()
+		except FileNotFoundError:
+			pass
+		raise
+
+
+def write_json(path: Path, payload: Any) -> None:
+	_write_text_atomic(path, _json_text(payload))
+
+
+def validate_then_write(path: Path, payload: Any, validator: JsonValidator) -> None:
+	failures: list[str] = []
+	validator(payload, failures)
+	if failures:
+		raise ValueError("; ".join(failures))
+	write_json(path, payload)
 
 
 def load_json(path: Path, *, default: Any = _MISSING) -> Any:

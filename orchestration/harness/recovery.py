@@ -12,6 +12,10 @@ from orchestration.harness.authorship_evidence import (
     idempotent_output_allowlist,
     normalized_required_outputs,
 )
+from orchestration.harness.paths import (
+    validate_then_write,
+    write_json as harness_write_json,
+)
 
 
 RECOVERY_MANIFEST_SCHEMA_VERSION = "corgi.recovery_manifest.v1"
@@ -24,8 +28,7 @@ def utc_now() -> str:
 
 
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    harness_write_json(path, payload)
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -195,6 +198,61 @@ def create_recovery_manifest(
     }
 
 
+def validate_recovery_manifest_shape(payload: Any, failures: list[str]) -> None:
+    if not isinstance(payload, dict):
+        failures.append("invalid_recovery_manifest: manifest must be an object")
+        return
+    if payload.get("schema_version") != RECOVERY_MANIFEST_SCHEMA_VERSION:
+        failures.append(
+            f"invalid_recovery_manifest: schema_version must be {RECOVERY_MANIFEST_SCHEMA_VERSION}"
+        )
+    for field in ["created_at", "work_ref", "dispatch_ref", "baseline_signatures_ref"]:
+        if not isinstance(payload.get(field), str) or not payload.get(field).strip():
+            failures.append(f"invalid_recovery_manifest: {field} must be a non-empty string")
+    for field in ["attempt_number", "plan_version"]:
+        value = payload.get(field)
+        if not isinstance(value, int) or value < 1:
+            failures.append(f"invalid_recovery_manifest: {field} must be a positive integer")
+    required_outputs = payload.get("required_outputs")
+    if not isinstance(required_outputs, list) or not all(
+        isinstance(item, str) and item.strip() for item in required_outputs
+    ):
+        failures.append("invalid_recovery_manifest: required_outputs must be a string list")
+        required_outputs = []
+    allowed_outputs = {normalize_repo_rel(item) for item in required_outputs if isinstance(item, str)}
+    skipped = payload.get("idempotent_outputs_skipped")
+    if not isinstance(skipped, list) or not all(isinstance(item, str) for item in skipped):
+        failures.append("invalid_recovery_manifest: idempotent_outputs_skipped must be a string list")
+    outputs = payload.get("outputs")
+    if not isinstance(outputs, dict):
+        failures.append("invalid_recovery_manifest: outputs must be an object")
+        return
+    for rel_path in allowed_outputs:
+        if rel_path not in outputs:
+            failures.append(f"invalid_recovery_manifest: missing required output {rel_path}")
+    for raw_path, entry in outputs.items():
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            failures.append("invalid_recovery_manifest: output keys must be non-empty strings")
+            continue
+        rel_path = normalize_repo_rel(raw_path)
+        if rel_path not in allowed_outputs:
+            failures.append(f"invalid_recovery_manifest: undeclared output {raw_path}")
+            continue
+        if not isinstance(entry, dict):
+            failures.append(f"invalid_recovery_manifest: output entry must be an object for {raw_path}")
+            continue
+        if entry.get("path") != raw_path:
+            failures.append(f"invalid_recovery_manifest: output entry path mismatch for {raw_path}")
+        if not isinstance(entry.get("baseline"), dict):
+            failures.append(f"invalid_recovery_manifest: missing baseline for {raw_path}")
+        if entry.get("planned_action") not in {"delete_created", "restore_baseline"}:
+            failures.append(f"invalid_recovery_manifest: invalid planned action for {raw_path}")
+        if not isinstance(entry.get("rollback_available"), bool):
+            failures.append(f"invalid_recovery_manifest: rollback_available must be boolean for {raw_path}")
+        if not isinstance(entry.get("reason"), str) or not entry.get("reason").strip():
+            failures.append(f"invalid_recovery_manifest: reason must be a non-empty string for {raw_path}")
+
+
 def write_recovery_manifest(
     repo_root: Path,
     request: Dict[str, Any],
@@ -222,7 +280,7 @@ def write_recovery_manifest(
         baseline_signatures_ref=baseline_signatures_ref,
     )
     manifest_path = run_dir / "recovery_manifest.json"
-    write_json(manifest_path, manifest)
+    validate_then_write(manifest_path, manifest, validate_recovery_manifest_shape)
     return manifest, repo_relative(manifest_path, repo_root)
 
 

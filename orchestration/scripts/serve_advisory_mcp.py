@@ -20,6 +20,8 @@ ADVISORY_VENV_PYTHON = (
 PYTHON_CANDIDATES = (
 	"CORGI_ADVISORY_MCP_PYTHON",
 	"ORCHESTRATION_ADVISORY_MCP_PYTHON",
+)
+BASE_PYTHON_CANDIDATES = (
 	"ORCHESTRATION_APPROVED_PYTHON",
 	"CORGI_PYTHON",
 )
@@ -34,7 +36,7 @@ def _resolve_python(raw_path: str | None) -> Path | None:
 		return None
 	path = Path(raw_path).expanduser()
 	if path.exists():
-		return path.resolve()
+		return path.absolute()
 	return None
 
 
@@ -44,11 +46,15 @@ def _select_python() -> Path:
 		if candidate:
 			return candidate
 	if ADVISORY_VENV_PYTHON.exists():
-		return ADVISORY_VENV_PYTHON.resolve()
+		return ADVISORY_VENV_PYTHON
+	for env_name in BASE_PYTHON_CANDIDATES:
+		candidate = _resolve_python(os.environ.get(env_name))
+		if candidate:
+			return candidate
 	for candidate in HOMEBREW_PYTHON_CANDIDATES:
 		if candidate.exists():
-			return candidate.resolve()
-	return Path(sys.executable).resolve()
+			return candidate
+	return Path(sys.executable).absolute()
 
 
 def _prepare_env(approved_python: Path) -> dict[str, str]:
@@ -65,15 +71,24 @@ def _prepare_env(approved_python: Path) -> dict[str, str]:
 	if env.get("CORGI_ADVISORY_LAUNCH_PROFILE") == "development":
 		env["CORGI_ADVISORY_CONTEXT"] = "corgi-development-consulting"
 		env["CORGI_ADVISORY_CALLER_ROLE"] = "developer"
-		env.setdefault(
-			"CORGI_ADVISORY_STATE_DIR",
-			str(SOURCE_ROOT / ".agent" / "development" / "advisory"),
+		dev_state_dir = SOURCE_ROOT / ".agent" / "development" / "advisory"
+		env["CORGI_ADVISORY_STATE_DIR"] = str(dev_state_dir)
+		env["MINIMAX_API_KEY_FILE"] = str(
+			Path(
+				env.get("CORGI_DEVELOPMENT_MINIMAX_API_KEY_FILE")
+				or dev_state_dir / "minimax_api_key"
+			).resolve()
 		)
 	else:
 		env["CORGI_ADVISORY_CONTEXT"] = "corgi-governor-runtime"
 		env["CORGI_ADVISORY_CALLER_ROLE"] = "governor"
-		env["CORGI_ADVISORY_STATE_DIR"] = str(
-			TARGET_REPO_ROOT / ".agent" / "orchestration" / "advisory"
+		runtime_state_dir = TARGET_REPO_ROOT / ".agent" / "orchestration" / "advisory"
+		env["CORGI_ADVISORY_STATE_DIR"] = str(runtime_state_dir)
+		env["MINIMAX_API_KEY_FILE"] = str(
+			Path(
+				env.get("CORGI_RUNTIME_MINIMAX_API_KEY_FILE")
+				or runtime_state_dir / "minimax_api_key"
+			).resolve()
 		)
 	return env
 
@@ -108,8 +123,12 @@ def main() -> None:
 
 	approved_python = _select_python()
 	env = _prepare_env(approved_python)
-	current_python = Path(sys.executable).resolve()
-	if current_python != approved_python:
+	current_python = Path(sys.executable).absolute()
+	if (
+		current_python != approved_python
+		and env.get("CORGI_ADVISORY_MCP_ACTIVE_PYTHON") != str(approved_python)
+	):
+		env["CORGI_ADVISORY_MCP_ACTIVE_PYTHON"] = str(approved_python)
 		os.execve(
 			str(approved_python),
 			[str(approved_python), str(Path(__file__).resolve()), *sys.argv[1:]],

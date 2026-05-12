@@ -114,10 +114,17 @@ default (`https://api.minimax.io/v1`).
 
 For runtime Governor use, the advisory server may read an ignored token file at
 the target workspace's `.agent/orchestration/advisory/minimax_api_key`, or a
-custom `MINIMAX_API_KEY_FILE`. For development consulting, prefer a separate
-ignored token file under `.agent/development/advisory/minimax_api_key`.
-`dev_mcp_server.py` points MiniMax there automatically, so development use does
-not require exporting `MINIMAX_API_KEY`.
+custom `CORGI_RUNTIME_MINIMAX_API_KEY_FILE`. For development consulting, prefer
+a separate ignored token file under
+`.agent/development/advisory/minimax_api_key`, or set
+`CORGI_DEVELOPMENT_MINIMAX_API_KEY_FILE`. `dev_mcp_server.py` points MiniMax
+there automatically, so development use does not require exporting
+`MINIMAX_API_KEY`.
+
+The advisory launcher intentionally prefers the repo-local advisory virtualenv
+over broad process Python hints such as `CORGI_PYTHON` when serving the MCP
+server. Use `CORGI_ADVISORY_MCP_PYTHON` only when you intentionally want to
+override that venv.
 
 The canonical manual command is:
 

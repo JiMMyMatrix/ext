@@ -8,6 +8,10 @@ from typing import Any, Callable
 from orchestration.harness import intake
 from orchestration.harness import session_execution
 from orchestration.harness import session_work_lifecycle
+from orchestration.harness.accepted_dispatch import (
+	accepted_dispatch_blockers,
+	dispatch_ref_from_decision_ref,
+)
 from orchestration.harness.paths import (
 	default_lane,
 	git_branch_name,
@@ -16,7 +20,7 @@ from orchestration.harness.paths import (
 	resolve_paths,
 	summarize,
 	trim_text,
-	write_json,
+	validate_then_write,
 )
 
 
@@ -89,13 +93,221 @@ def load_goal(goal_ref: str, *, repo_root: str | Path | None = None) -> dict[str
 	return load_json(goal_json_path(goal_ref, repo_root=repo_root))
 
 
+def _require_string(payload: dict[str, Any], field: str, failures: list[str], prefix: str) -> None:
+	if not isinstance(payload.get(field), str) or not payload.get(field).strip():
+		failures.append(f"{prefix}: {field} must be a non-empty string")
+
+
+def validate_goal_payload(
+	payload: Any,
+	failures: list[str],
+	*,
+	expected_goal_ref: str | None = None,
+) -> None:
+	if not isinstance(payload, dict):
+		failures.append("invalid_goal_artifact: goal must be an object")
+		return
+	if payload.get("schema_version") != "corgi.goal.v1":
+		failures.append("invalid_goal_artifact: goal schema_version must be corgi.goal.v1")
+	_require_string(payload, "goal_ref", failures, "invalid_goal_artifact")
+	_require_string(payload, "title", failures, "invalid_goal_artifact")
+	_require_string(payload, "original_goal", failures, "invalid_goal_artifact")
+	if expected_goal_ref and payload.get("goal_ref") != expected_goal_ref:
+		failures.append("invalid_goal_artifact: goal_ref mismatch")
+	if payload.get("status") not in {"active", "completed", "blocked"}:
+		failures.append("invalid_goal_artifact: goal status is invalid")
+	_require_string(payload, "created_at", failures, "invalid_goal_artifact")
+	_require_string(payload, "updated_at", failures, "invalid_goal_artifact")
+
+
+def validate_goal_plan_payload(
+	payload: Any,
+	failures: list[str],
+	*,
+	expected_goal_ref: str | None = None,
+) -> None:
+	if not isinstance(payload, dict):
+		failures.append("invalid_goal_artifact: goal_plan must be an object")
+		return
+	if payload.get("schema_version") != "corgi.goal_plan.v1":
+		failures.append("invalid_goal_artifact: goal_plan schema_version must be corgi.goal_plan.v1")
+	_require_string(payload, "goal_ref", failures, "invalid_goal_artifact")
+	if expected_goal_ref and payload.get("goal_ref") != expected_goal_ref:
+		failures.append("invalid_goal_artifact: goal_plan goal_ref mismatch")
+	plan_version = payload.get("plan_version")
+	if not isinstance(plan_version, int) or plan_version < 1:
+		failures.append("invalid_goal_artifact: goal_plan plan_version must be a positive integer")
+	steps = payload.get("steps")
+	if not isinstance(steps, list) or not steps:
+		failures.append("invalid_goal_artifact: goal_plan steps must be a non-empty list")
+		return
+	if len(steps) > GOAL_PLAN_MAX_STEPS:
+		failures.append(f"invalid_goal_artifact: goal_plan steps must be <= {GOAL_PLAN_MAX_STEPS}")
+	seen_refs: set[str] = set()
+	for index, step in enumerate(steps, start=1):
+		if not isinstance(step, dict):
+			failures.append(f"invalid_goal_artifact: goal_plan step {index} must be an object")
+			continue
+		for field in ["step_ref", "title", "objective", "expected_output", "status"]:
+			_require_string(step, field, failures, "invalid_goal_artifact")
+		step_ref = step.get("step_ref")
+		if isinstance(step_ref, str):
+			if step_ref in seen_refs:
+				failures.append(f"invalid_goal_artifact: duplicate goal step ref {step_ref}")
+		if step.get("step_index") != index:
+			failures.append(f"invalid_goal_artifact: goal_plan step_index mismatch at {index}")
+		if step.get("status") not in {"pending", "active", "completed", "blocked"}:
+			failures.append(f"invalid_goal_artifact: goal_plan step status is invalid at {index}")
+		dependency = step.get("depends_on_step_ref")
+		if dependency is not None and dependency not in seen_refs:
+			failures.append(f"invalid_goal_artifact: goal_plan dependency must reference earlier step at {index}")
+		if isinstance(step_ref, str):
+			seen_refs.add(step_ref)
+
+
+def validate_goal_progress_payload(
+	payload: Any,
+	failures: list[str],
+	*,
+	expected_goal_ref: str | None = None,
+	plan: dict[str, Any] | None = None,
+) -> None:
+	if not isinstance(payload, dict):
+		failures.append("invalid_goal_artifact: goal_progress must be an object")
+		return
+	if payload.get("schema_version") != "corgi.goal_progress.v1":
+		failures.append("invalid_goal_artifact: goal_progress schema_version must be corgi.goal_progress.v1")
+	_require_string(payload, "goal_ref", failures, "invalid_goal_artifact")
+	if expected_goal_ref and payload.get("goal_ref") != expected_goal_ref:
+		failures.append("invalid_goal_artifact: goal_progress goal_ref mismatch")
+	status = payload.get("status")
+	if status not in {"active", "completed", "blocked"}:
+		failures.append("invalid_goal_artifact: goal_progress status is invalid")
+	steps = [step for step in (plan or {}).get("steps", []) if isinstance(step, dict)]
+	step_by_ref = {
+		step.get("step_ref"): step
+		for step in steps
+		if isinstance(step.get("step_ref"), str)
+	}
+	current_ref = payload.get("current_step_ref")
+	current_index = payload.get("current_step_index")
+	if status == "active":
+		if not isinstance(current_ref, str) or not current_ref.strip():
+			failures.append("invalid_goal_artifact: active goal_progress requires current_step_ref")
+		if not isinstance(current_index, int) or current_index < 1:
+			failures.append("invalid_goal_artifact: active goal_progress requires current_step_index")
+	if isinstance(current_ref, str) and step_by_ref:
+		step = step_by_ref.get(current_ref)
+		if not step:
+			failures.append("invalid_goal_artifact: current_step_ref is not in goal_plan")
+		elif step.get("step_index") != current_index:
+			failures.append("invalid_goal_artifact: current_step_index does not match goal_plan")
+	completed = payload.get("completed_steps")
+	if not isinstance(completed, list):
+		failures.append("invalid_goal_artifact: completed_steps must be a list")
+	else:
+		for item in completed:
+			if not isinstance(item, dict) or not isinstance(item.get("step_ref"), str):
+				failures.append("invalid_goal_artifact: completed_steps entries must include step_ref")
+				continue
+			if step_by_ref and item.get("step_ref") not in step_by_ref:
+				failures.append("invalid_goal_artifact: completed step is not in goal_plan")
+	linked_work_refs = payload.get("linked_work_refs")
+	if not isinstance(linked_work_refs, list) or not all(
+		isinstance(item, str) for item in linked_work_refs
+	):
+		failures.append("invalid_goal_artifact: linked_work_refs must be a string list")
+
+
+def validate_goal_decision_payload(
+	payload: Any,
+	failures: list[str],
+	*,
+	expected_goal_ref: str | None = None,
+) -> None:
+	if not isinstance(payload, dict):
+		failures.append("invalid_goal_artifact: goal_decision must be an object")
+		return
+	if payload.get("schema_version") != "corgi.goal_decision.v1":
+		failures.append("invalid_goal_artifact: goal_decision schema_version must be corgi.goal_decision.v1")
+	_require_string(payload, "goal_ref", failures, "invalid_goal_artifact")
+	if expected_goal_ref and payload.get("goal_ref") != expected_goal_ref:
+		failures.append("invalid_goal_artifact: goal_decision goal_ref mismatch")
+	if payload.get("decision") not in {"accept", "block"}:
+		failures.append("invalid_goal_artifact: goal_decision decision is invalid")
+	_require_string(payload, "reason", failures, "invalid_goal_artifact")
+	if not isinstance(payload.get("completed_steps"), list):
+		failures.append("invalid_goal_artifact: goal_decision completed_steps must be a list")
+	if not isinstance(payload.get("linked_work_refs"), list):
+		failures.append("invalid_goal_artifact: goal_decision linked_work_refs must be a list")
+	_require_string(payload, "recorded_at", failures, "invalid_goal_artifact")
+
+
+def _write_goal(goal_ref: str, payload: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+	validate_then_write(
+		goal_json_path(goal_ref, repo_root=repo_root),
+		payload,
+		lambda item, failures: validate_goal_payload(
+			item,
+			failures,
+			expected_goal_ref=goal_ref,
+		),
+	)
+
+
+def _write_goal_plan(goal_ref: str, payload: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+	validate_then_write(
+		goal_plan_path(goal_ref, repo_root=repo_root),
+		payload,
+		lambda item, failures: validate_goal_plan_payload(
+			item,
+			failures,
+			expected_goal_ref=goal_ref,
+		),
+	)
+
+
+def _write_goal_progress(
+	goal_ref: str,
+	payload: dict[str, Any],
+	*,
+	repo_root: str | Path | None = None,
+	plan: dict[str, Any] | None = None,
+) -> None:
+	plan_payload = plan
+	if plan_payload is None and goal_plan_path(goal_ref, repo_root=repo_root).exists():
+		plan_payload = load_goal_plan(goal_ref, repo_root=repo_root)
+	validate_then_write(
+		goal_progress_path(goal_ref, repo_root=repo_root),
+		payload,
+		lambda item, failures: validate_goal_progress_payload(
+			item,
+			failures,
+			expected_goal_ref=goal_ref,
+			plan=plan_payload,
+		),
+	)
+
+
+def _write_goal_decision(goal_ref: str, payload: dict[str, Any], *, repo_root: str | Path | None = None) -> None:
+	validate_then_write(
+		goal_decision_path(goal_ref, repo_root=repo_root),
+		payload,
+		lambda item, failures: validate_goal_decision_payload(
+			item,
+			failures,
+			expected_goal_ref=goal_ref,
+		),
+	)
+
+
 def save_goal_progress(
 	goal_ref: str,
 	progress: dict[str, Any],
 	*,
 	repo_root: str | Path | None = None,
 ) -> None:
-	write_json(goal_progress_path(goal_ref, repo_root=repo_root), progress)
+	_write_goal_progress(goal_ref, progress, repo_root=repo_root)
 
 
 def update_goal_plan_step(
@@ -113,7 +325,7 @@ def update_goal_plan_step(
 		else:
 			steps.append(raw_step)
 	plan["steps"] = steps
-	write_json(goal_plan_path(goal_ref, repo_root=repo_root), plan)
+	_write_goal_plan(goal_ref, plan, repo_root=repo_root)
 
 
 def normalize_steps(steps: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -319,9 +531,9 @@ def create_goal_program(
 		"created_at": now,
 		"updated_at": now,
 	}
-	write_json(goal_json_path(goal_ref, repo_root=repo_root), goal_payload)
-	write_json(goal_plan_path(goal_ref, repo_root=repo_root), plan_payload)
-	write_json(goal_progress_path(goal_ref, repo_root=repo_root), progress_payload)
+	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
+	_write_goal_plan(goal_ref, plan_payload, repo_root=repo_root)
+	_write_goal_progress(goal_ref, progress_payload, repo_root=repo_root, plan=plan_payload)
 	session.setdefault("meta", {})["activeGoalRef"] = goal_ref
 	apply_goal_snapshot(
 		session,
@@ -405,7 +617,7 @@ def revise_goal_program(
 	plan["last_revised_by"] = "governor"
 	plan["revision_history"] = history
 	plan["steps"] = preserved_steps + new_steps
-	write_json(goal_plan_path(goal_ref, repo_root=repo_root), plan)
+	_write_goal_plan(goal_ref, plan, repo_root=repo_root)
 	try:
 		begin_goal_step(
 			session,
@@ -418,9 +630,9 @@ def revise_goal_program(
 			repo_root=repo_root,
 		)
 	except Exception as exc:
-		write_json(goal_plan_path(goal_ref, repo_root=repo_root), previous_plan)
+		_write_goal_plan(goal_ref, previous_plan, repo_root=repo_root)
 		save_goal_progress(goal_ref, previous_progress, repo_root=repo_root)
-		write_json(goal_json_path(goal_ref, repo_root=repo_root), previous_goal_payload)
+		_write_goal(goal_ref, previous_goal_payload, repo_root=repo_root)
 		raise GoalPlanValidationError("Could not activate the revised goal step.") from exc
 	progress["current_step_ref"] = new_steps[0]["step_ref"]
 	progress["current_step_index"] = new_steps[0]["step_index"]
@@ -430,7 +642,7 @@ def revise_goal_program(
 	progress["goal_plan_version"] = next_version
 	save_goal_progress(goal_ref, progress, repo_root=repo_root)
 	goal_payload["updated_at"] = now
-	write_json(goal_json_path(goal_ref, repo_root=repo_root), goal_payload)
+	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
 	plan = load_goal_plan(goal_ref, repo_root=repo_root)
 	model["feed"].append(
 		feed_item(
@@ -619,6 +831,34 @@ def advance_goal_after_decision(
 	decision = trim_text(model["snapshot"].get("latestGovernorDecision"))
 	if decision != "accept":
 		return "not_accepted"
+	decision_ref = model["snapshot"].get("latestGovernorDecisionRef")
+	dispatch_ref = dispatch_ref_from_decision_ref(repo_root, decision_ref)
+	if not dispatch_ref:
+		mark_goal_blocked(session, goal_ref, now, "missing_accepted_dispatch_ref", repo_root=repo_root)
+		return "blocked"
+	dispatch_blockers = accepted_dispatch_blockers(repo_root, dispatch_ref)
+	if dispatch_blockers:
+		mark_goal_blocked(session, goal_ref, now, "accepted_dispatch_invalid", repo_root=repo_root)
+		model["feed"].append(
+			feed_item(
+				"system_status",
+				"Goal stalled",
+				"Corgi could not advance the goal because the completed step did not pass accepted-dispatch validation.",
+				authoritative=True,
+				now=now,
+				source_artifact_ref=decision_ref if isinstance(decision_ref, str) else None,
+				presentation_key="goal.stalled",
+				presentation_args={
+					"reason": "accepted_dispatch_invalid",
+				},
+				activity={
+					"kind": "status",
+					"state": "blocked",
+					"summary": "Goal stalled during accepted-dispatch validation.",
+				},
+			)
+		)
+		return "blocked"
 	progress = load_goal_progress(goal_ref, repo_root=repo_root)
 	plan = load_goal_plan(goal_ref, repo_root=repo_root)
 	steps = [step for step in plan.get("steps", []) if isinstance(step, dict)]
@@ -690,7 +930,7 @@ def advance_goal_after_decision(
 	goal_payload = load_json(goal_json_path(goal_ref, repo_root=repo_root))
 	goal_payload["status"] = "completed"
 	goal_payload["updated_at"] = now
-	write_json(goal_json_path(goal_ref, repo_root=repo_root), goal_payload)
+	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
 	apply_goal_snapshot(
 		session,
 		goal_ref=goal_ref,
@@ -724,6 +964,7 @@ def goal_stage_is_blocked(stage: Any) -> bool:
 		"executor_blocked",
 		"reviewer_blocked",
 		"finalization_blocked",
+		"governor_finalization_blocked",
 		"revision_limit_reached",
 	}
 
@@ -752,7 +993,7 @@ def mark_goal_blocked(
 	goal_payload = load_json(goal_json_path(goal_ref, repo_root=repo_root))
 	goal_payload["status"] = "blocked"
 	goal_payload["updated_at"] = now
-	write_json(goal_json_path(goal_ref, repo_root=repo_root), goal_payload)
+	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
 	apply_goal_snapshot(
 		session,
 		goal_ref=goal_ref,
@@ -783,5 +1024,5 @@ def write_goal_decision(
 		"recorded_at": now,
 	}
 	path = goal_decision_path(goal_ref, repo_root=repo_root)
-	write_json(path, decision_payload)
+	_write_goal_decision(goal_ref, decision_payload, repo_root=repo_root)
 	return repo_relative(path, repo_root)

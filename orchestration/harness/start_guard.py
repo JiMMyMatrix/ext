@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from orchestration.harness.accepted_dispatch import dispatch_is_accepted
 from orchestration.harness.paths import resolve_agent_root, unique_strings
 from orchestration.harness.parallel_dispatch import (
     parallel_set_blockers,
@@ -145,28 +146,7 @@ def _required_outputs_exist(repo_root: Path, request: Dict[str, Any]) -> bool:
 
 
 def dependency_satisfied(repo_root: Path, dispatch_ref: str) -> bool:
-    dispatch_dir = dispatch_dir_for_ref(repo_root, dispatch_ref)
-    request_path = dispatch_dir / "request.json"
-    result_path = dispatch_dir / "result.json"
-    decision_path = dispatch_dir / "governor_decision.json"
-    if not request_path.exists() or not result_path.exists() or not decision_path.exists():
-        return False
-
-    request = load_json(request_path)
-    result = load_json(result_path)
-    decision = load_json(decision_path)
-    if decision.get("decision") != "accept":
-        return False
-    if result.get("status") != "completed":
-        return False
-    if result.get("blocker"):
-        return False
-    auto_validated = result.get("auto_validated")
-    if not isinstance(auto_validated, list) or not auto_validated:
-        return False
-    if not _required_outputs_exist(repo_root, request):
-        return False
-    return True
+    return dispatch_is_accepted(repo_root, dispatch_ref)
 
 
 def dependency_blockers(repo_root: Path, request: Dict[str, Any]) -> List[str]:

@@ -10,6 +10,7 @@ from unittest import mock
 from pathlib import Path
 
 from orchestration.harness import (
+    accepted_dispatch,
     artifacts,
     authorship_evidence,
     cli,
@@ -22,18 +23,21 @@ from orchestration.harness import (
     intake,
     parallel_dispatch,
     patch_specs,
+    paths,
     recovery,
     reviewer,
     runtime_support,
     session,
     session_execution,
     session_goal_lifecycle,
+    session_replan_flows,
     session_state,
+    session_work_lifecycle,
     spawn_bridge,
     start_guard,
     transition,
 )
-from orchestration.harness.paths import load_json, prompt_ref, resolve_paths, script_ref, write_json
+from orchestration.harness.paths import load_json, prompt_ref, resolve_paths, script_ref, validate_then_write, write_json
 from orchestration.harness.scenario_fixtures import (
     list_scenarios,
     materialize_scenario,
@@ -150,6 +154,244 @@ class HarnessPackageTests(unittest.TestCase):
                 "last_transition_at": "2026-04-10T10:00:00Z",
                 "transition_history": [],
                 "notes": [],
+            },
+        )
+        return dispatch_dir
+
+    def test_validate_then_write_rejects_invalid_payload_without_replacing_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "artifact.json"
+
+            def validator(payload: object, failures: list[str]) -> None:
+                if not isinstance(payload, dict) or payload.get("valid") is not True:
+                    failures.append("invalid_test_payload")
+
+            validate_then_write(target, {"valid": True, "version": 1}, validator)
+            original = target.read_text(encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "invalid_test_payload"):
+                validate_then_write(target, {"valid": False, "version": 2}, validator)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+            with (
+                mock.patch.object(paths.os, "replace", side_effect=OSError("replace failed")),
+                self.assertRaisesRegex(OSError, "replace failed"),
+            ):
+                validate_then_write(target, {"valid": True, "version": 3}, validator)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(target.parent.glob(".*.tmp")), [])
+
+    def test_retry_handoff_breadcrumb_validation_preserves_work_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            work_ref = "lane/test/work-001"
+            session_work_lifecycle.save_work_index(
+                work_ref,
+                {
+                    "work_ref": work_ref,
+                    "status": "needs_replan",
+                    "retry_handoffs": [],
+                    "updated_at": "2026-05-12T00:00:00Z",
+                },
+                repo_root=repo_root,
+            )
+            valid_handoff = {
+                "schema_version": "corgi.retry_handoff.v1",
+                "work_ref": work_ref,
+                "failed_dispatch_ref": "lane/test/dispatch-001",
+                "attempt_number": 1,
+                "plan_version": 1,
+                "decision": "reject",
+                "failure_summary": "Reviewer requested changes.",
+                "recommended_next_bounded_action": "replan",
+                "evidence_refs": [
+                    ".agent/reviews/lane/test/dispatch-001/review.json",
+                    "lane/test/dispatch-001",
+                ],
+                "created_at": "2026-05-12T00:00:01Z",
+            }
+
+            session_replan_flows.record_retry_handoff(
+                work_ref,
+                valid_handoff,
+                now="2026-05-12T00:00:01Z",
+                repo_root=repo_root,
+            )
+            work_index = session_work_lifecycle.load_work_index(work_ref, repo_root=repo_root)
+            self.assertEqual(work_index["latest_retry_handoff"], valid_handoff)
+
+            invalid_handoff = dict(valid_handoff)
+            invalid_handoff.pop("failed_dispatch_ref")
+            with self.assertRaisesRegex(ValueError, "invalid_retry_handoff"):
+                session_replan_flows.record_retry_handoff(
+                    work_ref,
+                    invalid_handoff,
+                    now="2026-05-12T00:00:02Z",
+                    repo_root=repo_root,
+                )
+
+            unchanged = session_work_lifecycle.load_work_index(work_ref, repo_root=repo_root)
+            self.assertEqual(unchanged["latest_retry_handoff"], valid_handoff)
+            self.assertEqual(len(unchanged["retry_handoffs"]), 1)
+
+    def test_invalid_retry_handoff_surfaces_structured_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            work_ref = "lane/test/work-001"
+            session_work_lifecycle.save_work_index(
+                work_ref,
+                {
+                    "work_ref": work_ref,
+                    "status": "needs_replan",
+                    "revision_count": 0,
+                    "retry_handoffs": [],
+                    "updated_at": "2026-05-12T00:00:00Z",
+                },
+                repo_root=repo_root,
+            )
+            payload = {
+                "model": {
+                    "feed": [],
+                    "snapshot": {
+                        "currentStage": "reviewer_completed",
+                        "runState": "idle",
+                    },
+                    "activeForegroundRequestId": "request-001",
+                }
+            }
+
+            def record_work_review_and_decision(*args: object, **kwargs: object) -> dict[str, object]:
+                return {
+                    "decision": "reject",
+                    "reason": "Reviewer requested changes.",
+                    "recommended_next_action": "replan",
+                }
+
+            def append_error(model: dict[str, object], title: str, body: str, now: str, **kwargs: object) -> None:
+                model.setdefault("feed", []).append(
+                    {
+                        "type": "error",
+                        "title": title,
+                        "body": body,
+                        **kwargs,
+                    }
+                )
+
+            def refresh_snapshot(model: dict[str, object], now: str, **kwargs: object) -> None:
+                model.setdefault("snapshot", {}).update(kwargs)
+
+            replanned = session_replan_flows.maybe_replan_after_review(
+                payload,
+                {
+                    "work_ref": work_ref,
+                    "attempt_number": 1,
+                    "plan_version": 1,
+                    "review_ref": ".agent/reviews/lane/test/dispatch-001/review.json",
+                },
+                {"artifacts": [{"path": ".agent/reviews/lane/test/dispatch-001/review.json"}]},
+                "2026-05-12T00:00:01Z",
+                repo_root=repo_root,
+                request_id="request-001",
+                record_work_review_and_decision=record_work_review_and_decision,
+                append_error=append_error,
+                refresh_snapshot=refresh_snapshot,
+                append_governor_dialogue_response=lambda *args, **kwargs: self.fail(
+                    "invalid retry handoff must not ask Governor to replan"
+                ),
+            )
+
+            work_index = session_work_lifecycle.load_work_index(work_ref, repo_root=repo_root)
+            self.assertTrue(replanned)
+            self.assertEqual(work_index["status"], "blocked")
+            self.assertEqual(work_index["blocked_reason"], "invalid_retry_handoff")
+            self.assertNotIn("latest_retry_handoff", work_index)
+            self.assertEqual(payload["model"]["snapshot"]["currentStage"], "blocked")
+            self.assertEqual(payload["model"]["activeForegroundRequestId"], None)
+            self.assertEqual(payload["model"]["feed"][0]["presentation_key"], "error.invalid_retry_handoff")
+
+    def _write_accepted_dispatch_fixture(
+        self,
+        repo_root: Path,
+        *,
+        dispatch_ref: str = "lane/test/dispatch-accepted",
+        create_outputs: bool = True,
+        review_required: bool = True,
+        decision: str = "accept",
+        auto_validated: list[str] | None = None,
+        authorship: bool = False,
+    ) -> Path:
+        required_outputs = ["README.md"]
+        if create_outputs:
+            (repo_root / "README.md").write_text("executor output\n", encoding="utf-8")
+        request = {
+            "dispatch_ref": dispatch_ref,
+            "from_role": "agentA",
+            "to_role": "agentB",
+            "objective": "Produce a bounded output.",
+            "scope": ["README.md"],
+            "non_goals": [],
+            "inputs": [],
+            "required_outputs": required_outputs,
+            "acceptance_criteria": ["README exists"],
+            "required_validators": ["manual"],
+            "stop_conditions": ["block on ambiguity"],
+            "report_format": ["summary"],
+            "review_required": review_required,
+        }
+        if review_required:
+            request["review_artifact_path"] = f".agent/reviews/{dispatch_ref}/review.json"
+        if authorship:
+            request.update(self._authorship_request())
+            dispatch_ref = request["dispatch_ref"] = "lane/test/dispatch-001"
+            if review_required:
+                request["review_artifact_path"] = f".agent/reviews/{dispatch_ref}/review.json"
+        dispatch_dir = repo_root / ".agent" / "dispatches" / dispatch_ref
+        write_json(dispatch_dir / "request.json", request)
+        result = {
+            "dispatch_ref": dispatch_ref,
+            "status": "completed",
+            "executor_run_refs": [f"{dispatch_ref}/result/attempt-1"],
+            "written_or_updated": required_outputs,
+            "auto_validated": ["manual"] if auto_validated is None else auto_validated,
+            "blocker": None,
+            "recommended_next_bounded_task": "Governor should decide.",
+            "runtime_behavior_changed": False,
+            "scope_respected": True,
+            "notes": [],
+        }
+        if authorship:
+            refs = self._write_matching_authorship_refs(repo_root)
+            result = self._authorship_result(
+                baseline_ref=refs["baseline_ref"],
+                after_ref=refs["after_ref"],
+            )
+        write_json(dispatch_dir / "result.json", result)
+        if review_required:
+            review_path = repo_root / request["review_artifact_path"]
+            write_json(
+                review_path,
+                {
+                    "dispatch_ref": dispatch_ref,
+                    "reviewer_role": "agentR-helper",
+                    "verdict": "pass",
+                    "validator_assessment": ["validated"],
+                    "scope_assessment": ["scope respected"],
+                    "findings": [],
+                    "residual_risks": [],
+                    "recommendation": "accept",
+                },
+            )
+        write_json(
+            dispatch_dir / "governor_decision.json",
+            {
+                "dispatch_ref": dispatch_ref,
+                "result_ref": f".agent/dispatches/{dispatch_ref}/result.json",
+                "review_ref": f".agent/reviews/{dispatch_ref}/review.json" if review_required else None,
+                "decision": decision,
+                "reason": "Dispatch is acceptable.",
+                "recommended_next_action": "complete",
             },
         )
         return dispatch_dir
@@ -3012,6 +3254,11 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertEqual(work_index["decisions"][0]["attempt_number"], 1)
                 self.assertEqual(work_index["reviews"][1]["verdict"], "pass")
                 self.assertEqual(work_index["decisions"][1]["decision"], "accept")
+                self.assertEqual(work_index["latest_retry_handoff"]["work_ref"], initial_plan["workRef"])
+                self.assertEqual(
+                    work_index["latest_retry_handoff"]["recommended_next_bounded_action"],
+                    "redispatch_or_reject",
+                )
                 self.assertEqual(model["snapshot"]["latestReviewVerdict"], "pass")
                 self.assertEqual(model["snapshot"]["latestGovernorDecision"], "accept")
                 self.assertEqual(model["snapshot"]["currentWorkRef"], initial_plan["workRef"])
@@ -3045,6 +3292,10 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertEqual(first_request["plan_ref"], initial_plan["planRef"])
                 self.assertEqual(first_request["plan_version"], 1)
                 self.assertNotIn("revision_of_dispatch_ref", first_request)
+                self.assertEqual(
+                    work_index["latest_retry_handoff"]["failed_dispatch_ref"],
+                    first_request["dispatch_ref"],
+                )
                 self.assertEqual(second_request["attempt_number"], 2)
                 self.assertEqual(second_request["work_ref"], initial_plan["workRef"])
                 self.assertEqual(second_request["plan_ref"], revised_plan_entry["plan_ref"])
@@ -4118,6 +4369,127 @@ class HarnessPackageTests(unittest.TestCase):
             )
             self.assertNotIn("uncovered_worktree_change:src/app.js", blockers)
 
+    def test_accepted_dispatch_validator_accepts_consistent_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_accepted_dispatch_fixture(repo_root)
+
+            blockers = accepted_dispatch.accepted_dispatch_blockers(
+                repo_root,
+                "lane/test/dispatch-accepted",
+            )
+
+            self.assertEqual(blockers, [])
+            self.assertTrue(start_guard.dependency_satisfied(repo_root, "lane/test/dispatch-accepted"))
+
+    def test_accepted_dispatch_validator_rejects_missing_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_accepted_dispatch_fixture(repo_root)
+            (repo_root / ".agent/reviews/lane/test/dispatch-accepted/review.json").unlink()
+
+            blockers = accepted_dispatch.accepted_dispatch_blockers(
+                repo_root,
+                "lane/test/dispatch-accepted",
+            )
+
+            self.assertTrue(any(blocker.startswith("missing_review:") for blocker in blockers))
+            self.assertFalse(start_guard.dependency_satisfied(repo_root, "lane/test/dispatch-accepted"))
+
+    def test_accepted_dispatch_validator_rejects_invalid_decision_output_and_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_accepted_dispatch_fixture(
+                repo_root,
+                create_outputs=False,
+                decision="reject",
+                auto_validated=[],
+            )
+
+            blockers = accepted_dispatch.accepted_dispatch_blockers(
+                repo_root,
+                "lane/test/dispatch-accepted",
+            )
+
+            self.assertIn("decision_not_accept", blockers)
+            self.assertIn("missing_validation_evidence", blockers)
+            self.assertIn("missing_required_output:README.md", blockers)
+
+    def test_accepted_dispatch_validator_rejects_dispatch_ref_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            dispatch_dir = self._write_accepted_dispatch_fixture(repo_root)
+            result_path = dispatch_dir / "result.json"
+            result = load_json(result_path)
+            result["dispatch_ref"] = "lane/test/other-dispatch"
+            write_json(result_path, result)
+
+            blockers = accepted_dispatch.accepted_dispatch_blockers(
+                repo_root,
+                "lane/test/dispatch-accepted",
+            )
+
+            self.assertIn("result_dispatch_ref_mismatch", blockers)
+
+    def test_accepted_dispatch_validator_rejects_unsafe_refs_and_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            dispatch_dir = self._write_accepted_dispatch_fixture(repo_root)
+            request_path = dispatch_dir / "request.json"
+            request = load_json(request_path)
+            request["required_outputs"] = ["../outside.txt"]
+            write_json(request_path, request)
+
+            blockers = accepted_dispatch.accepted_dispatch_blockers(
+                repo_root,
+                "lane/test/dispatch-accepted",
+            )
+            traversal_blockers = accepted_dispatch.accepted_dispatch_blockers(
+                repo_root,
+                "../dispatch-accepted",
+            )
+
+            self.assertIn("required_output_not_repo_local:../outside.txt", blockers)
+            self.assertIn("dispatch_ref_not_repo_local", traversal_blockers)
+
+    def test_accepted_dispatch_validator_rejects_review_control_overreach(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_accepted_dispatch_fixture(repo_root)
+            review_path = repo_root / ".agent/reviews/lane/test/dispatch-accepted/review.json"
+            review = load_json(review_path)
+            review["decision"] = "accept"
+            write_json(review_path, review)
+
+            blockers = accepted_dispatch.accepted_dispatch_blockers(
+                repo_root,
+                "lane/test/dispatch-accepted",
+            )
+
+            self.assertTrue(any(blocker.startswith("invalid_review:") for blocker in blockers))
+
+    def test_accepted_dispatch_validator_rejects_tampered_authorship_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            self._write_accepted_dispatch_fixture(repo_root, authorship=True)
+            after_path = repo_root / ".agent/runs/lane/test/dispatch-001/output_signatures.json"
+            after_payload = load_json(after_path)
+            after_payload["summary"] = {"created": 0, "mutated": 0, "unchanged": 1, "missing": 0}
+            write_json(after_path, after_payload)
+
+            blockers = accepted_dispatch.accepted_dispatch_blockers(
+                repo_root,
+                "lane/test/dispatch-001",
+            )
+
+            self.assertTrue(
+                any(
+                    "result.json output_signatures.after_ref does not match embedded summary"
+                    in blocker
+                    for blocker in blockers
+                )
+            )
+
     def test_authorship_evidence_classifies_created_and_mutated_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
@@ -4232,6 +4604,47 @@ class HarnessPackageTests(unittest.TestCase):
             request.get("required_outputs", []),
         )
         return authorship_evidence.build_evidence_payload(repo_root, request, baseline, after)
+
+    def test_recovery_manifest_shape_validation_rejects_invalid_producer_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            invalid_manifest = {
+                "schema_version": recovery.RECOVERY_MANIFEST_SCHEMA_VERSION,
+                "created_at": "2026-05-12T00:00:00Z",
+                "work_ref": request["work_ref"],
+                "dispatch_ref": request["dispatch_ref"],
+                "attempt_number": request["attempt_number"],
+                "plan_version": request["plan_version"],
+                "required_outputs": ["README.md"],
+                "idempotent_outputs_skipped": [],
+                "baseline_signatures_ref": ".agent/runs/run-1/baseline_signatures.json",
+                "outputs": {
+                    "README.md": {
+                        "path": "README.md",
+                        "baseline": baseline["README.md"],
+                        "planned_action": "rewrite_everything",
+                        "rollback_available": True,
+                        "reason": "test_invalid_action",
+                    }
+                },
+            }
+
+            with (
+                mock.patch.object(recovery, "create_recovery_manifest", return_value=invalid_manifest),
+                self.assertRaisesRegex(ValueError, "invalid_recovery_manifest"),
+            ):
+                recovery.write_recovery_manifest(
+                    repo_root,
+                    request,
+                    run_dir=run_dir,
+                    baseline_signatures=baseline,
+                    baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+                )
+
+            self.assertFalse((run_dir / "recovery_manifest.json").exists())
 
     def test_recovery_manifest_deletes_created_declared_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -4942,6 +5355,45 @@ class HarnessPackageTests(unittest.TestCase):
             with self.assertRaises(artifacts.ArtifactContractError):
                 artifacts.load_review_artifact(review_path)
 
+    def test_reviewer_guard_restores_project_and_dispatch_overreach(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo_root, check=True, capture_output=True)
+            (repo_root / "README.md").write_text("original\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo_root, check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.email=corgi@example.test",
+                    "-c",
+                    "user.name=Corgi Test",
+                    "commit",
+                    "-m",
+                    "seed",
+                ],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+            )
+            dispatch_ref = "lane/test/dispatch-reviewer-guard"
+            dispatch_dir = repo_root / ".agent" / "dispatches" / dispatch_ref
+            write_json(dispatch_dir / "request.json", {"dispatch_ref": dispatch_ref})
+            write_json(dispatch_dir / "result.json", {"dispatch_ref": dispatch_ref, "status": "completed"})
+            review_path = repo_root / ".agent" / "reviews" / dispatch_ref / "review.json"
+            snapshot = reviewer.capture_reviewer_guard_snapshot(repo_root, dispatch_dir)
+
+            (repo_root / "README.md").write_text("reviewer overreach\n", encoding="utf-8")
+            write_json(dispatch_dir / "result.json", {"dispatch_ref": dispatch_ref, "status": "tampered"})
+            write_json(review_path, {"dispatch_ref": dispatch_ref, "verdict": "pass"})
+
+            with self.assertRaises(reviewer.ReviewerContractViolation):
+                reviewer.enforce_reviewer_guard(repo_root, dispatch_dir, review_path, snapshot)
+
+            self.assertEqual((repo_root / "README.md").read_text(encoding="utf-8"), "original\n")
+            self.assertEqual(load_json(dispatch_dir / "result.json")["status"], "completed")
+            self.assertTrue(review_path.exists())
+
     def test_parallel_request_metadata_requires_reviewed_scope(self) -> None:
         failures: list[str] = []
         request = self._parallel_request(
@@ -5322,6 +5774,30 @@ class HarnessPackageTests(unittest.TestCase):
                 )
             )
 
+    def test_goal_progress_validation_rejects_current_step_mismatch_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            model = session.dispatch_session_action(
+                "start_goal",
+                text="Build a polished Pet Life Diary demo.",
+                repo_root=repo_root,
+                request_id="goal-progress-validation-test",
+            )
+            goal_ref = model["snapshot"]["currentGoalRef"]
+            progress_path = repo_root / ".agent" / "goals" / goal_ref / "goal_progress.json"
+            original = progress_path.read_text(encoding="utf-8")
+            progress = load_json(progress_path)
+            progress["current_step_ref"] = "step-99"
+
+            with self.assertRaisesRegex(ValueError, "invalid_goal_artifact"):
+                session_goal_lifecycle.save_goal_progress(
+                    goal_ref,
+                    progress,
+                    repo_root=repo_root,
+                )
+
+            self.assertEqual(progress_path.read_text(encoding="utf-8"), original)
+
     def test_goal_step_blocked_stage_blocks_parent_goal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()
@@ -5349,6 +5825,51 @@ class HarnessPackageTests(unittest.TestCase):
             goal_dir = repo_root / ".agent" / "goals" / goal_ref
             self.assertEqual(load_json(goal_dir / "goal.json")["status"], "blocked")
             self.assertEqual(load_json(goal_dir / "goal_progress.json")["status"], "blocked")
+
+    def test_goal_continuation_blocks_invalid_accepted_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            model = session.dispatch_session_action(
+                "start_goal",
+                text="Build a polished Pet Life Diary demo.",
+                repo_root=repo_root,
+                request_id="goal-invalid-dispatch-test",
+            )
+            goal_ref = model["snapshot"]["currentGoalRef"]
+            self._write_accepted_dispatch_fixture(repo_root, create_outputs=False)
+            payload = session.load_session(repo_root)
+            payload["model"]["snapshot"]["currentStage"] = "governor_decision_recorded"
+            payload["model"]["snapshot"]["latestGovernorDecision"] = "accept"
+            payload["model"]["snapshot"]["latestGovernorDecisionRef"] = (
+                ".agent/dispatches/lane/test/dispatch-accepted/governor_decision.json"
+            )
+            payload["model"]["snapshot"]["currentWorkRef"] = "lane/test/work-accepted"
+
+            outcome = session_goal_lifecycle.advance_goal_after_decision(
+                payload,
+                "2026-04-10T10:00:00Z",
+                next_id=lambda prefix: f"{prefix}-test",
+                artifact_factory=lambda ref, **kwargs: {"ref": ref, **kwargs},
+                feed_item=lambda *args, **kwargs: {
+                    "kind": args[0] if args else "system_status",
+                    **kwargs,
+                },
+                repo_root=repo_root,
+            )
+
+            self.assertEqual(outcome, "blocked")
+            self.assertEqual(payload["model"]["snapshot"]["goalStatus"], "blocked")
+            goal_dir = repo_root / ".agent" / "goals" / goal_ref
+            self.assertEqual(
+                load_json(goal_dir / "goal_progress.json")["blocked_reason"],
+                "accepted_dispatch_invalid",
+            )
+            self.assertTrue(
+                any(
+                    item.get("presentation_key") == "goal.stalled"
+                    for item in payload["model"]["feed"]
+                )
+            )
 
     def test_start_goal_external_prepares_governor_goal_plan_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -5462,10 +5983,13 @@ class HarnessPackageTests(unittest.TestCase):
                 request_id="goal-revision-start",
             )
             goal_ref = model["snapshot"]["currentGoalRef"]
+            self._write_accepted_dispatch_fixture(repo_root)
             payload = session.load_session(repo_root)
             payload["model"]["snapshot"]["currentStage"] = "governor_decision_recorded"
             payload["model"]["snapshot"]["latestGovernorDecision"] = "accept"
-            payload["model"]["snapshot"]["latestGovernorDecisionRef"] = ".agent/fake/decision-step-1.json"
+            payload["model"]["snapshot"]["latestGovernorDecisionRef"] = (
+                ".agent/dispatches/lane/test/dispatch-accepted/governor_decision.json"
+            )
             payload["model"]["snapshot"]["currentWorkRef"] = "lane/main/work-step-1"
             outcome = session_goal_lifecycle.advance_goal_after_decision(
                 payload,

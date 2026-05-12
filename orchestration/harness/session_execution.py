@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from orchestration.harness import dispatch as dispatch_harness
+from orchestration.harness.accepted_dispatch import accepted_dispatch_blockers
 from orchestration.harness.intake import accepted_intake_path
 from orchestration.harness.paths import (
     default_lane,
@@ -1357,6 +1358,34 @@ def finalize_dispatch(
 
     decision_ref = repo_relative(decision_path, repo_root)
     decision_payload = load_json(decision_path)
+    if trim_text(decision_payload.get("decision")) == "accept":
+        blockers = accepted_dispatch_blockers(repo_root, dispatch_refs["dispatch_ref"])
+        if blockers:
+            append_error(
+                model,
+                "Governor finalization blocked",
+                "Governor tried to accept this attempt, but Corgi could not verify the dispatch as dependency-safe.",
+                now,
+                in_response_to_request_id=request_id,
+                presentation_key="governor.finalization_blocked",
+                presentation_args={
+                    "actor": "governor",
+                    "reason": "accepted_dispatch_invalid",
+                },
+                activity={
+                    "kind": "status",
+                    "state": "failed",
+                    "summary": "Finalization blocked by dispatch validation.",
+                },
+                source_artifact_ref=decision_ref,
+            )
+            return {
+                "ok": False,
+                "actor": "governor",
+                "stage": "governor_finalization_blocked",
+                "artifacts": [],
+                "blockers": blockers,
+            }
     decision_artifact = artifact(
         decision_ref,
         summary="Governor decision artifact for the completed dispatch.",

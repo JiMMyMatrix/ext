@@ -956,9 +956,21 @@ suite('Corgi Webview UX', () => {
 		assert.ok(devLauncherSource.includes('corgi-development-consulting'));
 		assert.ok(devLauncherSource.includes('CORGI_ADVISORY_CALLER_ROLE'));
 		assert.ok(devLauncherSource.includes('.agent" / "development" / "advisory'));
+		assert.ok(devLauncherSource.includes('CORGI_DEVELOPMENT_MINIMAX_API_KEY_FILE'));
+		assert.ok(devLauncherSource.includes('env["MINIMAX_API_KEY_FILE"]'));
 		assert.ok(launcherSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(launcherSource.includes('CORGI_ADVISORY_MCP_PYTHON'));
 		assert.ok(launcherSource.includes('CORGI_PYTHON'));
+		assert.ok(
+			launcherSource.indexOf('if ADVISORY_VENV_PYTHON.exists()') <
+				launcherSource.indexOf('for env_name in BASE_PYTHON_CANDIDATES')
+		);
+		assert.ok(launcherSource.includes('return ADVISORY_VENV_PYTHON'));
+		assert.ok(!launcherSource.includes('return ADVISORY_VENV_PYTHON.resolve()'));
+		assert.ok(launcherSource.includes('CORGI_ADVISORY_MCP_ACTIVE_PYTHON'));
+		assert.ok(launcherSource.includes('CORGI_RUNTIME_MINIMAX_API_KEY_FILE'));
+		assert.ok(launcherSource.includes('CORGI_DEVELOPMENT_MINIMAX_API_KEY_FILE'));
+		assert.ok(launcherSource.includes('env["MINIMAX_API_KEY_FILE"]'));
 		assert.ok(launcherSource.includes('/opt/homebrew/bin/python3'));
 		assert.ok(launcherSource.includes('ORCHESTRATION_REPO_ROOT'));
 		assert.ok(launcherSource.includes('ORCHESTRATION_SOURCE_ROOT'));

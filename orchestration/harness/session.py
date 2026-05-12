@@ -2412,6 +2412,19 @@ def _auto_continue_goal_program(
 	governor_runtime: str = "exec",
 ) -> None:
 	model = session["model"]
+	legal_goal_pause_stages = {
+		"clarification_needed",
+		"permission_needed",
+		"plan_ready",
+		"goal_planning",
+		"goal_blocked",
+		"blocked",
+		"executor_blocked",
+		"reviewer_blocked",
+		"finalization_blocked",
+		"governor_finalization_blocked",
+		"revision_limit_reached",
+	}
 	for _ in range(8):
 		if model["snapshot"].get("currentStage") != "governor_decision_recorded":
 			goal_ref = model.get("currentGoalRef") or session.get("meta", {}).get("activeGoalRef")
@@ -2426,6 +2439,32 @@ def _auto_continue_goal_program(
 					utc_now(),
 					"current_step_blocked",
 					repo_root=repo_root,
+				)
+			elif (
+				isinstance(goal_ref, str)
+				and goal_ref.strip()
+				and model["snapshot"].get("currentStage") not in legal_goal_pause_stages
+			):
+				now = utc_now()
+				session_goal_lifecycle.mark_goal_blocked(
+					session,
+					goal_ref,
+					now,
+					"governor_stall",
+					repo_root=repo_root,
+				)
+				_append_error(
+					model,
+					"Goal stalled",
+					"Corgi found an unresolved goal step but no legal next internal action or user checkpoint.",
+					now,
+					presentation_key="goal.stalled",
+					presentation_args={"reason": "governor_stall"},
+					activity={
+						"kind": "status",
+						"state": "blocked",
+						"summary": "Goal stalled.",
+					},
 				)
 			break
 		now = utc_now()
