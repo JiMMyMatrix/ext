@@ -105,6 +105,7 @@ ESCALATION_TYPES = {
 EXECUTION_MODES = {
     "manual_artifact_report",
     "command_chain",
+    "declared_output_recovery",
     "report_only_demo",
     "sample_correctness_chain",
     "sample_acceptance",
@@ -359,16 +360,33 @@ def validate_overlap_isolation_request(payload: Dict, failures: List[str]) -> No
 
 def validate_execution_payload(request: Dict, failures: List[str]) -> None:
     payload = request.get("execution_payload")
+    execution_mode = request.get("execution_mode")
     if payload is None:
+        if execution_mode == "declared_output_recovery":
+            failures.append("declared_output_recovery dispatch requires execution_payload")
         return
     if not isinstance(payload, dict):
         failures.append("execution_payload must be an object")
         return
-    execution_mode = request.get("execution_mode")
     if execution_mode == "command_chain" and not isinstance(payload.get("commands"), list):
         failures.append("command_chain dispatch requires execution_payload.commands list")
     if execution_mode == "manual_artifact_report" and not payload.get("summary"):
         failures.append("manual_artifact_report dispatch requires execution_payload.summary")
+    if execution_mode == "declared_output_recovery":
+        recovery_ref = payload.get("recovery_manifest_ref")
+        if not isinstance(recovery_ref, str) or not recovery_ref.strip():
+            failures.append(
+                "declared_output_recovery dispatch requires execution_payload.recovery_manifest_ref"
+            )
+        current_signatures_ref = payload.get("current_signatures_ref")
+        if not isinstance(current_signatures_ref, str) or not current_signatures_ref.strip():
+            failures.append(
+                "declared_output_recovery dispatch requires execution_payload.current_signatures_ref"
+            )
+        if request.get("parallel_set_ref") and not isinstance(request.get("overlap_isolation"), dict):
+            failures.append(
+                "declared_output_recovery is disabled for parallel dispatches without overlap_isolation"
+            )
     if execution_mode == "sample_acceptance":
         require_string(payload, "sample_id", failures, prefix="sample_acceptance execution_payload.")
         sample_id = payload.get("sample_id")

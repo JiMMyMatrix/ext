@@ -22,6 +22,14 @@ def build_parser() -> argparse.ArgumentParser:
 	start_goal.add_argument("--auto-consume-executor", action="store_true")
 	add_governor_runtime(start_goal)
 
+	request_goal_revision = subparsers.add_parser("request_goal_revision")
+	request_goal_revision.add_argument("--text", required=True)
+	request_goal_revision.add_argument("--request-id")
+	request_goal_revision.add_argument("--session-ref")
+	request_goal_revision.add_argument("--context-ref")
+	request_goal_revision.add_argument("--auto-consume-executor", action="store_true")
+	add_governor_runtime(request_goal_revision)
+
 	submit = subparsers.add_parser("submit_prompt")
 	submit.add_argument("--text", required=True)
 	submit.add_argument("--request-id")

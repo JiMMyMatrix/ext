@@ -279,6 +279,52 @@ def _prepare_governor_goal_plan_runtime_request(
 	)
 
 
+def _prepare_governor_goal_revision_runtime_request(
+	session: dict[str, Any],
+	goal_ref: str,
+	goal_text: str,
+	revision_reason: str,
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
+	auto_consume_executor_after_plan: bool = False,
+	auto_governor_runtime_after_plan: str = "exec",
+) -> dict[str, Any]:
+	goal_plan = session_goal_lifecycle.load_goal_plan(goal_ref, repo_root=repo_root)
+	goal_progress = session_goal_lifecycle.load_goal_progress(goal_ref, repo_root=repo_root)
+	completed_refs = {
+		step.get("step_ref")
+		for step in goal_progress.get("completed_steps", [])
+		if isinstance(step, dict)
+	}
+	steps = [step for step in goal_plan.get("steps", []) if isinstance(step, dict)]
+	current_ref = goal_progress.get("current_step_ref")
+	current_step = next((step for step in steps if step.get("step_ref") == current_ref), None)
+	remaining_steps = [
+		step
+		for step in steps
+		if step.get("step_ref") not in completed_refs and step.get("step_ref") != current_ref
+	]
+	return session_governor_requests.prepare_governor_goal_revision_runtime_request(
+		session,
+		goal_ref,
+		goal_text,
+		revision_reason,
+		now,
+		refresh_snapshot=_refresh_snapshot,
+		repo_root=repo_root,
+		request_id=request_id,
+		context_ref=context_ref,
+		completed_steps=[step for step in steps if step.get("step_ref") in completed_refs],
+		current_step=current_step,
+		remaining_steps=remaining_steps,
+		auto_consume_executor_after_plan=auto_consume_executor_after_plan,
+		auto_governor_runtime_after_plan=auto_governor_runtime_after_plan,
+	)
+
+
 def _append_completed_governor_dialogue_response(
 	session: dict[str, Any],
 	pending: dict[str, Any],
@@ -433,6 +479,15 @@ def _complete_governor_goal_plan(
 	try:
 		reply, steps = session_goal_lifecycle.parse_governor_goal_plan_response(body)
 	except session_goal_lifecycle.GoalPlanValidationError as exc:
+		goal_ref = pending.get("goalRef") if pending.get("turnType") == "goal_revision" else None
+		if isinstance(goal_ref, str) and goal_ref.strip():
+			session_goal_lifecycle.mark_goal_blocked(
+				session,
+				goal_ref,
+				now,
+				"invalid_goal_revision",
+				repo_root=repo_root,
+			)
 		_append_error(
 			model,
 			"Goal plan rejected",
@@ -461,6 +516,88 @@ def _complete_governor_goal_plan(
 		governor_meta["lastAppServerItemId"] = app_server_item_id
 	governor_meta["lastRuntimeSource"] = runtime_source
 	governor_meta["lastUsedAt"] = utc_now()
+	if pending.get("turnType") == "goal_revision":
+		goal_ref = pending.get("goalRef")
+		if not isinstance(goal_ref, str) or not goal_ref.strip():
+			_append_error(
+				model,
+				"Goal revision rejected",
+				"Corgi could not find the active goal to revise.",
+				now,
+				in_response_to_request_id=pending.get("requestId"),
+				presentation_key="goal.blocked",
+				presentation_args={"reason": "missing_goal_ref"},
+			)
+			model["activeForegroundRequestId"] = None
+			return False
+		try:
+			session_goal_lifecycle.revise_goal_program(
+				session,
+				goal_ref,
+				steps,
+				now,
+				reason=str(pending.get("revisionReason") or "goal_plan_revision"),
+				next_id=_next_id,
+				artifact_factory=_artifact,
+				feed_item=_feed_item,
+				repo_root=repo_root,
+			)
+		except session_goal_lifecycle.GoalPlanValidationError as exc:
+			session_goal_lifecycle.mark_goal_blocked(
+				session,
+				goal_ref,
+				now,
+				"invalid_goal_revision",
+				repo_root=repo_root,
+			)
+			_append_error(
+				model,
+				"Goal revision rejected",
+				"Corgi could not validate the revised goal plan.",
+				now,
+				in_response_to_request_id=pending.get("requestId"),
+				presentation_key="goal.blocked",
+				presentation_args={"reason": "invalid_goal_revision", "detail": str(exc)},
+			)
+			model["activeForegroundRequestId"] = None
+			return False
+		if reply:
+			model["feed"].append(
+				_feed_item(
+					"actor_event",
+					"Governor goal revision",
+					reply,
+					authoritative=True,
+					now=now,
+					details=pending.get("details") if isinstance(pending.get("details"), list) else [],
+					source_layer="governor",
+					source_actor="governor",
+					turn_type="goal_revision",
+					in_response_to_request_id=pending.get("requestId"),
+				)
+			)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="governor",
+			currentStage="plan_ready",
+			runState="idle",
+			transportState="connected",
+		)
+		if pending.get("autoConsumeExecutorAfterPlan"):
+			plan_ready = model.get("planReadyRequest")
+			if isinstance(plan_ready, dict):
+				handle_execute_plan(
+					session,
+					repo_root=repo_root,
+					session_ref=model["snapshot"].get("sessionRef"),
+					request_id=_next_id("request"),
+					context_ref=plan_ready.get("contextRef"),
+					governor_runtime=str(pending.get("autoGovernorRuntimeAfterPlan") or "exec"),
+					auto_consume_executor=True,
+				)
+		model["activeForegroundRequestId"] = None
+		return True
 	goal = session_goal_lifecycle.create_goal_program(
 		session,
 		now,
@@ -2457,6 +2594,88 @@ def handle_start_goal(
 			)
 
 
+def handle_request_goal_revision(
+	session: dict[str, Any],
+	text: str,
+	*,
+	repo_root: str | Path | None = None,
+	session_ref: str | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
+	auto_consume_executor: bool = False,
+	governor_runtime: str = "exec",
+) -> None:
+	now = utc_now()
+	model = session["model"]
+	if session_ref is not None and not session_guards.session_ref_matches(model, session_ref):
+		_append_error(
+			model,
+			"Session changed",
+			"The active session changed before this goal revision was requested. Refresh and try again.",
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key="error.session_changed",
+		)
+		return
+	goal_ref = (
+		model.get("currentGoalRef")
+		or model["snapshot"].get("currentGoalRef")
+		or session.get("meta", {}).get("activeGoalRef")
+	)
+	if not isinstance(goal_ref, str) or not goal_ref.strip() or model["snapshot"].get("goalStatus") != "active":
+		_append_error(
+			model,
+			"No active goal",
+			"Corgi can revise a goal only while a goal program is active.",
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key="goal.blocked",
+			presentation_args={"reason": "no_active_goal"},
+		)
+		return
+	plan_ready = model.get("planReadyRequest")
+	expected_context_ref = plan_ready.get("contextRef") if isinstance(plan_ready, dict) else None
+	if not session_guards.context_matches(expected_context_ref, context_ref):
+		_append_error(
+			model,
+			"Stale goal context",
+			"The active goal step changed before this goal revision was requested. Refresh and try again.",
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key="error.stale_context",
+		)
+		return
+	revision_reason = trim_text(text) or "The current goal path needs adjustment."
+	goal_payload = session_goal_lifecycle.load_goal(goal_ref, repo_root=repo_root)
+	goal_text = trim_text(goal_payload.get("original_goal")) or trim_text(goal_payload.get("title"))
+	if request_id:
+		model["activeForegroundRequestId"] = request_id
+	if governor_runtime != "external":
+		model["activeForegroundRequestId"] = None
+		_append_error(
+			model,
+			"Goal revision needs Governor",
+			"Goal-plan revision requires the external Governor runtime.",
+			now,
+			in_response_to_request_id=request_id,
+			presentation_key="goal.blocked",
+			presentation_args={"reason": "governor_runtime_required"},
+		)
+		return
+	_prepare_governor_goal_revision_runtime_request(
+		session,
+		goal_ref,
+		goal_text,
+		revision_reason,
+		now,
+		repo_root=repo_root,
+		request_id=request_id,
+		context_ref=context_ref,
+		auto_consume_executor_after_plan=auto_consume_executor,
+		auto_governor_runtime_after_plan=governor_runtime,
+	)
+
+
 def handle_revise_plan(
 	session: dict[str, Any],
 	text: str,
@@ -2690,6 +2909,17 @@ def dispatch_session_action(
 			repo_root=repo_root,
 			session_ref=session_ref,
 			request_id=request_id,
+			auto_consume_executor=auto_consume_executor,
+			governor_runtime=governor_runtime,
+		)
+	elif command == "request_goal_revision":
+		handle_request_goal_revision(
+			session,
+			text or "",
+			repo_root=repo_root,
+			session_ref=session_ref,
+			request_id=request_id,
+			context_ref=context_ref,
 			auto_consume_executor=auto_consume_executor,
 			governor_runtime=governor_runtime,
 		)

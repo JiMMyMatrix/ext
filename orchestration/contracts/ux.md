@@ -92,6 +92,8 @@ Stateful control commands:
 - `decline-permission`
 - `execute-plan`
 - `revise-plan`
+- `request-goal-revision` (orchestration/CLI goal maintenance; not a default
+  user-facing button in V1)
 - `interrupt`
 - `reconnect`
 
@@ -168,6 +170,14 @@ preconditions must fail closed and must not trigger route guessing.
   - should carry the current `session_ref` once a session exists
   - requires the plan-ready `context_ref`
   - stays in Governor planning/dialogue mode and must not enable Executor
+- `request-goal-revision`
+  - requires an active foreground goal and a current `planReadyRequest`
+  - should carry the current `session_ref` once a session exists
+  - requires the plan-ready `context_ref`
+  - may ask Governor to revise the unfinished goal path under the same
+    `goal_ref`
+  - must preserve completed steps, increment goal plan version, and must not
+    create a new parent goal
 - `interrupt`
   - requires an interruptible running session state
   - should carry the current `session_ref` once a session exists
@@ -238,6 +248,12 @@ Goal programs are a parent orchestration layer above existing accepted work:
 - Governor-proposed plans and deterministic test-template plans must both be
   explicitly sourced; orchestration drives validated step sequencing and must
   not skip blocked or failed steps
+- Governor may propose a goal-plan revision, or orchestration may request one,
+  but the revision must keep the same `goal_ref`, preserve completed steps,
+  increment `goal_plan.plan_version`, and replace only the current/remaining
+  unfinished steps
+- goal-plan revision is not dispatch truth and must not silently grant
+  permission, start Executor, or create a new parent goal
 
 ## Internal Provenance
 Meaningful feed items should carry internal provenance for traceability and
@@ -313,6 +329,12 @@ Visibility policy:
 Routine Executor, Reviewer, dispatch, advisor, validation, retry, and
 finalization events should render as brief activity first. Governor prose
 remains the main readable transcript layer.
+
+Declared-output recovery is also activity-first. User-facing copy should be
+compact, for example `Step needs recovery`, `Restoring declared output`,
+`Retrying step`, or `Recovery blocked`. Recovery manifests, baseline blobs,
+hashes, dispatch refs, and recovery result artifacts stay behind `View source`
+or details.
 
 Actor readouts should use stable presentation keys when the data is available:
 

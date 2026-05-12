@@ -25,6 +25,13 @@ from orchestration.harness.authorship_evidence import (
     capture_signatures,
     normalized_required_outputs,
 )
+from orchestration.harness.recovery import (
+    apply_recovery_manifest,
+    load_current_signatures,
+    load_recovery_manifest,
+    validate_recovery_manifest,
+    write_recovery_manifest,
+)
 from orchestration.harness.start_guard import (
     ensure_dispatch_startable,
     ensure_lane_worktree_tracked,
@@ -59,7 +66,11 @@ ALLOWED_TRANSITIONS = {
 }
 
 SUBAGENT_ONLY_MODES = {"guided_agent", "strict_refactor"}
-SUPPORTED_HELPER_RUNTIME_MODES = {"command_chain", "manual_artifact_report"}
+SUPPORTED_HELPER_RUNTIME_MODES = {
+    "command_chain",
+    "manual_artifact_report",
+    "declared_output_recovery",
+}
 UNSUPPORTED_IN_ORCHESTRATION_PORT_MODES = {
     "report_only_demo",
     "sample_correctness_chain",
@@ -442,6 +453,68 @@ def execute_manual_artifact_report(repo_root: Path, dispatch_dir: Path, request:
         claims=payload.get("claims"),
         injected_weakness_guards=injected_weakness_guards,
     )
+    produced.extend(relative_path(Path(path), repo_root) for path in run_written)
+    return dedupe_preserve_order(produced)
+
+
+def execute_declared_output_recovery(
+    repo_root: Path,
+    dispatch_dir: Path,
+    request: Dict,
+    run_dir: Path,
+) -> List[str]:
+    del dispatch_dir
+    payload = request.get("execution_payload", {})
+    manifest_ref = payload.get("recovery_manifest_ref")
+    if not isinstance(manifest_ref, str) or not manifest_ref.strip():
+        raise SystemExit("declared_output_recovery dispatch requires execution_payload.recovery_manifest_ref")
+    current_signatures_ref = payload.get("current_signatures_ref")
+    if not isinstance(current_signatures_ref, str) or not current_signatures_ref.strip():
+        raise SystemExit("declared_output_recovery dispatch requires execution_payload.current_signatures_ref")
+    manifest = load_recovery_manifest(repo_root, manifest_ref)
+    current_signatures = load_current_signatures(repo_root, current_signatures_ref)
+    failures = validate_recovery_manifest(
+        repo_root,
+        request,
+        manifest,
+        current_signatures=current_signatures,
+    )
+    if failures:
+        raise SystemExit("stale_or_invalid_recovery_manifest: " + "; ".join(failures))
+
+    recovery_result = apply_recovery_manifest(
+        repo_root,
+        manifest,
+        current_signatures=current_signatures,
+    )
+    recovery_result["manifest_ref"] = manifest_ref
+    recovery_result["current_signatures_ref"] = current_signatures_ref
+    result_path = run_dir / "recovery_result.json"
+    write_json(result_path, recovery_result)
+    result_ref = relative_path(result_path, repo_root)
+    if recovery_result.get("blockers"):
+        raise SystemExit("declared_output_recovery_failed: " + ", ".join(recovery_result["blockers"]))
+
+    summary = recovery_result.get("summary", {})
+    summary_text = (
+        "Executor restored declared outputs "
+        f"(deleted={summary.get('deleted', 0)}, restored={summary.get('restored', 0)}, "
+        f"skipped={summary.get('skipped', 0)})."
+    )
+    run_written = write_executor_run_completion(
+        run_dir,
+        summary=payload.get("summary") or summary_text,
+        outputs=[result_ref],
+        evidence=payload.get("evidence", []) + [f"recovery_result={result_ref}"],
+        next_action=payload.get("next_action")
+        or "Governor should retry or revise the current work after declared-output recovery.",
+        claims=payload.get("claims")
+        or [
+            "Executor applied an orchestration-validated declared-output recovery manifest.",
+            "Only manifest-declared outputs were restored or removed.",
+        ],
+    )
+    produced = [result_ref]
     produced.extend(relative_path(Path(path), repo_root) for path in run_written)
     return dedupe_preserve_order(produced)
 
@@ -1580,6 +1653,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         authorship_outputs = normalized_required_outputs(request)
         baseline_signatures = {}
         baseline_signatures_ref = None
+        recovery_manifest_ref = None
         if authorship_required:
             if not authorship_outputs:
                 raise SystemExit("authorship evidence requires at least one required_output")
@@ -1597,12 +1671,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                 },
             )
             baseline_signatures_ref = relative_path(baseline_path, repo_root)
+            _recovery_manifest, recovery_manifest_ref = write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline_signatures,
+                baseline_signatures_ref=baseline_signatures_ref,
+            )
         try:
             execution_mode = request.get("execution_mode") or "manual_artifact_report"
             if execution_mode == "command_chain":
                 produced = execute_command_chain(repo_root, dispatch_dir, request, run_dir)
             elif execution_mode == "manual_artifact_report":
                 produced = execute_manual_artifact_report(repo_root, dispatch_dir, request, run_dir)
+            elif execution_mode == "declared_output_recovery":
+                produced = execute_declared_output_recovery(repo_root, dispatch_dir, request, run_dir)
             elif execution_mode in SUBAGENT_ONLY_MODES:
                 escalation_path = write_escalation(
                     dispatch_dir,
@@ -1705,6 +1788,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "dispatch_ref": request["dispatch_ref"],
                         "executor_run_ref": executor_run["run_ref"],
                         "baseline_signatures_ref": baseline_signatures_ref,
+                        "recovery_manifest_ref": recovery_manifest_ref,
                         **authorship_evidence,
                     },
                 )
@@ -1748,6 +1832,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "schema_version": authorship_evidence["schema_version"],
                     "baseline_ref": baseline_signatures_ref,
                     "after_ref": output_signatures_ref,
+                    "recovery_manifest_ref": recovery_manifest_ref,
                     "required_outputs": authorship_evidence["required_outputs"],
                     "summary": authorship_evidence["summary"],
                     "verified": authorship_evidence["verified"],

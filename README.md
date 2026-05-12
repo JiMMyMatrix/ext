@@ -26,6 +26,22 @@ That means:
 - the human should only be interrupted at a real blocker, authority boundary,
   safety boundary, or merge checkpoint
 - workflow truth should remain artifact-based
+- large goals should advance through bounded Governor / Executor / Reviewer
+  steps until the goal is complete or blocked
+
+## Current Capability Kernel
+Corgi is organized around a governed G/E/R lifecycle:
+- the Governor owns planning, dialogue, goal decomposition, and final decisions
+- the Executor is the only actor that may perform substantive project writes
+- the Reviewer is read-only and advisory
+- orchestration validates permission, session/context freshness, dispatch
+  legality, authorship evidence, recovery safety, and continuation rules
+
+Current work supports goal programs, per-step work bundles, bounded retry,
+declared-output recovery, conservative parallel dispatch metadata, and compact
+activity readouts for Executor / Reviewer / finalization events. Goal progress
+lives under `.agent/goals/`; accepted step work remains under `.agent/work/`;
+`request.json` remains dispatch truth only.
 
 ## Canonical Docs
 Start here:
@@ -53,27 +69,55 @@ sidebar UX.
 The long-term direction is:
 - keep the UI concise and Codex-like
 - keep the backend architecture custom and harness-driven
+- show one active goal, one current step, and compact activity/status rows
+- keep raw workflow refs, signatures, and source artifacts behind details
 
 ## Local Development
-Use the repo itself as the workspace when testing the sidebar locally.
+Install dependencies once with `npm install`, then use the scripts below for
+repeatable development checks.
 
-Typical flow:
-1. Open this repo as the current VS Code workspace.
-2. Optionally seed `.agent` state with
-   `python3 orchestration/scripts/load_scenario_fixture.py --scenario <name> --root . --replace`.
-3. Press `F5` to launch the Extension Development Host.
-4. Click the `Corgi` icon in the Activity Bar.
+Common checks:
+- `npm run check-types`
+- `npm run lint`
+- `npm test`
+- `npm run test:orchestration`
+- `npm run test:process:completion`
 
-The debug launch now opens this repo as the workspace automatically. If Corgi
-shows a blocking error about a missing orchestration workspace, reopen the repo
-folder that contains `orchestration/scripts/orchestrate.py` and then reopen the
-sidebar.
+Command-only process tests are the first correctness gate. They run Corgi
+against isolated scratch workspaces and prove real project creation, bugfix,
+feature, retry, reviewer, executor, and multi-step goal flows without opening a
+UI window.
 
-If the Extension Development Host still opens without a visible workspace,
-Corgi now falls back to the extension development repo root in development mode
-so the real orchestration path can still load. The blocking error means neither
-the opened workspace nor the development repo root contained
-`orchestration/scripts/orchestrate.py`.
+## Test Window
+Use the test-window scripts for UI/UX verification after command-only process
+checks pass.
+
+Default scratch test window:
+
+```sh
+npm run test:window
+```
+
+Automated scratch E2E:
+
+```sh
+npm run test:window:auto
+```
+
+Useful variants:
+- `npm run test:window:empty` opens an empty isolated workspace.
+- `npm run test:window:project:auto` runs the Pet Life Diary bugfix flow.
+- `npm run test:window:feature-app:auto` runs the existing-app feature flow.
+- `npm run test:window:project-retry:auto` runs the reviewer-retry flow.
+- `npm run test:window:close` closes the Corgi test window safely.
+- `npm run test:window:status` prints the latest monitored test-window state.
+
+The test window is intentionally isolated from the development repo by default.
+Its root is under `~/.corgi/test-window/extension-ext/`, and scratch workspaces
+live under that root's `scratch-workspaces/` directory. Repo-mode test scripts
+exist for architecture smoke tests, but real project creation and mutation
+tests should use scratch mode so project files are never written into this
+source tree.
 
 If you ever see canned artifact references like `orchestration/README.md` or
 `orchestration/contracts/intake.json` as the active runtime state, that means

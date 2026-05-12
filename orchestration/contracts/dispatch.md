@@ -52,6 +52,15 @@ Dispatch truth starts after intake acceptance.
   that output in `authorship_evidence.idempotent_output_allowed`
 - `governor_decision.json` must not accept a file-producing attempt whose
   authorship evidence is missing, stale, blocked, or unverifiable
+- failed file-producing attempts may use declared-output recovery only when a
+  `corgi.recovery_manifest.v1` manifest proves the rollback is limited to
+  non-idempotent declared `required_outputs`
+- declared-output recovery dispatches must also carry the failed attempt's
+  current output signatures so recovery refuses stale project state
+- Orchestration validates recovery manifests, but Executor performs any delete
+  or restore action as the only substantive writer
+- undeclared writes, stale recovery manifests, unsupported baselines, and unsafe
+  parallel recovery fail closed instead of being rolled back by guesswork
 - after the bounded retry limit is reached, the work bundle status must become
   blocked with an explicit `revision_limit_reached` reason rather than staying
   in a replan-ready state
@@ -85,6 +94,7 @@ Dispatch truth starts after intake acceptance.
 - helper-runtime modes currently shipped:
   - `command_chain`
   - `manual_artifact_report`
+  - `declared_output_recovery`
 - live-subagent modes preserved:
   - `guided_agent`
   - `strict_refactor`

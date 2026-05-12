@@ -59,6 +59,9 @@ const SUMMARY_COPY: Record<string, string> = {
 	reviewer_completed: 'Checked result',
 	reviewer_blocked: 'Reviewer blocked',
 	plan_revision: 'Revising plan',
+	recovery_needed: 'Step needs recovery',
+	recovery_running: 'Restoring declared output',
+	recovery_blocked: 'Recovery blocked',
 	advisor_consulting: 'Consulting advisor',
 	governor_decision_recorded: 'Final decision recorded',
 	governor_finalization_blocked: 'Final decision blocked',
@@ -70,6 +73,9 @@ const PRESENTATION_ACTIVITY_KEYS: Record<string, string> = {
 	'executor.blocked': 'executor_blocked',
 	'reviewer.completed': 'reviewer_completed',
 	'reviewer.blocked': 'reviewer_blocked',
+	'recovery.needed': 'recovery_needed',
+	'recovery.running': 'recovery_running',
+	'recovery.blocked': 'recovery_blocked',
 	'governor.final_decision': 'governor_decision_recorded',
 	'governor.finalization_blocked': 'governor_finalization_blocked',
 };
@@ -212,6 +218,15 @@ function activityKeyForFeedItem(item: FeedItem): string | undefined {
 	}
 	if (title === 'reviewer requested changes') {
 		return 'reviewer_request_changes';
+	}
+	if (title === 'step needs recovery') {
+		return 'recovery_needed';
+	}
+	if (title === 'restoring declared output') {
+		return 'recovery_running';
+	}
+	if (title === 'recovery blocked') {
+		return 'recovery_blocked';
 	}
 	if (title === 'governor decision recorded') {
 		return 'governor_decision_recorded';

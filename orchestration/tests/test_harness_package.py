@@ -22,6 +22,7 @@ from orchestration.harness import (
     intake,
     parallel_dispatch,
     patch_specs,
+    recovery,
     reviewer,
     runtime_support,
     session,
@@ -4201,6 +4202,395 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertTrue(evidence["verified"])
             self.assertEqual(evidence["blockers"], [])
 
+    def _recovery_request(
+        self,
+        *,
+        required_outputs: list[str] | None = None,
+        idempotent: list[str] | None = None,
+    ) -> dict:
+        return {
+            "dispatch_ref": "lane/test/dispatch-001",
+            "work_ref": "lane/test/work-001",
+            "attempt_number": 1,
+            "plan_version": 1,
+            "required_outputs": required_outputs or ["README.md"],
+            "authorship_evidence": {
+                "schema_version": "corgi.executor-authorship.v1",
+                "required": True,
+                "idempotent_output_allowed": idempotent or [],
+            },
+        }
+
+    def _current_output_signatures(
+        self,
+        repo_root: Path,
+        request: dict,
+        baseline: dict[str, dict],
+    ) -> dict:
+        after = authorship_evidence.capture_signatures(
+            repo_root,
+            request.get("required_outputs", []),
+        )
+        return authorship_evidence.build_evidence_payload(repo_root, request, baseline, after)
+
+    def test_recovery_manifest_deletes_created_declared_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            (repo_root / "README.md").write_text("created by executor\n", encoding="utf-8")
+
+            failures = recovery.validate_recovery_manifest(repo_root, request, manifest)
+            result = recovery.apply_recovery_manifest(repo_root, manifest)
+
+            self.assertEqual(failures, [])
+            self.assertEqual(manifest_ref, ".agent/runs/run-1/recovery_manifest.json")
+            self.assertTrue(result["verified"])
+            self.assertFalse((repo_root / "README.md").exists())
+            self.assertEqual(result["summary"]["deleted"], 1)
+
+    def test_recovery_manifest_restores_mutated_declared_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            readme = repo_root / "README.md"
+            readme.write_text("baseline content\n", encoding="utf-8")
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            readme.write_text("bad mutation\n", encoding="utf-8")
+
+            result = recovery.apply_recovery_manifest(repo_root, manifest)
+
+            self.assertTrue(result["verified"])
+            self.assertEqual(readme.read_text(encoding="utf-8"), "baseline content\n")
+            self.assertEqual(result["summary"]["restored"], 1)
+
+    def test_recovery_manifest_skips_idempotent_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            (repo_root / "README.md").write_text("stable generated content\n", encoding="utf-8")
+            request = self._recovery_request(idempotent=["README.md"])
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            result = recovery.apply_recovery_manifest(repo_root, manifest)
+
+            self.assertEqual(manifest["required_outputs"], [])
+            self.assertEqual(manifest["outputs"], {})
+            self.assertTrue(result["verified"])
+
+    def test_recovery_manifest_rejects_undeclared_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            manifest["outputs"]["src/app.js"] = {
+                "path": "src/app.js",
+                "planned_action": "delete_created",
+                "rollback_available": True,
+            }
+
+            failures = recovery.validate_recovery_manifest(repo_root, request, manifest)
+
+            self.assertIn(
+                "recovery_manifest path is not an allowed recovery output: src/app.js",
+                failures,
+            )
+
+    def test_recovery_manifest_missing_blob_blocks_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            (repo_root / "README.md").write_text("baseline content\n", encoding="utf-8")
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            manifest["outputs"]["README.md"]["baseline_blob_ref"] = ".agent/runs/run-1/missing.blob"
+
+            failures = recovery.validate_recovery_manifest(repo_root, request, manifest)
+
+            self.assertIn(
+                "recovery_manifest baseline blob missing for README.md",
+                failures,
+            )
+
+    def test_recovery_manifest_tampered_action_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            (repo_root / "README.md").write_text("baseline content\n", encoding="utf-8")
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            manifest["outputs"]["README.md"]["planned_action"] = "delete_created"
+
+            failures = recovery.validate_recovery_manifest(repo_root, request, manifest)
+
+            self.assertIn(
+                "recovery_manifest planned action for README.md must be restore_baseline",
+                failures,
+            )
+
+    def test_recovery_manifest_tampered_baseline_blob_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            (repo_root / "README.md").write_text("baseline content\n", encoding="utf-8")
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            blob_ref = manifest["outputs"]["README.md"]["baseline_blob_ref"]
+            recovery.resolve_repo_local(repo_root, blob_ref).write_text(
+                "not the baseline\n",
+                encoding="utf-8",
+            )
+
+            failures = recovery.validate_recovery_manifest(repo_root, request, manifest)
+
+            self.assertIn(
+                "recovery_manifest baseline blob does not match baseline for README.md",
+                failures,
+            )
+
+    def test_recovery_manifest_tampered_baseline_signature_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            (repo_root / "README.md").write_text("baseline content\n", encoding="utf-8")
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            manifest["outputs"]["README.md"]["baseline"] = {
+                **manifest["outputs"]["README.md"]["baseline"],
+                "sha256": "tampered",
+            }
+
+            failures = recovery.validate_recovery_manifest(repo_root, request, manifest)
+
+            self.assertIn(
+                "recovery_manifest baseline signature mismatch for README.md",
+                failures,
+            )
+
+    def test_recovery_manifest_current_output_drift_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            readme = repo_root / "README.md"
+            readme.write_text("baseline content\n", encoding="utf-8")
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            readme.write_text("failed attempt mutation\n", encoding="utf-8")
+            current_signatures = self._current_output_signatures(repo_root, request, baseline)
+            readme.write_text("newer unrelated mutation\n", encoding="utf-8")
+
+            failures = recovery.validate_recovery_manifest(
+                repo_root,
+                request,
+                manifest,
+                current_signatures=current_signatures,
+            )
+            result = recovery.apply_recovery_manifest(
+                repo_root,
+                manifest,
+                current_signatures=current_signatures,
+            )
+
+            self.assertIn(
+                "recovery_manifest current output changed since failed attempt: README.md",
+                failures,
+            )
+            self.assertFalse(result["verified"])
+            self.assertIn(
+                "recovery_failed:README.md:current output changed since failed attempt",
+                result["blockers"],
+            )
+            self.assertEqual(readme.read_text(encoding="utf-8"), "newer unrelated mutation\n")
+
+    def test_recovery_manifest_stale_attempt_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            stale_request = {**request, "attempt_number": 2}
+
+            failures = recovery.validate_recovery_manifest(repo_root, stale_request, manifest)
+
+            self.assertIn("recovery_manifest attempt_number mismatch", failures)
+
+    def test_recovery_manifest_allows_separate_recovery_dispatch_for_prior_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            manifest, _manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            recovery_dispatch = {
+                **request,
+                "dispatch_ref": "lane/test/dispatch-recovery-001",
+                "revision_of_dispatch_ref": request["dispatch_ref"],
+            }
+
+            failures = recovery.validate_recovery_manifest(repo_root, recovery_dispatch, manifest)
+
+            self.assertNotIn("recovery_manifest dispatch_ref mismatch", failures)
+
+    def test_executor_recovery_mode_restores_declared_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            run_dir = repo_root / ".agent/runs/run-1"
+            run_dir.mkdir(parents=True)
+            (run_dir / "report.json").write_text('{"state":"running"}\n', encoding="utf-8")
+            (run_dir / "status.json").write_text('{"state":"running"}\n', encoding="utf-8")
+            readme = repo_root / "README.md"
+            readme.write_text("baseline content\n", encoding="utf-8")
+            request = self._recovery_request()
+            baseline = authorship_evidence.capture_signatures(repo_root, ["README.md"])
+            write_json(
+                run_dir / "baseline_signatures.json",
+                {
+                    "schema_version": "corgi.executor-authorship.v1",
+                    "dispatch_ref": request["dispatch_ref"],
+                    "required_outputs": ["README.md"],
+                    "signatures": baseline,
+                },
+            )
+            _manifest, manifest_ref = recovery.write_recovery_manifest(
+                repo_root,
+                request,
+                run_dir=run_dir,
+                baseline_signatures=baseline,
+                baseline_signatures_ref=".agent/runs/run-1/baseline_signatures.json",
+            )
+            readme.write_text("bad mutation\n", encoding="utf-8")
+            current_signatures = self._current_output_signatures(repo_root, request, baseline)
+            current_signatures_ref = ".agent/runs/run-1/current_signatures.json"
+            write_json(repo_root / current_signatures_ref, current_signatures)
+            request = {
+                **request,
+                "execution_payload": {
+                    "recovery_manifest_ref": manifest_ref,
+                    "current_signatures_ref": current_signatures_ref,
+                },
+            }
+
+            produced = executor_runtime.execute_declared_output_recovery(
+                repo_root,
+                repo_root / ".agent/dispatches/lane/test/dispatch-001",
+                request,
+                run_dir,
+            )
+
+            self.assertEqual(readme.read_text(encoding="utf-8"), "baseline content\n")
+            self.assertIn(".agent/runs/run-1/recovery_result.json", produced)
+
+    def test_recovery_dispatch_requires_manifest_ref(self) -> None:
+        request = {
+            "dispatch_ref": "lane/test/dispatch-001",
+            "from_role": "agentA",
+            "to_role": "agentB",
+            "objective": "Recover declared output",
+            "scope": ["README.md"],
+            "non_goals": [],
+            "inputs": [],
+            "required_outputs": ["README.md"],
+            "acceptance_criteria": ["declared output restored"],
+            "required_validators": ["manual verification"],
+            "stop_conditions": ["block on ambiguity"],
+            "report_format": ["summary"],
+            "execution_mode": "declared_output_recovery",
+            "execution_payload": {},
+            "depends_on_dispatches": [],
+            "scope_reservations": ["README.md"],
+        }
+        failures: list[str] = []
+
+        dispatch_contracts.validate_request(request, failures)
+
+        self.assertIn(
+            "declared_output_recovery dispatch requires execution_payload.recovery_manifest_ref",
+            failures,
+        )
+        self.assertIn(
+            "declared_output_recovery dispatch requires execution_payload.current_signatures_ref",
+            failures,
+        )
+
     def test_authorship_evidence_rejects_boolean_idempotent_allowance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir)
@@ -5060,4 +5450,178 @@ class HarnessPackageTests(unittest.TestCase):
                     and item.get("presentation_args", {}).get("reason") == "invalid_goal_plan"
                     for item in completed["feed"]
                 )
+            )
+
+    def test_goal_revision_preserves_completed_steps_under_same_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            model = session.dispatch_session_action(
+                "start_goal",
+                text="Build a polished Pet Life Diary demo.",
+                repo_root=repo_root,
+                request_id="goal-revision-start",
+            )
+            goal_ref = model["snapshot"]["currentGoalRef"]
+            payload = session.load_session(repo_root)
+            payload["model"]["snapshot"]["currentStage"] = "governor_decision_recorded"
+            payload["model"]["snapshot"]["latestGovernorDecision"] = "accept"
+            payload["model"]["snapshot"]["latestGovernorDecisionRef"] = ".agent/fake/decision-step-1.json"
+            payload["model"]["snapshot"]["currentWorkRef"] = "lane/main/work-step-1"
+            outcome = session_goal_lifecycle.advance_goal_after_decision(
+                payload,
+                "2026-04-10T10:00:00Z",
+                next_id=lambda prefix: f"{prefix}-goal-revision",
+                artifact_factory=lambda ref, **kwargs: {"ref": ref, **kwargs},
+                feed_item=lambda kind, title, body, **kwargs: {
+                    "type": kind,
+                    "title": title,
+                    "body": body,
+                    **kwargs,
+                },
+                repo_root=repo_root,
+            )
+            self.assertEqual(outcome, "next_step")
+            context_ref = payload["model"]["planReadyRequest"]["contextRef"]
+            session.save_session(payload, repo_root=repo_root)
+
+            prepared = session.dispatch_session_action(
+                "request_goal_revision",
+                text="The remaining goal needs a smaller visible demo-polish step.",
+                repo_root=repo_root,
+                request_id="goal-revision-request",
+                context_ref=context_ref,
+                governor_runtime="external",
+            )
+
+            self.assertEqual(prepared["kind"], "governor_runtime_request")
+            runtime_request = prepared["request"]
+            self.assertEqual(runtime_request["runtimeKind"], "goal_plan")
+            self.assertEqual(runtime_request["context"]["goalRef"], goal_ref)
+            self.assertEqual(runtime_request["context"]["currentStage"], "plan_ready")
+
+            completed = session.dispatch_session_action(
+                "complete_governor_turn",
+                repo_root=repo_root,
+                runtime_request_id=runtime_request["runtimeRequestId"],
+                runtime_body=json.dumps(
+                    {
+                        "user_visible_reply": "I narrowed the remaining goal path.",
+                        "steps": [
+                            {
+                                "title": "Polish the demo experience",
+                                "objective": "Polish the existing Pet Life Diary demo so the visible flow feels ready to show.",
+                                "expected_output": "README.md and app copy explain the demo and visible flow clearly.",
+                            }
+                        ],
+                    }
+                ),
+                runtime_thread_id="app-thread-goal-revision",
+            )
+
+            snapshot = completed["snapshot"]
+            self.assertEqual(snapshot["currentGoalRef"], goal_ref)
+            self.assertEqual(snapshot["currentStage"], "plan_ready")
+            self.assertEqual(snapshot["currentGoalStepIndex"], 2)
+            goal_dir = repo_root / ".agent" / "goals" / goal_ref
+            goal_plan = load_json(goal_dir / "goal_plan.json")
+            goal_progress = load_json(goal_dir / "goal_progress.json")
+            self.assertEqual(goal_plan["plan_version"], 2)
+            self.assertEqual(goal_plan["last_revision_reason"], "The remaining goal needs a smaller visible demo-polish step.")
+            history = goal_plan["revision_history"][-1]
+            self.assertEqual(history["preserved_step_refs"], ["step-01"])
+            self.assertIn("step-02", history["replaced_step_refs"])
+            self.assertEqual(goal_plan["steps"][0]["step_ref"], "step-01")
+            self.assertEqual(goal_plan["steps"][0]["status"], "completed")
+            self.assertEqual(goal_plan["steps"][1]["step_ref"], "step-02")
+            self.assertEqual(goal_plan["steps"][1]["title"], "Polish the demo experience")
+            self.assertEqual(goal_progress["current_step_ref"], "step-02")
+            self.assertEqual(len(goal_progress["completed_steps"]), 1)
+            self.assertTrue(
+                any(
+                    item.get("turn_type") == "goal_revision"
+                    and item.get("source_actor") == "governor"
+                    for item in completed["feed"]
+                )
+            )
+            self.assertTrue(
+                any(item.get("presentation_key") == "goal.plan_revised" for item in completed["feed"])
+            )
+
+    def test_invalid_goal_revision_blocks_same_goal_without_new_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            model = session.dispatch_session_action(
+                "start_goal",
+                text="Build a polished Pet Life Diary demo.",
+                repo_root=repo_root,
+                request_id="goal-invalid-revision-start",
+            )
+            goal_ref = model["snapshot"]["currentGoalRef"]
+            context_ref = model["planReadyRequest"]["contextRef"]
+            prepared = session.dispatch_session_action(
+                "request_goal_revision",
+                text="The current goal path is too broad.",
+                repo_root=repo_root,
+                request_id="goal-invalid-revision-request",
+                context_ref=context_ref,
+                governor_runtime="external",
+            )
+            runtime_request = prepared["request"]
+
+            completed = session.dispatch_session_action(
+                "complete_governor_turn",
+                repo_root=repo_root,
+                runtime_request_id=runtime_request["runtimeRequestId"],
+                runtime_body=json.dumps({"user_visible_reply": "I revised it.", "steps": []}),
+            )
+
+            self.assertEqual(completed["snapshot"]["currentGoalRef"], goal_ref)
+            self.assertEqual(completed["snapshot"]["goalStatus"], "blocked")
+            self.assertEqual(completed["snapshot"]["currentStage"], "goal_blocked")
+            goal_dir = repo_root / ".agent" / "goals" / goal_ref
+            self.assertEqual(load_json(goal_dir / "goal.json")["status"], "blocked")
+            self.assertEqual(load_json(goal_dir / "goal_progress.json")["blocked_reason"], "invalid_goal_revision")
+            self.assertTrue(
+                any(
+                    item.get("presentation_key") == "goal.blocked"
+                    and item.get("presentation_args", {}).get("reason") == "invalid_goal_plan"
+                    for item in completed["feed"]
+                )
+            )
+
+    def test_goal_revision_requires_fresh_plan_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            model = session.dispatch_session_action(
+                "start_goal",
+                text="Build a polished Pet Life Diary demo.",
+                repo_root=repo_root,
+                request_id="goal-context-start",
+            )
+            self.assertIsInstance(model.get("planReadyRequest"), dict)
+
+            missing = session.dispatch_session_action(
+                "request_goal_revision",
+                text="Revise the remaining path.",
+                repo_root=repo_root,
+                request_id="goal-context-missing",
+                governor_runtime="external",
+            )
+            self.assertNotEqual(missing.get("kind"), "governor_runtime_request")
+            self.assertTrue(
+                any(item.get("presentation_key") == "error.stale_context" for item in missing["feed"])
+            )
+
+            stale = session.dispatch_session_action(
+                "request_goal_revision",
+                text="Revise the remaining path.",
+                repo_root=repo_root,
+                request_id="goal-context-stale",
+                context_ref="plan-ready-stale",
+                governor_runtime="external",
+            )
+            self.assertNotEqual(stale.get("kind"), "governor_runtime_request")
+            self.assertEqual(stale["snapshot"]["currentGoalRef"], model["snapshot"]["currentGoalRef"])
+            self.assertTrue(
+                any(item.get("presentation_key") == "error.stale_context" for item in stale["feed"])
             )

@@ -755,6 +755,12 @@ export function getExecutionWindowClientScript(
 						return 'reviewer_completed';
 					case 'reviewer.blocked':
 						return 'reviewer_blocked';
+					case 'recovery.needed':
+						return 'recovery_needed';
+					case 'recovery.running':
+						return 'recovery_running';
+					case 'recovery.blocked':
+						return 'recovery_blocked';
 					case 'governor.final_decision':
 						return 'governor_decision_recorded';
 					case 'governor.finalization_blocked':
@@ -775,6 +781,15 @@ export function getExecutionWindowClientScript(
 				}
 				if (title === 'reviewer requested changes') {
 					return 'reviewer_request_changes';
+				}
+				if (title === 'step needs recovery') {
+					return 'recovery_needed';
+				}
+				if (title === 'restoring declared output') {
+					return 'recovery_running';
+				}
+				if (title === 'recovery blocked') {
+					return 'recovery_blocked';
 				}
 				if (title === 'governor decision recorded') {
 					return 'governor_decision_recorded';
@@ -810,6 +825,12 @@ export function getExecutionWindowClientScript(
 						return 'Reviewer blocked';
 					case 'plan_revision':
 						return 'Revising plan';
+					case 'recovery_needed':
+						return 'Step needs recovery';
+					case 'recovery_running':
+						return 'Restoring declared output';
+					case 'recovery_blocked':
+						return 'Recovery blocked';
 					case 'advisor_consulting':
 						return 'Consulting advisor';
 					case 'governor_decision_recorded':
@@ -2370,6 +2391,21 @@ export function getExecutionWindowClientScript(
 					return {
 						title: 'Reviewer blocked',
 						body: 'Reviewer could not complete the read-only check. View source for details.',
+					};
+				case 'recovery.needed':
+					return {
+						title: 'Step needs recovery',
+						body: 'Corgi can restore declared outputs before retrying this step.',
+					};
+				case 'recovery.running':
+					return {
+						title: 'Restoring declared output',
+						body: 'Executor is applying the validated recovery manifest.',
+					};
+				case 'recovery.blocked':
+					return {
+						title: 'Recovery blocked',
+						body: 'Corgi could not safely restore declared outputs. View source for details.',
 					};
 				case 'governor.final_decision':
 					return {

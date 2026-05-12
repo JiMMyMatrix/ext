@@ -162,6 +162,69 @@ def resume_governor_goal_plan_prompt(goal_text: str) -> str:
 	)
 
 
+def initial_governor_goal_revision_prompt(
+	goal_text: str,
+	revision_reason: str,
+	completed_steps: list[dict] | None = None,
+	current_step: dict | None = None,
+	remaining_steps: list[dict] | None = None,
+) -> str:
+	completed_summary = _goal_step_summary(completed_steps or [])
+	current_summary = _goal_step_summary([current_step] if isinstance(current_step, dict) else [])
+	remaining_summary = _goal_step_summary(remaining_steps or [])
+	return "\n\n".join(
+		[
+			"Governor goal-plan revision for Corgi.",
+			"Purpose: revise the unfinished portion of one active goal while preserving completed work.",
+			"Authority rules:\n"
+			"- Completed steps are locked; do not ask to redo them unless the revision reason says they are invalid.\n"
+			"- Return only replacement steps for the current and remaining unfinished work.\n"
+			"- Orchestration validates this proposal and keeps the same goalRef.\n"
+			"- Do not create dispatch truth, start execution, or imply Execute permission.\n"
+			"- Prefer 1 to 4 serial steps. Keep every step bounded and testable.\n"
+			"- Return JSON only; no Markdown fences.",
+			"JSON shape:\n"
+			"{\n"
+			'  "user_visible_reply": "short explanation of the revision",\n'
+			'  "steps": [\n'
+			"    {\n"
+			'      "title": "short replacement step title",\n'
+			'      "objective": "specific bounded objective for Executor/Reviewer",\n'
+			'      "expected_output": "concrete output or validation evidence",\n'
+			'      "depends_on_step_ref": null\n'
+			"    }\n"
+			"  ]\n"
+			"}",
+			f"User goal: {trim_text(goal_text)}",
+			f"Revision reason: {trim_text(revision_reason) or 'Goal path needs adjustment.'}",
+			f"Completed steps: {completed_summary or 'none'}",
+			f"Current unfinished step: {current_summary or 'none'}",
+			f"Remaining unfinished steps: {remaining_summary or 'none'}",
+		]
+	)
+
+
+def resume_governor_goal_revision_prompt(goal_text: str, revision_reason: str) -> str:
+	return "\n\n".join(
+		[
+			"Continue as the Governor goal-plan revision planner for Corgi.",
+			"Return JSON only with user_visible_reply and replacement steps for unfinished work.",
+			f"User goal: {trim_text(goal_text)}",
+			f"Revision reason: {trim_text(revision_reason) or 'Goal path needs adjustment.'}",
+		]
+	)
+
+
+def _goal_step_summary(steps: list[dict]) -> str:
+	parts = []
+	for step in steps:
+		title = trim_text(step.get("title"))
+		objective = trim_text(step.get("objective"))
+		if title or objective:
+			parts.append(f"{trim_text(step.get('step_ref')) or '?'}: {title or objective}")
+	return "; ".join(parts)
+
+
 def initial_governor_plan_prompt(context_prompt: str) -> str:
 	return "\n\n".join(
 		[

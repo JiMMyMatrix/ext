@@ -227,3 +227,70 @@ def prepare_governor_goal_plan_runtime_request(
 		transportState="connected",
 	)
 	return pending
+
+
+def prepare_governor_goal_revision_runtime_request(
+	session: dict[str, Any],
+	goal_ref: str,
+	goal_text: str,
+	revision_reason: str,
+	now: str,
+	*,
+	refresh_snapshot: RefreshSnapshot,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	context_ref: str | None = None,
+	completed_steps: list[dict[str, Any]] | None = None,
+	current_step: dict[str, Any] | None = None,
+	remaining_steps: list[dict[str, Any]] | None = None,
+	auto_consume_executor_after_plan: bool = False,
+	auto_governor_runtime_after_plan: str = "exec",
+) -> dict[str, Any]:
+	governor_meta = session_context.governor_dialogue_meta(session)
+	model_name, reasoning = governor_runtime.governor_runtime_settings(repo_root)
+	runtime_request_id = _next_id("governor-runtime")
+	pending = {
+		"runtimeKind": "goal_plan",
+		"runtimeRequestId": runtime_request_id,
+		"requestId": request_id,
+		"preferredAppServerThreadId": governor_meta.get("appServerThreadId")
+		if isinstance(governor_meta.get("appServerThreadId"), str)
+		else None,
+		"initialPrompt": governor_runtime.initial_governor_goal_revision_prompt(
+			goal_text,
+			revision_reason,
+			completed_steps=completed_steps,
+			current_step=current_step,
+			remaining_steps=remaining_steps,
+		),
+		"resumePrompt": governor_runtime.resume_governor_goal_revision_prompt(goal_text, revision_reason),
+		"model": model_name,
+		"reasoning": reasoning,
+		"resultStage": "goal_revision_ready",
+		"createdAt": now,
+		"prompt": goal_text,
+		"goalRef": goal_ref,
+		"revisionReason": revision_reason,
+		"details": ["Governor is revising the unfinished portion of the active goal."],
+		"primaryRef": None,
+		"turnType": "goal_revision",
+		"autoConsumeExecutorAfterPlan": auto_consume_executor_after_plan,
+		"autoGovernorRuntimeAfterPlan": auto_governor_runtime_after_plan,
+		"context": {
+			"sessionRef": session["model"]["snapshot"].get("sessionRef"),
+			"foregroundRequestId": request_id,
+			"contextRef": context_ref,
+			"currentStage": session["model"]["snapshot"].get("currentStage"),
+			"goalRef": goal_ref,
+		},
+	}
+	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = pending
+	refresh_snapshot(
+		session["model"],
+		now,
+		currentActor="governor",
+		currentStage="goal_planning",
+		runState="running",
+		transportState="connected",
+	)
+	return pending

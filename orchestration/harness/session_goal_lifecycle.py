@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -84,6 +85,10 @@ def load_goal_progress(goal_ref: str, *, repo_root: str | Path | None = None) ->
 	return load_json(goal_progress_path(goal_ref, repo_root=repo_root))
 
 
+def load_goal(goal_ref: str, *, repo_root: str | Path | None = None) -> dict[str, Any]:
+	return load_json(goal_json_path(goal_ref, repo_root=repo_root))
+
+
 def save_goal_progress(
 	goal_ref: str,
 	progress: dict[str, Any],
@@ -125,6 +130,41 @@ def normalize_steps(steps: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
 				"objective": objective,
 				"expected_output": expected_output,
 				"depends_on_step_ref": raw_step.get("depends_on_step_ref"),
+				"prompt_preset": trim_text(raw_step.get("prompt_preset")) or None,
+				"status": "pending",
+				"work_ref": None,
+			}
+		)
+	return normalized
+
+
+def _normalize_steps_from_index(
+	steps: list[dict[str, Any]],
+	*,
+	start_index: int,
+) -> list[dict[str, Any]]:
+	normalized: list[dict[str, Any]] = []
+	local_to_global_refs: dict[str, str] = {}
+	for offset, raw_step in enumerate(steps, start=0):
+		index = start_index + offset
+		local_ref = f"step-{offset + 1:02d}"
+		global_ref = f"step-{index:02d}"
+		local_to_global_refs[local_ref] = global_ref
+		depends_on = raw_step.get("depends_on_step_ref")
+		if isinstance(depends_on, str) and depends_on in local_to_global_refs:
+			depends_on = local_to_global_refs[depends_on]
+		normalized.append(
+			{
+				"step_ref": global_ref,
+				"step_index": index,
+				"title": trim_text(raw_step.get("title")) or f"Goal step {index}",
+				"objective": (
+					trim_text(raw_step.get("objective"))
+					or trim_text(raw_step.get("title"))
+					or f"Goal step {index}"
+				),
+				"expected_output": trim_text(raw_step.get("expected_output")) or "Bounded step output is produced.",
+				"depends_on_step_ref": depends_on or None,
 				"prompt_preset": trim_text(raw_step.get("prompt_preset")) or None,
 				"status": "pending",
 				"work_ref": None,
@@ -258,8 +298,10 @@ def create_goal_program(
 		"schema_version": "corgi.goal_plan.v1",
 		"goal_ref": goal_ref,
 		"created_at": now,
+		"plan_version": 1,
 		"proposed_by": resolved_plan_source,
 		"plan_source": resolved_plan_source,
+		"revision_history": [],
 		"steps": step_payloads,
 	}
 	if resolved_plan_source == "orchestration_template":
@@ -294,6 +336,121 @@ def create_goal_program(
 		"goal_title": goal_title,
 		"steps": step_payloads,
 	}
+
+
+def revise_goal_program(
+	session: dict[str, Any],
+	goal_ref: str,
+	replacement_steps: list[dict[str, Any]],
+	now: str,
+	*,
+	reason: str,
+	next_id: NextId,
+	artifact_factory: ArtifactFactory,
+	feed_item: FeedItemFactory,
+	repo_root: str | Path | None = None,
+) -> dict[str, Any]:
+	model = session["model"]
+	goal_payload = load_goal(goal_ref, repo_root=repo_root)
+	progress = load_goal_progress(goal_ref, repo_root=repo_root)
+	plan = load_goal_plan(goal_ref, repo_root=repo_root)
+	previous_goal_payload = deepcopy(goal_payload)
+	previous_progress = deepcopy(progress)
+	previous_plan = deepcopy(plan)
+	if goal_payload.get("status") != "active" or progress.get("status") != "active":
+		raise GoalPlanValidationError("Only an active goal can be revised.")
+	completed_step_refs = [
+		step.get("step_ref")
+		for step in progress.get("completed_steps", [])
+		if isinstance(step, dict) and isinstance(step.get("step_ref"), str)
+	]
+	old_steps = [step for step in plan.get("steps", []) if isinstance(step, dict)]
+	preserved_steps = [
+		step for step in old_steps if step.get("step_ref") in completed_step_refs
+	]
+	if len(preserved_steps) != len(completed_step_refs):
+		raise GoalPlanValidationError("Completed goal steps could not be preserved.")
+	start_index = len(preserved_steps) + 1
+	new_steps = _normalize_steps_from_index(replacement_steps, start_index=start_index)
+	if not new_steps:
+		raise GoalPlanValidationError("Goal revision must include at least one unfinished step.")
+	previous_version = int(plan.get("plan_version") or 1)
+	next_version = previous_version + 1
+	history = [entry for entry in plan.get("revision_history", []) if isinstance(entry, dict)]
+	history.append(
+		{
+			"from_plan_version": previous_version,
+			"to_plan_version": next_version,
+			"reason": trim_text(reason) or "goal_plan_revision",
+			"revised_at": now,
+			"preserved_step_refs": completed_step_refs,
+			"replaced_step_refs": [
+				step.get("step_ref")
+				for step in old_steps
+				if isinstance(step.get("step_ref"), str) and step.get("step_ref") not in completed_step_refs
+			],
+			"replaced_step_titles": [
+				trim_text(step.get("title"))
+				for step in old_steps
+				if isinstance(step.get("step_ref"), str)
+				and step.get("step_ref") not in completed_step_refs
+				and trim_text(step.get("title"))
+			],
+			"replaced_from_step_index": start_index,
+		}
+	)
+	plan["plan_version"] = next_version
+	plan["last_revised_at"] = now
+	plan["last_revision_reason"] = trim_text(reason) or "goal_plan_revision"
+	plan["last_revised_by"] = "governor"
+	plan["revision_history"] = history
+	plan["steps"] = preserved_steps + new_steps
+	write_json(goal_plan_path(goal_ref, repo_root=repo_root), plan)
+	try:
+		begin_goal_step(
+			session,
+			goal_ref,
+			new_steps[0],
+			now,
+			next_id=next_id,
+			artifact_factory=artifact_factory,
+			feed_item=feed_item,
+			repo_root=repo_root,
+		)
+	except Exception as exc:
+		write_json(goal_plan_path(goal_ref, repo_root=repo_root), previous_plan)
+		save_goal_progress(goal_ref, previous_progress, repo_root=repo_root)
+		write_json(goal_json_path(goal_ref, repo_root=repo_root), previous_goal_payload)
+		raise GoalPlanValidationError("Could not activate the revised goal step.") from exc
+	progress["current_step_ref"] = new_steps[0]["step_ref"]
+	progress["current_step_index"] = new_steps[0]["step_index"]
+	progress["status"] = "active"
+	progress["blocked_reason"] = None
+	progress["updated_at"] = now
+	progress["goal_plan_version"] = next_version
+	save_goal_progress(goal_ref, progress, repo_root=repo_root)
+	goal_payload["updated_at"] = now
+	write_json(goal_json_path(goal_ref, repo_root=repo_root), goal_payload)
+	plan = load_goal_plan(goal_ref, repo_root=repo_root)
+	model["feed"].append(
+		feed_item(
+			"system_status",
+			"Goal plan revised",
+			f"Governor revised the unfinished goal path. Corgi will continue with step {new_steps[0]['step_index']} of {len(plan['steps'])}.",
+			authoritative=True,
+			now=now,
+			source_artifact_ref=repo_relative(goal_plan_path(goal_ref, repo_root=repo_root), repo_root),
+			presentation_key="goal.plan_revised",
+			presentation_args={
+				"goalRef": goal_ref,
+				"planVersion": next_version,
+				"currentStep": new_steps[0]["title"],
+				"stepIndex": new_steps[0]["step_index"],
+				"stepCount": len(plan["steps"]),
+			},
+		)
+	)
+	return {"goal_ref": goal_ref, "plan_version": next_version, "steps": plan["steps"]}
 
 
 def begin_goal_step(
