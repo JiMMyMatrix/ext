@@ -94,7 +94,11 @@ function testWindowAutoPromptAction(
 	}
 
 	const preset = testWindowAutoPromptPreset(context);
-	if (preset === 'pet-life-diary-goal-program' || preset === 'pet-life-diary-goal-review-retry') {
+	if (
+		preset === 'pet-life-diary-goal-program' ||
+		preset === 'pet-life-diary-goal-review-retry' ||
+		preset === 'pet-life-diary-product-goal'
+	) {
 		return 'start_goal';
 	}
 	return 'submit_prompt';

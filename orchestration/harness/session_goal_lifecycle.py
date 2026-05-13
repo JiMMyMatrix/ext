@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -47,6 +48,27 @@ DEFAULT_GOAL_STEPS = [
 		"objective": "Polish the Pet Life Diary README so the project reads like a small portfolio demo. Include demo overview, files, how to open it, and what was improved.",
 		"expected_output": "README.md explains the demo clearly for a human reviewer.",
 		"prompt_preset": "pet-life-diary-readme-polish",
+	},
+]
+
+PRODUCT_GOAL_STEPS = [
+	{
+		"title": "Create the product-scale Pet Life Diary app",
+		"objective": "Build the realistic product-scale Pet Life Diary static web app foundation from scratch. Include multiple screens, local persistence, search and filters, analytics, sample data, validation notes, and several thousand lines of project code/data/docs.",
+		"expected_output": "README.md, index.html, product JavaScript modules, styles, sample data, and validation script exist in the scratch workspace.",
+		"prompt_preset": "pet-life-diary-product-benchmark",
+	},
+	{
+		"title": "Add care routine planning",
+		"objective": "Improve the existing product-scale Pet Life Diary app with a care routine planning surface. Add routine data/state, a routine board UI, and simple documentation while preserving the current app structure.",
+		"expected_output": "index.html, src/state.js, src/ui.js, src/styles.css, and README.md are updated with care routine planning.",
+		"prompt_preset": "pet-life-diary-product-routines",
+	},
+	{
+		"title": "Prepare the portfolio demo handoff",
+		"objective": "Polish the existing Pet Life Diary product demo for portfolio review. Add a concise product spec, strengthen README demo-readiness notes, and update validation notes without recreating the app.",
+		"expected_output": "README.md, docs/product-spec.md, and tests/product-validation.js explain the demo, validation, and review checklist.",
+		"prompt_preset": "pet-life-diary-product-portfolio",
 	},
 ]
 
@@ -328,9 +350,15 @@ def update_goal_plan_step(
 	_write_goal_plan(goal_ref, plan, repo_root=repo_root)
 
 
+def default_goal_steps() -> list[dict[str, Any]]:
+	if os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-product-goal":
+		return PRODUCT_GOAL_STEPS
+	return DEFAULT_GOAL_STEPS
+
+
 def normalize_steps(steps: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
 	normalized: list[dict[str, Any]] = []
-	for index, raw_step in enumerate(steps or DEFAULT_GOAL_STEPS, start=1):
+	for index, raw_step in enumerate(steps or default_goal_steps(), start=1):
 		title = trim_text(raw_step.get("title")) or f"Goal step {index}"
 		objective = trim_text(raw_step.get("objective")) or title
 		expected_output = trim_text(raw_step.get("expected_output")) or "Bounded step output is produced."
@@ -517,7 +545,11 @@ def create_goal_program(
 		"steps": step_payloads,
 	}
 	if resolved_plan_source == "orchestration_template":
-		plan_payload["template_id"] = "pet-life-diary-goal-program-v1"
+		plan_payload["template_id"] = (
+			"pet-life-diary-product-goal-v1"
+			if os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-product-goal"
+			else "pet-life-diary-goal-program-v1"
+		)
 	progress_payload = {
 		"schema_version": "corgi.goal_progress.v1",
 		"goal_ref": goal_ref,

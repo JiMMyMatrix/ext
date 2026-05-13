@@ -42,6 +42,8 @@ def main() -> None:
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--report", required=True)
     parser.add_argument("--min-lines", type=int, default=3000)
+    parser.add_argument("--require-routines", action="store_true")
+    parser.add_argument("--require-portfolio", action="store_true")
     args = parser.parse_args()
 
     root = Path(args.repo_root)
@@ -123,11 +125,51 @@ def main() -> None:
         if not passed:
             failures.append(f"{rel_path} expected at least {minimum} records, found {count}")
 
+    if args.require_routines:
+        routine_markers = {
+            "index.html": ["view-routines", "data-routine-board"],
+            "src/state.js": ["routines:"],
+            "src/ui.js": ["renderRoutineBoard"],
+            "src/styles.css": ["routine-board"],
+            "README.md": ["Care routines"],
+        }
+        for rel_path, markers in routine_markers.items():
+            if not (root / rel_path).exists():
+                failures.append(f"{rel_path} missing for routine validation")
+                add_check(checks, f"routine_file:{rel_path}", False)
+                continue
+            source = read_text(root, rel_path)
+            for marker in markers:
+                passed = marker in source
+                add_check(checks, f"routine_marker:{rel_path}:{marker}", passed)
+                if not passed:
+                    failures.append(f"{rel_path} missing routine marker {marker}")
+
+    if args.require_portfolio:
+        portfolio_markers = {
+            "README.md": ["Demo readiness checklist", "Portfolio narrative"],
+            "docs/product-spec.md": ["Product promise", "Demo acceptance"],
+            "tests/product-validation.js": ["portfolio readiness"],
+        }
+        for rel_path, markers in portfolio_markers.items():
+            if not (root / rel_path).exists():
+                failures.append(f"{rel_path} missing for portfolio validation")
+                add_check(checks, f"portfolio_file:{rel_path}", False)
+                continue
+            source = read_text(root, rel_path)
+            for marker in markers:
+                passed = marker in source
+                add_check(checks, f"portfolio_marker:{rel_path}:{marker}", passed)
+                if not passed:
+                    failures.append(f"{rel_path} missing portfolio marker {marker}")
+
     report = {
         "schema_version": "corgi.pet_diary_product_validation.v1",
         "status": "pass" if not failures else "fail",
         "total_lines": total_lines,
         "min_lines": args.min_lines,
+        "require_routines": bool(args.require_routines),
+        "require_portfolio": bool(args.require_portfolio),
         "line_counts": line_counts,
         "data_counts": data_counts,
         "checks": checks,

@@ -84,7 +84,7 @@ PET_DIARY_OUTPUTS = [
 ]
 
 PET_DIARY_STATIC_TEST_PRESETS = {"pet-life-diary-static", "pet-life-diary-app-store-demo"}
-PET_DIARY_PRODUCT_TEST_PRESETS = {"pet-life-diary-product-benchmark"}
+PET_DIARY_PRODUCT_TEST_PRESETS = {"pet-life-diary-product-benchmark", "pet-life-diary-product-goal"}
 PET_DIARY_BUGFIX_OUTPUTS = ["src/app.js"]
 PET_DIARY_FILTER_OUTPUTS = ["index.html", "src/app.js"]
 PET_DIARY_README_OUTPUTS = ["README.md"]
@@ -102,6 +102,18 @@ PET_DIARY_PRODUCT_OUTPUTS = [
     "src/styles.css",
     "data/sample-pets.json",
     "data/sample-entries.json",
+    "tests/product-validation.js",
+]
+PET_DIARY_PRODUCT_ROUTINE_OUTPUTS = [
+    "README.md",
+    "index.html",
+    "src/state.js",
+    "src/ui.js",
+    "src/styles.css",
+]
+PET_DIARY_PRODUCT_PORTFOLIO_OUTPUTS = [
+    "README.md",
+    "docs/product-spec.md",
     "tests/product-validation.js",
 ]
 
@@ -140,8 +152,34 @@ def is_pet_diary_product_test_dispatch(objective: str, accepted_ref: str | None)
 def is_pet_diary_goal_base_dispatch(accepted_payload: dict[str, Any]) -> bool:
 	return (
 		os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+		and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") != "pet-life-diary-product-goal"
 		and accepted_goal_step(accepted_payload, "step-01")
 	)
+
+
+def is_pet_diary_product_goal_routine_dispatch(accepted_payload: dict[str, Any], objective: str) -> bool:
+    combined = f"{objective} {accepted_payload.get('accepted_summary') or ''}".lower()
+    return (
+        os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-product-goal"
+        and (
+            accepted_goal_step(accepted_payload, "step-02")
+            or ("routine" in combined and "pet life diary" in combined)
+        )
+    )
+
+
+def is_pet_diary_product_goal_portfolio_dispatch(accepted_payload: dict[str, Any], objective: str) -> bool:
+    combined = f"{objective} {accepted_payload.get('accepted_summary') or ''}".lower()
+    return (
+        os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-product-goal"
+        and (
+            accepted_goal_step(accepted_payload, "step-03")
+            or ("portfolio" in combined and "pet life diary" in combined)
+            or ("demo readiness" in combined and "pet life diary" in combined)
+        )
+    )
 
 
 def matches_pet_diary_bugfix_request(objective: str, accepted_ref: str | None) -> bool:
@@ -173,6 +211,7 @@ def is_pet_diary_filter_test_dispatch(objective: str, accepted_ref: str | None) 
 def is_pet_diary_goal_filter_dispatch(accepted_payload: dict[str, Any]) -> bool:
 	return (
 		os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+		and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") != "pet-life-diary-product-goal"
 		and accepted_goal_step(accepted_payload, "step-02")
 	)
 
@@ -196,6 +235,7 @@ def is_pet_diary_filter_retry_test_dispatch(objective: str, accepted_ref: str | 
 def is_pet_diary_goal_readme_dispatch(accepted_payload: dict[str, Any]) -> bool:
 	return (
 		os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
+		and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") != "pet-life-diary-product-goal"
 		and accepted_goal_step(accepted_payload, "step-03")
 	)
 
@@ -368,6 +408,141 @@ def extend_product_pet_diary_dispatch_args(
             "scratch_pet_diary_product_benchmark",
             "--execution-next-action",
             "Reviewer should verify product-scale file creation, validation evidence, and authorship before Governor finalizes.",
+        ]
+    )
+
+
+def extend_product_pet_diary_routines_dispatch_args(
+    args: list[str],
+    paths: Any,
+    *,
+    dispatch_ref: str,
+    objective: str,
+) -> None:
+    validation_ref = repo_relative(
+        paths.agent_root / "validations" / Path(dispatch_ref) / "pet_diary_product_routines.json",
+        paths.repo_root,
+    )
+    for output_ref in PET_DIARY_PRODUCT_ROUTINE_OUTPUTS:
+        args.extend(["--run-produce", output_ref])
+        args.extend(["--run-touch", output_ref])
+        args.extend(["--required-output", output_ref])
+    args.extend(
+        [
+            "--authorship-evidence-required",
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_add_product_pet_diary_routines.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                ]
+            ),
+            "--validator-command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("validate_pet_diary_product.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--report",
+                    command_arg(validation_ref),
+                    "--require-routines",
+                ]
+            ),
+            "--execution-summary",
+            "Executor added care routine planning to the product-scale Pet Life Diary app.",
+            "--execution-claim",
+            "Executor mutated product app files with a routine board, routine state, and care-planning presentation.",
+            "--execution-claim",
+            "This dispatch completed the second step of the product goal without recreating the app.",
+            "--execution-evidence",
+            "index.html",
+            "--execution-evidence",
+            "src/state.js",
+            "--execution-evidence",
+            "src/ui.js",
+            "--execution-evidence",
+            "src/styles.css",
+            "--execution-evidence",
+            "README.md",
+            "--execution-evidence",
+            validation_ref,
+            "--execution-note",
+            "scratch_pet_diary_product_routines",
+            "--execution-next-action",
+            "Reviewer should verify the routine-planning feature and validation evidence before Governor advances the goal.",
+        ]
+    )
+
+
+def extend_product_pet_diary_portfolio_dispatch_args(
+    args: list[str],
+    paths: Any,
+    *,
+    dispatch_ref: str,
+    objective: str,
+) -> None:
+    validation_ref = repo_relative(
+        paths.agent_root / "validations" / Path(dispatch_ref) / "pet_diary_product_portfolio.json",
+        paths.repo_root,
+    )
+    for output_ref in PET_DIARY_PRODUCT_PORTFOLIO_OUTPUTS:
+        args.extend(["--run-produce", output_ref])
+        args.extend(["--run-touch", output_ref])
+        args.extend(["--required-output", output_ref])
+    args.extend(
+        [
+            "--authorship-evidence-required",
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_polish_product_pet_diary_portfolio.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                ]
+            ),
+            "--validator-command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("validate_pet_diary_product.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--report",
+                    command_arg(validation_ref),
+                    "--require-routines",
+                    "--require-portfolio",
+                ]
+            ),
+            "--execution-summary",
+            "Executor prepared the Pet Life Diary product demo for portfolio review.",
+            "--execution-claim",
+            "Executor created product-spec documentation and updated demo-readiness validation notes.",
+            "--execution-claim",
+            "This dispatch completed the final handoff step of the product goal.",
+            "--execution-evidence",
+            "README.md",
+            "--execution-evidence",
+            "docs/product-spec.md",
+            "--execution-evidence",
+            "tests/product-validation.js",
+            "--execution-evidence",
+            validation_ref,
+            "--execution-note",
+            "scratch_pet_diary_product_portfolio_handoff",
+            "--execution-next-action",
+            "Reviewer should verify the portfolio handoff before Governor records the final goal decision.",
         ]
     )
 
@@ -773,6 +948,8 @@ def emit_plan_execution_dispatch(
     is_pet_diary_filter = is_pet_diary_filter_test_dispatch(objective, accepted_ref)
     is_pet_diary_filter_retry = is_pet_diary_filter_retry_test_dispatch(objective, accepted_ref)
     is_goal_base = is_pet_diary_goal_base_dispatch(accepted_payload)
+    is_product_goal_routines = is_pet_diary_product_goal_routine_dispatch(accepted_payload, objective)
+    is_product_goal_portfolio = is_pet_diary_product_goal_portfolio_dispatch(accepted_payload, objective)
     is_goal_filter = is_pet_diary_goal_filter_dispatch(accepted_payload)
     is_goal_filter_retry = is_pet_diary_goal_filter_retry_dispatch(accepted_payload)
     is_goal_readme = is_pet_diary_goal_readme_dispatch(accepted_payload)
@@ -803,7 +980,21 @@ def emit_plan_execution_dispatch(
         "--root",
         str(paths.repo_root),
     ]
-    if is_product_pet_diary:
+    if is_product_goal_routines:
+        extend_product_pet_diary_routines_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+        )
+    elif is_product_goal_portfolio:
+        extend_product_pet_diary_portfolio_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+        )
+    elif is_product_pet_diary:
         extend_product_pet_diary_dispatch_args(
             args,
             paths,

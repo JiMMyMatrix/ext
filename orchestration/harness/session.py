@@ -2512,7 +2512,8 @@ def _should_use_template_goal_plan() -> bool:
 		return False
 	return (
 		os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
-		and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == "pet-life-diary-goal-program"
+		and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET")
+		in {"pet-life-diary-goal-program", "pet-life-diary-product-goal"}
 	)
 
 

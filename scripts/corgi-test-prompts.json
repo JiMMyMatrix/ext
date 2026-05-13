@@ -137,6 +137,29 @@
       "tags": ["scratch", "product-benchmark", "realistic-app", "executor", "reviewer"]
     },
     {
+      "id": "pet-life-diary-product-goal",
+      "label": "Pet life diary product goal",
+      "prompt": "Build a realistic product-scale Pet Life Diary web app demo from scratch, then improve it over multiple development rounds until it is ready to show as a portfolio-quality local-first record-keeping app. Include multiple screens, local persistence, care routines, search and filters, analytics, substantial sample data, validation notes, and clear demo documentation.",
+      "category": "scratch_product_goal",
+      "requiresScenario": "fresh-session",
+      "purpose": "Multi-step real-world goal benchmark proving Corgi can keep advancing a product-scale app through several G/E/R rounds under one goal.",
+      "expectedFlow": [
+        "goal_plan_created",
+        "product_foundation_execute_review_accept",
+        "routine_planning_execute_review_accept",
+        "portfolio_handoff_execute_review_accept",
+        "final_goal_decision_recorded"
+      ],
+      "assertions": [
+        "At least three goal steps run under one goalRef.",
+        "Multiple workRef values link to the same product goal.",
+        "Executor creates and mutates real scratch project files across rounds.",
+        "Reviewer and Governor artifacts exist for every step before the final goal decision.",
+        "The generated app remains isolated from the Corgi development repo."
+      ],
+      "tags": ["scratch", "goal", "product-benchmark", "multi-step", "executor", "reviewer"]
+    },
+    {
       "id": "pet-life-diary-goal-program",
       "label": "Pet life diary goal program",
       "prompt": "Build a polished Pet Life Diary web app demo from scratch, then improve it through multiple development steps until it is ready to show as a small portfolio demo.",

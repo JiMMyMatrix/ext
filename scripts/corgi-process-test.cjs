@@ -57,7 +57,7 @@ function printUsage() {
 			'',
 			'Runs phase-1 command-only process tests without opening VS Code.',
 			'',
-			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-product-benchmark, scratch-bugfix-existing-app, scratch-feature-existing-app, scratch-review-retry-existing-app, scratch-goal-program, scratch-goal-review-retry, completion, all',
+			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-product-benchmark, scratch-product-goal, scratch-bugfix-existing-app, scratch-feature-existing-app, scratch-review-retry-existing-app, scratch-goal-program, scratch-goal-review-retry, completion, all',
 		].join('\n') + '\n'
 	);
 }
@@ -1136,6 +1136,188 @@ function runScratchProductBenchmarkModule(options) {
 	};
 }
 
+function runScratchProductGoalModule(options) {
+	const prompt = promptById('pet-life-diary-product-goal');
+	assertCondition(prompt, 'scratch-product-goal: prompt preset missing');
+	const runName = `module-scratch-product-goal-${runId}`;
+	const { agentRoot, runDir, scratchRoot, env } = createScratchTestEnv(
+		runName,
+		'pet-life-diary-product-goal'
+	);
+	const model = runJson(
+		[
+			'start-goal',
+			'--text',
+			prompt.prompt,
+			'--request-id',
+			requestId(prompt, 'start-goal'),
+			'--governor-runtime',
+			'external',
+			'--auto-consume-executor',
+		],
+		env
+	);
+	assertCondition(
+		model.snapshot.goalStatus === 'completed',
+		`scratch-product-goal: expected completed goal, got ${model.snapshot.goalStatus}`
+	);
+	assertCondition(
+		model.snapshot.currentStage === 'governor_decision_recorded',
+		`scratch-product-goal: expected final governor decision stage, got ${model.snapshot.currentStage}`
+	);
+	const goalRef = model.snapshot.currentGoalRef;
+	assertCondition(typeof goalRef === 'string' && goalRef.length > 0, 'scratch-product-goal: goalRef missing');
+	const goalRoot = path.join(agentRoot, 'goals', goalRef);
+	const goal = readJson(path.join(goalRoot, 'goal.json'));
+	const goalPlan = readJson(path.join(goalRoot, 'goal_plan.json'));
+	const goalProgress = readJson(path.join(goalRoot, 'goal_progress.json'));
+	const goalDecision = readJson(path.join(goalRoot, 'goal_decision.json'));
+	assertCondition(goal.status === 'completed', 'scratch-product-goal: goal did not complete');
+	assertCondition(
+		goalPlan.template_id === 'pet-life-diary-product-goal-v1',
+		'scratch-product-goal: expected product goal template'
+	);
+	assertCondition(
+		Array.isArray(goalPlan.steps) && goalPlan.steps.length >= 3,
+		'scratch-product-goal: goal plan did not contain at least three steps'
+	);
+	assertCondition(
+		goalProgress.status === 'completed' &&
+			Array.isArray(goalProgress.completed_steps) &&
+			goalProgress.completed_steps.length >= 3,
+		'scratch-product-goal: goal progress did not record completed steps'
+	);
+	assertCondition(
+		goalDecision.schema_version === 'corgi.goal_decision.v1' &&
+			goalDecision.decision === 'accept',
+		'scratch-product-goal: final goal decision missing or not accepted'
+	);
+	const linkedWorkRefs = [...new Set(goalProgress.linked_work_refs ?? [])];
+	assertCondition(
+		linkedWorkRefs.length >= 3,
+		'scratch-product-goal: expected at least three workRefs under the same goal'
+	);
+
+	const expectedFiles = [
+		'README.md',
+		'index.html',
+		'src/app.js',
+		'src/state.js',
+		'src/ui.js',
+		'src/styles.css',
+		'data/sample-pets.json',
+		'data/sample-entries.json',
+		'tests/product-validation.js',
+		'docs/product-spec.md',
+	];
+	for (const fileRef of expectedFiles) {
+		assertCondition(fs.existsSync(path.join(scratchRoot, fileRef)), `scratch-product-goal: missing ${fileRef}`);
+	}
+	const readme = fs.readFileSync(path.join(scratchRoot, 'README.md'), 'utf8');
+	const index = fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8');
+	const state = fs.readFileSync(path.join(scratchRoot, 'src/state.js'), 'utf8');
+	const ui = fs.readFileSync(path.join(scratchRoot, 'src/ui.js'), 'utf8');
+	const spec = fs.readFileSync(path.join(scratchRoot, 'docs/product-spec.md'), 'utf8');
+	assertCondition(index.includes('view-routines'), 'scratch-product-goal: routine view missing');
+	assertCondition(index.includes('data-routine-board'), 'scratch-product-goal: routine board missing');
+	assertCondition(state.includes('routines:'), 'scratch-product-goal: routine state missing');
+	assertCondition(ui.includes('renderRoutineBoard'), 'scratch-product-goal: routine renderer missing');
+	assertCondition(readme.includes('Demo readiness checklist'), 'scratch-product-goal: demo readiness checklist missing');
+	assertCondition(spec.includes('Product promise'), 'scratch-product-goal: product spec missing product promise');
+
+	const dispatchRefs = [];
+	for (const workRef of linkedWorkRefs) {
+		const workPath = workIndexPath(agentRoot, workRef);
+		assertCondition(fs.existsSync(workPath), `scratch-product-goal: work index missing for ${workRef}`);
+		const workIndex = readJson(workPath);
+		assertCondition(workIndex.goal_ref === goalRef, `scratch-product-goal: work ${workRef} not linked to goal`);
+		for (const attempt of workIndex.attempts ?? []) {
+			if (attempt?.dispatch_ref) {
+				dispatchRefs.push(attempt.dispatch_ref);
+			}
+		}
+	}
+	assertCondition(dispatchRefs.length >= 3, 'scratch-product-goal: expected dispatches for at least three steps');
+	const classifications = new Map();
+	for (const dispatchRef of dispatchRefs) {
+		const dispatchInfo = dispatchInfoByRef(agentRoot, dispatchRef);
+		const request = readJson(dispatchInfo.requestPath);
+		const result = readJson(path.join(dispatchInfo.dispatchDir, 'result.json'));
+		const outputSignatures = result.output_signatures;
+		assertCondition(
+			request.authorship_evidence?.required === true,
+			`scratch-product-goal: authorship evidence was not required for ${dispatchRef}`
+		);
+		assertCondition(
+			outputSignatures?.verified === true,
+			`scratch-product-goal: authorship evidence not verified for ${dispatchRef}`
+		);
+		assertCondition(
+			Array.isArray(outputSignatures?.blockers) && outputSignatures.blockers.length === 0,
+			`scratch-product-goal: authorship evidence reported blockers for ${dispatchRef}`
+		);
+		assertReviewerArtifacts('scratch-product-goal', model, dispatchInfo, {
+			expectFeed: false,
+			repoRoot: scratchRoot,
+		});
+		assertGovernorDecision('scratch-product-goal', model, dispatchInfo, {
+			expectFeed: false,
+		});
+		for (const [fileRef, signature] of Object.entries(outputSignatures.required_outputs ?? {})) {
+			classifications.set(fileRef, signature.classification);
+		}
+	}
+	assertCondition(
+		classifications.get('README.md') === 'mutated',
+		'scratch-product-goal: README.md did not record final mutation evidence'
+	);
+	assertCondition(
+		classifications.get('index.html') === 'mutated',
+		'scratch-product-goal: index.html did not record routine mutation evidence'
+	);
+	assertCondition(
+		classifications.get('docs/product-spec.md') === 'created',
+		'scratch-product-goal: docs/product-spec.md did not record creation evidence'
+	);
+
+	const portfolioValidation = collectFiles(
+		agentRoot,
+		(filePath) => path.basename(filePath) === 'pet_diary_product_portfolio.json'
+	)[0];
+	assertCondition(portfolioValidation, 'scratch-product-goal: portfolio validation report missing');
+	const validation = readJson(portfolioValidation);
+	assertCondition(
+		validation.status === 'pass',
+		`scratch-product-goal: final product validation did not pass (${validation.failures?.join(', ')})`
+	);
+	assertCondition(
+		validation.require_routines === true && validation.require_portfolio === true,
+		'scratch-product-goal: final validation did not require routines and portfolio handoff'
+	);
+	for (const devRef of [
+		'index.html',
+		path.join('data', 'sample-pets.json'),
+		path.join('data', 'sample-entries.json'),
+		path.join('src', 'app.js'),
+		path.join('docs', 'product-spec.md'),
+	]) {
+		assertCondition(
+			!fs.existsSync(path.join(repoRoot, devRef)),
+			`scratch-product-goal: wrote ${devRef} to Corgi source repo`
+		);
+	}
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: 'module:scratch-product-goal',
+		stage: model.snapshot.currentStage,
+		permissionScope: model.snapshot.permissionScope,
+		goalRef,
+		workRefs: linkedWorkRefs.length,
+	};
+}
+
 function runScratchBugfixExistingAppModule(options) {
 	const prompt = promptById('pet-life-diary-bugfix');
 	assertCondition(prompt, 'scratch-bugfix-existing-app: prompt preset missing');
@@ -1784,6 +1966,8 @@ function runModule(moduleName, options) {
 			return [runScratchStaticAppModule(options)];
 		case 'scratch-product-benchmark':
 			return [runScratchProductBenchmarkModule(options)];
+		case 'scratch-product-goal':
+			return [runScratchProductGoalModule(options)];
 		case 'scratch-bugfix-existing-app':
 			return [runScratchBugfixExistingAppModule(options)];
 		case 'scratch-feature-existing-app':
@@ -1798,6 +1982,7 @@ function runModule(moduleName, options) {
 			return [
 				runScratchStaticAppModule(options),
 				runScratchProductBenchmarkModule(options),
+				runScratchProductGoalModule(options),
 				runScratchBugfixExistingAppModule(options),
 				runScratchFeatureExistingAppModule(options),
 				runScratchReviewRetryExistingAppModule(options),
