@@ -2426,6 +2426,8 @@ def _auto_continue_goal_program(
 		"revision_limit_reached",
 	}
 	for _ in range(8):
+		if model["snapshot"].get("goalStatus") in {"completed", "blocked"}:
+			break
 		if model["snapshot"].get("currentStage") != "governor_decision_recorded":
 			goal_ref = model.get("currentGoalRef") or session.get("meta", {}).get("activeGoalRef")
 			if (

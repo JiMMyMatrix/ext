@@ -823,6 +823,10 @@ def advance_goal_after_decision(
 	goal_ref = model.get("currentGoalRef") or session.get("meta", {}).get("activeGoalRef")
 	if not isinstance(goal_ref, str) or not goal_ref.strip():
 		return "no_goal"
+	if model["snapshot"].get("goalStatus") == "completed":
+		return "completed"
+	if model["snapshot"].get("goalStatus") == "blocked":
+		return "blocked"
 	if model["snapshot"].get("currentStage") != "governor_decision_recorded":
 		if goal_stage_is_blocked(model["snapshot"].get("currentStage")):
 			mark_goal_blocked(session, goal_ref, now, "current_step_blocked", repo_root=repo_root)

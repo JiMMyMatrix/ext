@@ -109,6 +109,7 @@ suite('Corgi Execution Transport', () => {
 		assert.ok(transportSource.includes('this.pythonExecutable'));
 		assert.ok(transportSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(transportSource.includes('--auto-consume-executor'));
+		assert.ok(transportSource.includes("(action?.type === 'start_goal' && action.auto_consume_executor)"));
 		assert.match(
 			transportSource,
 			/action\?\.type === 'execute_plan'[\s\S]{0,120}args\.push\('--auto-consume-executor'\)/

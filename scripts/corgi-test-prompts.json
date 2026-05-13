@@ -112,6 +112,31 @@
       "tags": ["scratch", "showcase", "live-demo", "executor", "reviewer"]
     },
     {
+      "id": "pet-life-diary-product-benchmark",
+      "label": "Pet life diary product benchmark",
+      "prompt": "Build a realistic product-scale Pet Life Diary static web app from scratch. It should resemble a small downloadable notebook or record-keeping app, include multiple screens, local persistence, search and filters, analytics, sample data, validation notes, and several thousand lines of project code/data/docs.",
+      "category": "scratch_product_benchmark",
+      "requiresScenario": "fresh-session",
+      "purpose": "Heavier command-only benchmark proving Corgi can create and validate a realistic multi-file app, not only a tiny smoke-test demo.",
+      "expectedFlow": [
+        "understanding_request",
+        "plan_permission",
+        "governor_plan",
+        "execute_permission",
+        "executor_writes_product_files",
+        "validator_checks_product_surface",
+        "reviewer_checks",
+        "governor_decision_recorded"
+      ],
+      "assertions": [
+        "Target workspace is a clean scratch folder, not the Corgi source repo.",
+        "Executor creates a multi-file static app with several thousand lines across code, data, docs, and validation notes.",
+        "Validator report proves product surfaces such as local persistence, entry creation, filters, search, analytics, and import/export.",
+        "Reviewer and Governor decision artifacts are recorded after authorship and validation evidence pass."
+      ],
+      "tags": ["scratch", "product-benchmark", "realistic-app", "executor", "reviewer"]
+    },
+    {
       "id": "pet-life-diary-goal-program",
       "label": "Pet life diary goal program",
       "prompt": "Build a polished Pet Life Diary web app demo from scratch, then improve it through multiple development steps until it is ready to show as a small portfolio demo.",
@@ -132,6 +157,31 @@
         "Reviewer and Governor artifacts exist for every step before the final goal decision."
       ],
       "tags": ["scratch", "goal", "multi-step", "executor", "reviewer"]
+    },
+    {
+      "id": "pet-life-diary-goal-review-retry",
+      "label": "Pet life diary goal review retry",
+      "prompt": "Build a polished Pet Life Diary web app demo from scratch, then improve it through multiple development steps until it is ready to show as a small portfolio demo.",
+      "category": "scratch_goal_retry",
+      "requiresScenario": "fresh-session",
+      "purpose": "Command-only multi-step goal benchmark proving Reviewer-requested changes retry inside one goal step without abandoning the parent goal.",
+      "expectedFlow": [
+        "goal_plan_created",
+        "step_1_execute_review_accept",
+        "step_2_executor_partial",
+        "step_2_reviewer_requests_changes",
+        "step_2_governor_revises_same_work",
+        "step_2_retry_review_accept",
+        "step_3_execute_review_accept",
+        "final_goal_decision_recorded"
+      ],
+      "assertions": [
+        "The retry stays under the same goalRef and step-02 workRef.",
+        "A retry_handoff records the failed dispatch and recommended bounded action.",
+        "Attempt 2 links revision_of_dispatch_ref to attempt 1.",
+        "The parent goal continues to later steps after the retry is accepted."
+      ],
+      "tags": ["scratch", "goal", "retry", "reviewer", "governor", "executor"]
     },
     {
       "id": "pet-life-diary-bugfix",

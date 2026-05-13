@@ -244,6 +244,7 @@ export interface ExecutionWindowModel {
 
 export type ModelAction =
 	| ({ type: 'submit_prompt'; text: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
+	| ({ type: 'start_goal'; text: string; now?: string; auto_consume_executor?: boolean } & ControllerRequestMetadata)
 	| ({ type: 'answer_clarification'; text: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
 	| ({ type: 'set_permission_scope'; permission_scope: PermissionScope; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)
 	| ({ type: 'decline_permission'; text?: string; now?: string } & SemanticMetadata & ControllerRequestMetadata)

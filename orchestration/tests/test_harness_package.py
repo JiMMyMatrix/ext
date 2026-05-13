@@ -5858,6 +5858,48 @@ class HarnessPackageTests(unittest.TestCase):
                 )
             )
 
+    def test_goal_auto_continue_is_noop_after_goal_completed(self) -> None:
+        source_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo_root, check=False, capture_output=True)
+            exclude = repo_root / ".git" / "info" / "exclude"
+            if exclude.exists():
+                exclude.write_text(exclude.read_text(encoding="utf-8") + "\n.agent/\n", encoding="utf-8")
+            env = {
+                "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                "ORCHESTRATION_SOURCE_ROOT": str(source_root),
+                "ORCHESTRATION_AGENT_ROOT": str(repo_root / ".agent"),
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-goal-program",
+                "ORCHESTRATION_APPROVED_PYTHON": sys.executable,
+            }
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                runtime_support,
+                "APPROVED_PYTHON",
+                Path(sys.executable),
+            ):
+                model = session.dispatch_session_action(
+                    "start_goal",
+                    text="Build a polished Pet Life Diary demo.",
+                    repo_root=repo_root,
+                    request_id="goal-completed-noop-test",
+                    governor_runtime="external",
+                    auto_consume_executor=True,
+                )
+            self.assertEqual(model["snapshot"]["goalStatus"], "completed")
+            goal_ref = model["snapshot"]["currentGoalRef"]
+            payload = session.load_session(repo_root)
+
+            session._auto_continue_goal_program(payload, repo_root=repo_root)
+
+            self.assertEqual(payload["model"]["snapshot"]["goalStatus"], "completed")
+            self.assertEqual(load_json(repo_root / ".agent" / "goals" / goal_ref / "goal.json")["status"], "completed")
+            self.assertEqual(
+                load_json(repo_root / ".agent" / "goals" / goal_ref / "goal_progress.json")["status"],
+                "completed",
+            )
+
     def test_goal_progress_validation_rejects_current_step_mismatch_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()

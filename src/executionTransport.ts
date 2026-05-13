@@ -255,6 +255,8 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		switch (action.type) {
 			case 'submit_prompt':
 				return this.run('session', 'submit-prompt', action);
+			case 'start_goal':
+				return this.run('session', 'start-goal', action);
 			case 'answer_clarification':
 				return this.run('session', 'answer-clarification', action);
 			case 'set_permission_scope':
@@ -377,6 +379,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 		}
 		if (
 			action?.type === 'submit_prompt' ||
+			(action?.type === 'start_goal' && action.auto_consume_executor) ||
 			action?.type === 'answer_clarification' ||
 			action?.type === 'execute_plan'
 		) {

@@ -70,6 +70,36 @@ function testWindowAutoPrompt(context: vscode.ExtensionContext): string | undefi
 	return prompt || undefined;
 }
 
+function testWindowAutoPromptPreset(context: vscode.ExtensionContext): string | undefined {
+	if (context.extensionMode !== vscode.ExtensionMode.Development) {
+		return undefined;
+	}
+
+	return process.env.ORCHESTRATION_TEST_PROMPT_PRESET?.trim() || undefined;
+}
+
+function testWindowAutoPromptAction(
+	context: vscode.ExtensionContext
+): 'submit_prompt' | 'start_goal' {
+	if (context.extensionMode !== vscode.ExtensionMode.Development) {
+		return 'submit_prompt';
+	}
+
+	const explicitAction = process.env.CORGI_TEST_WINDOW_AUTO_ACTION?.trim().toLowerCase();
+	if (explicitAction === 'start_goal' || explicitAction === 'start-goal') {
+		return 'start_goal';
+	}
+	if (explicitAction === 'submit_prompt' || explicitAction === 'submit-prompt') {
+		return 'submit_prompt';
+	}
+
+	const preset = testWindowAutoPromptPreset(context);
+	if (preset === 'pet-life-diary-goal-program' || preset === 'pet-life-diary-goal-review-retry') {
+		return 'start_goal';
+	}
+	return 'submit_prompt';
+}
+
 function testWindowAutoStepMode(
 	context: vscode.ExtensionContext
 ): TestWindowAutoStepMode {
@@ -92,6 +122,7 @@ type WebviewMessage =
 	| { type: 'refresh_state' }
 	| { type: 'webview_snapshot'; payload?: unknown }
 	| { type: 'submit_prompt'; text?: string; requestId?: string }
+	| { type: 'start_goal'; text?: string; requestId?: string }
 	| { type: 'execute_plan'; requestId?: string }
 	| { type: 'revise_plan'; text?: string; requestId?: string }
 	| { type: 'answer_clarification'; text?: string; requestId?: string }
@@ -434,6 +465,19 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 
 		this.didSubmitTestWindowAutoPrompt = true;
 		const requestId = `corgi-request:test-window:${randomUUID()}`;
+		const action = testWindowAutoPromptAction(this.context);
+		if (action === 'start_goal') {
+			this.appendDevelopmentLog(`auto-start test goal: ${prompt}`);
+			await this.applyAction(
+				this.buildControllerAction({
+					type: 'start_goal',
+					text: prompt,
+					request_id: requestId,
+					auto_consume_executor: testWindowAutoStepMode(this.context) === 'execute',
+				})
+			);
+			return;
+		}
 		this.appendDevelopmentLog(`auto-submit test prompt: ${prompt}`);
 		await this.routeFreeText(prompt, requestId, false);
 	}
@@ -707,6 +751,15 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 					message.text ?? '',
 					message.requestId,
 					this.hasAuthoritativeTransportState
+				);
+				return;
+			case 'start_goal':
+				await this.applyAction(
+					this.buildControllerAction({
+						type: 'start_goal',
+						text: message.text ?? '',
+						request_id: message.requestId,
+					})
 				);
 				return;
 			case 'execute_plan':

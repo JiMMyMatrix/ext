@@ -426,7 +426,8 @@ function semanticProvenanceForAction(action: ModelAction): SemanticMetadata {
 	if (
 		action.type === 'reconnect' ||
 		action.type === 'execute_plan' ||
-		action.type === 'revise_plan'
+		action.type === 'revise_plan' ||
+		action.type === 'start_goal'
 	) {
 		return {};
 	}
@@ -1306,6 +1307,68 @@ export function applyModelAction(
 					),
 				],
 				activeClarification: clarification,
+				activeForegroundRequestId: action.request_id ?? model.activeForegroundRequestId,
+			};
+		}
+
+		case 'start_goal': {
+			const goal = trimAndNormalize(action.text);
+			if (!goal) {
+				return appendError(
+					model,
+					'Goal required',
+					'Enter a goal before starting a goal program.',
+					undefined,
+					now,
+					action.request_id
+				);
+			}
+
+			return {
+				...model,
+				snapshot: refreshSnapshot(model.snapshot, now, {
+					task: summarizePrompt(goal),
+					currentActor: 'governor',
+					currentStage: 'goal_planning',
+					runState: 'running',
+					pendingPermissionRequest: undefined,
+					pendingInterrupt: undefined,
+					transportState: 'connected',
+				}),
+				feed: [
+					...model.feed,
+					createFeedItem(
+						'user_message',
+						'Goal submitted',
+						goal,
+						false,
+						now,
+						undefined,
+						undefined,
+						{
+							turn_type: 'governed_work_intent',
+							in_response_to_request_id: action.request_id,
+						}
+					),
+					createFeedItem(
+						'system_status',
+						'Breaking goal into steps',
+						'Corgi is asking the Governor to break this into bounded work steps.',
+						true,
+						now,
+						undefined,
+						{
+							kind: 'status',
+							state: 'running',
+							summary: 'Goal planning',
+						},
+						{
+							turn_type: 'governed_work_intent',
+							in_response_to_request_id: action.request_id,
+							presentation_key: 'goal.planning',
+						}
+					),
+				],
 				activeForegroundRequestId: action.request_id ?? model.activeForegroundRequestId,
 			};
 		}

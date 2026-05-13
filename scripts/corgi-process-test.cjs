@@ -57,7 +57,7 @@ function printUsage() {
 			'',
 			'Runs phase-1 command-only process tests without opening VS Code.',
 			'',
-			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-bugfix-existing-app, scratch-feature-existing-app, scratch-review-retry-existing-app, scratch-goal-program, completion, all',
+			'Modules: executor, reviewer, review-replan, scratch-static-app, scratch-product-benchmark, scratch-bugfix-existing-app, scratch-feature-existing-app, scratch-review-retry-existing-app, scratch-goal-program, scratch-goal-review-retry, completion, all',
 		].join('\n') + '\n'
 	);
 }
@@ -985,6 +985,157 @@ function runScratchStaticAppModule(options) {
 	};
 }
 
+function runScratchProductBenchmarkModule(options) {
+	const prompt = promptById('pet-life-diary-product-benchmark');
+	assertCondition(prompt, 'scratch-product-benchmark: prompt preset missing');
+	const runName = `module-scratch-product-benchmark-${runId}`;
+	const { agentRoot, runDir, scratchRoot, env } = createScratchTestEnv(
+		runName,
+		'pet-life-diary-product-benchmark'
+	);
+	const model = runGovernedWorkFlow(prompt, env, true);
+	const dispatchInfo = latestDispatchInfo(agentRoot);
+	const request = readJson(dispatchInfo.requestPath);
+	const state = readJson(path.join(dispatchInfo.dispatchDir, 'state.json'));
+	const result = readJson(path.join(dispatchInfo.dispatchDir, 'result.json'));
+	const outputSignatures = result.output_signatures;
+	const expectedFiles = [
+		'README.md',
+		'index.html',
+		'src/app.js',
+		'src/state.js',
+		'src/entries.js',
+		'src/pets.js',
+		'src/analytics.js',
+		'src/storage.js',
+		'src/ui.js',
+		'src/fixtures.js',
+		'src/styles.css',
+		'data/sample-pets.json',
+		'data/sample-entries.json',
+		'tests/product-validation.js',
+	];
+	for (const fileRef of expectedFiles) {
+		assertCondition(fs.existsSync(path.join(scratchRoot, fileRef)), `scratch-product-benchmark: missing ${fileRef}`);
+		assertCondition(
+			request.required_outputs.includes(fileRef),
+			`scratch-product-benchmark: ${fileRef} missing from required_outputs`
+		);
+		assertCondition(
+			result.written_or_updated.includes(fileRef),
+			`scratch-product-benchmark: ${fileRef} missing from executor result`
+		);
+		assertCondition(
+			['created', 'mutated'].includes(
+				outputSignatures?.required_outputs?.[fileRef]?.classification
+			),
+			`scratch-product-benchmark: ${fileRef} missing created/mutated authorship evidence`
+		);
+	}
+	assertCondition(
+		request.authorship_evidence?.required === true,
+		'scratch-product-benchmark: authorship evidence was not required'
+	);
+	assertCondition(
+		outputSignatures?.verified === true,
+		'scratch-product-benchmark: authorship evidence was not verified'
+	);
+	assertCondition(
+		Array.isArray(outputSignatures?.blockers) && outputSignatures.blockers.length === 0,
+		'scratch-product-benchmark: authorship evidence reported blockers'
+	);
+	const validationPath = path.join(
+		scratchRoot,
+		'.agent',
+		'validations',
+		dispatchInfo.request.dispatch_ref,
+		'pet_diary_product.json'
+	);
+	assertCondition(
+		fs.existsSync(validationPath),
+		'scratch-product-benchmark: validation report was not written'
+	);
+	const validation = readJson(validationPath);
+	assertCondition(
+		validation.status === 'pass',
+		`scratch-product-benchmark: validation did not pass (${validation.failures?.join(', ')})`
+	);
+	assertCondition(
+		validation.total_lines >= 3000,
+		`scratch-product-benchmark: expected at least 3000 lines, got ${validation.total_lines}`
+	);
+	assertCondition(
+		validation.data_counts?.['data/sample-entries.json'] >= 150,
+		'scratch-product-benchmark: sample entry data is too small'
+	);
+	assertCondition(
+		fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8').includes('data-entry-form'),
+		'scratch-product-benchmark: index.html missing entry form surface'
+	);
+	assertCondition(
+		fs.readFileSync(path.join(scratchRoot, 'src/state.js'), 'utf8').includes('localStorage'),
+		'scratch-product-benchmark: src/state.js missing local persistence'
+	);
+	assertCondition(
+		fs.readFileSync(path.join(scratchRoot, 'src/entries.js'), 'utf8').includes('visibleEntries'),
+		'scratch-product-benchmark: src/entries.js missing visibleEntries'
+	);
+	assertCondition(
+		fs.readFileSync(path.join(scratchRoot, 'src/analytics.js'), 'utf8').includes('calculateMetrics'),
+		'scratch-product-benchmark: src/analytics.js missing metrics logic'
+	);
+	assertCondition(
+		request.execution_payload.commands.some((command) =>
+			commandSpecText(command).includes('executor_create_product_pet_diary.py')
+		),
+		'scratch-product-benchmark: dispatch did not use product executor helper'
+	);
+	assertCondition(
+		request.execution_payload.validator_commands.some((command) =>
+			commandSpecText(command).includes('validate_pet_diary_product.py')
+		),
+		'scratch-product-benchmark: dispatch did not use product validator'
+	);
+	assertCondition(
+		request.execution_payload.notes.includes('scratch_pet_diary_product_benchmark'),
+		'scratch-product-benchmark: missing product benchmark execution note'
+	);
+	assertCondition(
+		state.status === 'completed' || state.status === 'validated',
+		'scratch-product-benchmark: executor state did not complete'
+	);
+	assertReviewerArtifacts('scratch-product-benchmark', model, dispatchInfo, {
+		expectFeed: false,
+		repoRoot: scratchRoot,
+	});
+	assertGovernorDecision('scratch-product-benchmark', model, dispatchInfo, {
+		expectFeed: false,
+	});
+	for (const devRef of [
+		'index.html',
+		path.join('data', 'sample-pets.json'),
+		path.join('data', 'sample-entries.json'),
+		path.join('src', 'app.js'),
+		path.join('src', 'fixtures.js'),
+		path.join('tests', 'product-validation.js'),
+	]) {
+		assertCondition(
+			!fs.existsSync(path.join(repoRoot, devRef)),
+			`scratch-product-benchmark: wrote ${devRef} to Corgi source repo`
+		);
+	}
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return {
+		id: 'module:scratch-product-benchmark',
+		stage: model.snapshot.currentStage,
+		permissionScope: model.snapshot.permissionScope,
+		dispatchRef: dispatchInfo.request.dispatch_ref,
+		totalLines: validation.total_lines,
+	};
+}
+
 function runScratchBugfixExistingAppModule(options) {
 	const prompt = promptById('pet-life-diary-bugfix');
 	assertCondition(prompt, 'scratch-bugfix-existing-app: prompt preset missing');
@@ -1552,6 +1703,75 @@ function runScratchGoalProgramModule(options) {
 	};
 }
 
+function runScratchGoalReviewRetryModule(options) {
+	const prompt = promptById('pet-life-diary-goal-review-retry');
+	assertCondition(prompt, 'scratch-goal-review-retry: prompt preset missing');
+	const runName = `module-scratch-goal-review-retry-${runId}`;
+	const { agentRoot, runDir, scratchRoot } = createScratchTestEnv(
+		runName,
+		'pet-life-diary-goal-review-retry'
+	);
+
+	const result = spawnSync(
+		commandPython(),
+		[
+			path.join(repoRoot, 'scripts/corgi-scratch-goal-review-retry-process-test.py'),
+			'--source-root',
+			repoRoot,
+			'--scratch-root',
+			scratchRoot,
+			'--agent-root',
+			agentRoot,
+		],
+		{
+			cwd: repoRoot,
+			env: {
+				...process.env,
+				ORCHESTRATION_APPROVED_PYTHON: approvedPython(),
+			},
+			encoding: 'utf8',
+			maxBuffer: 1024 * 1024 * 12,
+		}
+	);
+	if (result.status !== 0) {
+		throw new Error(
+			`scratch-goal-review-retry helper failed:\n${result.stderr || result.stdout}`
+		);
+	}
+	let payload;
+	try {
+		payload = JSON.parse(result.stdout);
+	} catch {
+		throw new Error(`Invalid JSON from scratch-goal-review-retry helper:\n${result.stdout}`);
+	}
+
+	const updatedIndex = fs.readFileSync(path.join(scratchRoot, 'index.html'), 'utf8');
+	const updatedApp = fs.readFileSync(path.join(scratchRoot, 'src/app.js'), 'utf8');
+	const updatedReadme = fs.readFileSync(path.join(scratchRoot, 'README.md'), 'utf8');
+	assertCondition(
+		updatedIndex.includes('id="species-filter"'),
+		'scratch-goal-review-retry: final index.html lacks species filter'
+	);
+	assertCondition(
+		updatedApp.includes('function visibleEntries()'),
+		'scratch-goal-review-retry: final app.js lacks visibleEntries helper'
+	);
+	assertCondition(
+		updatedReadme.includes('Demo highlights'),
+		'scratch-goal-review-retry: final README was not polished'
+	);
+	for (const devRef of ['index.html', path.join('data', 'sample-pets.json'), path.join('src', 'app.js')]) {
+		assertCondition(
+			!fs.existsSync(path.join(repoRoot, devRef)),
+			`scratch-goal-review-retry: wrote ${devRef} to Corgi source repo`
+		);
+	}
+	if (!options.keep) {
+		fs.rmSync(runDir, { recursive: true, force: true });
+	}
+	return payload;
+}
+
 function runModule(moduleName, options) {
 	switch (moduleName) {
 		case 'executor':
@@ -1562,6 +1782,8 @@ function runModule(moduleName, options) {
 			return [runReviewReplanModule(options)];
 		case 'scratch-static-app':
 			return [runScratchStaticAppModule(options)];
+		case 'scratch-product-benchmark':
+			return [runScratchProductBenchmarkModule(options)];
 		case 'scratch-bugfix-existing-app':
 			return [runScratchBugfixExistingAppModule(options)];
 		case 'scratch-feature-existing-app':
@@ -1570,13 +1792,17 @@ function runModule(moduleName, options) {
 			return [runScratchReviewRetryExistingAppModule(options)];
 		case 'scratch-goal-program':
 			return [runScratchGoalProgramModule(options)];
+		case 'scratch-goal-review-retry':
+			return [runScratchGoalReviewRetryModule(options)];
 		case 'completion':
 			return [
 				runScratchStaticAppModule(options),
+				runScratchProductBenchmarkModule(options),
 				runScratchBugfixExistingAppModule(options),
 				runScratchFeatureExistingAppModule(options),
 				runScratchReviewRetryExistingAppModule(options),
 				runScratchGoalProgramModule(options),
+				runScratchGoalReviewRetryModule(options),
 			];
 		case 'all':
 			return [

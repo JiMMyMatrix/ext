@@ -72,6 +72,10 @@ export const PROCESS_SCRATCH_RETRY_HELPER_PATH = path.resolve(
 	__dirname,
 	'../../scripts/corgi-scratch-review-retry-process-test.py'
 );
+export const PROCESS_SCRATCH_GOAL_RETRY_HELPER_PATH = path.resolve(
+	__dirname,
+	'../../scripts/corgi-scratch-goal-review-retry-process-test.py'
+);
 export const CODEX_APP_SERVER_CLIENT_TS_PATH = path.resolve(
 	__dirname,
 	'../../src/codexAppServerClient.ts'

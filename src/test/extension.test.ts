@@ -47,6 +47,7 @@ import {
 	PACKAGE_JSON_PATH,
 	PET_DIARY_DEMO_DRIVER_PATH,
 	PROCESS_REPLAN_HELPER_PATH,
+	PROCESS_SCRATCH_GOAL_RETRY_HELPER_PATH,
 	PROCESS_SCRATCH_RETRY_HELPER_PATH,
 	PROCESS_TEST_SCRIPT_PATH,
 	REPO_ROOT,
@@ -408,6 +409,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('resetDevelopmentSessionStateOnce'));
 		assert.ok(webviewSource.includes('resetDevelopmentSessionState(this.context);'));
 		assert.ok(webviewSource.includes('testWindowAutoPrompt'));
+		assert.ok(webviewSource.includes('testWindowAutoPromptAction'));
+		assert.ok(webviewSource.includes('pet-life-diary-goal-program'));
+		assert.ok(webviewSource.includes('auto-start test goal'));
 		assert.ok(webviewSource.includes('testWindowAutoStepMode'));
 		assert.ok(webviewSource.includes('auto-submit test prompt'));
 		assert.ok(webviewSource.includes('runTestWindowAutoStep'));
@@ -542,13 +546,17 @@ suite('Corgi Webview UX', () => {
 		assert.ok(processTestSource.includes('ORCHESTRATION_TEST_PROMPT_PRESET'));
 		assert.ok(processTestSource.includes('createScratchTestEnv'));
 		assert.ok(processTestSource.includes('scratch-static-app'));
+		assert.ok(processTestSource.includes('scratch-product-benchmark'));
 		assert.ok(processTestSource.includes('scratch-bugfix-existing-app'));
 		assert.ok(processTestSource.includes('scratch-feature-existing-app'));
 		assert.ok(processTestSource.includes('scratch-review-retry-existing-app'));
 		assert.ok(processTestSource.includes('pet-life-diary-static'));
+		assert.ok(processTestSource.includes('pet-life-diary-product-benchmark'));
 		assert.ok(processTestSource.includes('pet-life-diary-bugfix'));
 		assert.ok(processTestSource.includes('pet-life-diary-filter'));
 		assert.ok(processTestSource.includes('pet-life-diary-filter-review-retry'));
+		assert.ok(processTestSource.includes('scratch-goal-review-retry'));
+		assert.ok(processTestSource.includes('pet-life-diary-goal-review-retry'));
 		assert.ok(processTestSource.includes('seedFilterPetDiaryApp'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_APPROVED_PYTHON'));
 		assert.ok(processTestSource.includes('--auto-consume-executor'));
@@ -558,8 +566,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(processTestSource.includes('runReviewReplanModule'));
 		assert.ok(processTestSource.includes('corgi-review-replan-process-test.py'));
 		assert.ok(processTestSource.includes('corgi-scratch-review-retry-process-test.py'));
+		assert.ok(processTestSource.includes('corgi-scratch-goal-review-retry-process-test.py'));
 		assert.ok(fs.existsSync(PROCESS_REPLAN_HELPER_PATH));
 		assert.ok(fs.existsSync(PROCESS_SCRATCH_RETRY_HELPER_PATH));
+		assert.ok(fs.existsSync(PROCESS_SCRATCH_GOAL_RETRY_HELPER_PATH));
 		assert.strictEqual(promptCatalog.defaultPromptId, 'analyze-repo');
 		assert.ok(promptCatalog.prompts.length >= 8);
 		for (const prompt of promptCatalog.prompts) {
@@ -576,6 +586,9 @@ suite('Corgi Webview UX', () => {
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'develop-internet'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-static'));
 		assert.ok(
+			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-product-benchmark')
+		);
+		assert.ok(
 			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-app-store-demo')
 		);
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-bugfix'));
@@ -585,6 +598,11 @@ suite('Corgi Webview UX', () => {
 		);
 		assert.ok(
 			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-goal-program')
+		);
+		assert.ok(
+			promptCatalog.prompts.some(
+				(prompt) => prompt.id === 'pet-life-diary-goal-review-retry'
+			)
 		);
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'progress'));
 		assert.ok(promptCatalog.prompts.some((prompt) => prompt.id === 'mixed-stop-work'));
@@ -617,6 +635,10 @@ suite('Corgi Webview UX', () => {
 			'node scripts/corgi-process-test.cjs --module scratch-static-app'
 		);
 		assert.strictEqual(
+			scripts['test:process:product'],
+			'node scripts/corgi-process-test.cjs --module scratch-product-benchmark'
+		);
+		assert.strictEqual(
 			scripts['test:process:project'],
 			'node scripts/corgi-process-test.cjs --module scratch-bugfix-existing-app'
 		);
@@ -631,6 +653,10 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:process:goal'],
 			'node scripts/corgi-process-test.cjs --module scratch-goal-program'
+		);
+		assert.strictEqual(
+			scripts['test:process:goal-retry'],
+			'node scripts/corgi-process-test.cjs --module scratch-goal-review-retry'
 		);
 		assert.strictEqual(
 			scripts['test:process:completion'],

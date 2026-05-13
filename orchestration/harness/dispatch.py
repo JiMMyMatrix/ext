@@ -513,7 +513,8 @@ def build_helper_review(
 def pet_diary_filter_retry_partial_finding(repo_root: Path, request: Dict[str, Any]) -> str | None:
     if (
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") != "scratch"
-        or os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") != "pet-life-diary-filter-review-retry"
+        or os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET")
+        not in {"pet-life-diary-filter-review-retry", "pet-life-diary-goal-review-retry"}
         or request.get("attempt_number") != 1
     ):
         return None
