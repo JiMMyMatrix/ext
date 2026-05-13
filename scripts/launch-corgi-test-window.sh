@@ -18,6 +18,7 @@ APP_NAME="${CORGI_VSCODE_APP_NAME:-Visual Studio Code}"
 TEST_SCENARIO="${CORGI_TEST_WINDOW_SCENARIO:-}"
 PROMPT_PRESET="${CORGI_TEST_WINDOW_PROMPT_PRESET:-}"
 AUTO_STEPS="${CORGI_TEST_WINDOW_AUTO_STEPS:-}"
+AUTO_ACTION="${CORGI_TEST_WINDOW_AUTO_ACTION:-}"
 WORKSPACE_MODE="${CORGI_TEST_WINDOW_WORKSPACE_MODE:-scratch}"
 SCRATCH_ID="${CORGI_TEST_WINDOW_SCRATCH_ID:-pet-life-diary-app}"
 SCRATCH_BASE="$TEST_ROOT/scratch-workspaces"
@@ -296,7 +297,10 @@ node - \
 	"$STDOUT_LOG" \
 	"$STDERR_LOG" \
 	"$AUTO_PROMPT_PRESET" \
-	"$TEST_SCENARIO" <<'NODE'
+	"$TEST_SCENARIO" \
+	"$AUTO_ACTION" \
+	"${CORGI_GOAL_PLAN_SOURCE:-}" \
+	"${CORGI_EXECUTOR_RUNTIME:-}" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 const [
@@ -311,6 +315,9 @@ const [
 	stderrPath,
 	promptPreset,
 	scenario,
+	autoAction,
+	goalPlanSource,
+	executorRuntime,
 ] = process.argv.slice(2);
 const snapshotPath = path.join(agentRoot, 'orchestration', 'corgi_webview_snapshot.json');
 fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -331,6 +338,9 @@ fs.writeFileSync(
 			stderrPath,
 			promptPreset: promptPreset || null,
 			scenario: scenario || null,
+			autoAction: autoAction || null,
+			goalPlanSource: goalPlanSource || null,
+			executorRuntime: executorRuntime || null,
 		},
 		null,
 		2
@@ -357,7 +367,10 @@ open -n -a "$APP_NAME" \
 	--env CORGI_TEST_WINDOW_SCENARIO="$TEST_SCENARIO" \
 	--env CORGI_TEST_WINDOW_AUTO_PROMPT="$AUTO_PROMPT" \
 	--env CORGI_TEST_WINDOW_AUTO_STEPS="$AUTO_STEPS" \
+	--env CORGI_TEST_WINDOW_AUTO_ACTION="$AUTO_ACTION" \
 	--env CORGI_TEST_WINDOW_WORKSPACE_MODE="$WORKSPACE_MODE" \
+	--env CORGI_GOAL_PLAN_SOURCE="${CORGI_GOAL_PLAN_SOURCE:-}" \
+	--env CORGI_EXECUTOR_RUNTIME="${CORGI_EXECUTOR_RUNTIME:-}" \
 	--env ORCHESTRATION_TARGET_WORKSPACE_MODE="$WORKSPACE_MODE" \
 	--env ORCHESTRATION_TEST_PROMPT_PRESET="$AUTO_PROMPT_PRESET" \
 	--env ORCHESTRATION_AGENT_ROOT="$AGENT_ROOT" \
@@ -393,4 +406,13 @@ if [[ -n "$AUTO_PROMPT_PRESET" ]]; then
 fi
 if [[ -n "$AUTO_STEPS" ]]; then
 	echo "  auto-steps: $AUTO_STEPS"
+fi
+if [[ -n "$AUTO_ACTION" ]]; then
+	echo "  auto-action: $AUTO_ACTION"
+fi
+if [[ -n "${CORGI_GOAL_PLAN_SOURCE:-}" ]]; then
+	echo "  goal plan source: ${CORGI_GOAL_PLAN_SOURCE}"
+fi
+if [[ -n "${CORGI_EXECUTOR_RUNTIME:-}" ]]; then
+	echo "  executor runtime: ${CORGI_EXECUTOR_RUNTIME}"
 fi

@@ -133,7 +133,8 @@ def initial_governor_goal_plan_prompt(goal_text: str) -> str:
 			"- You propose the goal plan; orchestration validates and sequences it.\n"
 			"- Do not create dispatch truth, start execution, or imply Execute permission.\n"
 			"- Each step must be executable through the existing Governor / Executor / Reviewer lifecycle.\n"
-			"- Prefer 3 to 5 serial steps. Keep every step bounded and testable.\n"
+			"- Prefer 4 to 6 serial steps for broad product goals. Keep every step bounded and testable.\n"
+			"- If a step depends on an earlier step, use depends_on_step_ref like step-01 or step-02; otherwise use null.\n"
 			"- Return JSON only; no Markdown fences.",
 			"JSON shape:\n"
 			"{\n"

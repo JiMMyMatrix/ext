@@ -160,6 +160,30 @@
       "tags": ["scratch", "goal", "product-benchmark", "multi-step", "executor", "reviewer"]
     },
     {
+      "id": "pet-life-diary-real-project",
+      "label": "Pet life diary real project",
+      "prompt": "Build a local-first Pet Life Diary web app suitable as a small portfolio demo, with journal entries, pet profiles, care routines, search/filtering, persistence, import/export, validation, and clear documentation. Improve it over multiple rounds until it is demo-ready.",
+      "category": "scratch_real_project_exercise",
+      "requiresScenario": "fresh-session",
+      "purpose": "Supervised practical exercise that forces Governor-owned decomposition and exposes whether Corgi can keep advancing real project work without canned product-goal templates.",
+      "expectedFlow": [
+        "governor_goal_plan_created",
+        "multiple_goal_steps",
+        "executor_writes_real_project_files",
+        "reviewer_checks_each_round",
+        "governor_revises_or_finalizes_honestly",
+        "window_remains_open_for_inspection"
+      ],
+      "assertions": [
+        "The goal plan comes from Governor, not the deterministic product-goal template.",
+        "At least six goal steps are attempted or a blocker explains why the run stopped earlier.",
+        "At least three workRef values should complete under one goalRef before this counts as practical progress.",
+        "Readout-only Executor fallback is treated as a blocker, not success.",
+        "The scratch workspace remains isolated from the Corgi development repo."
+      ],
+      "tags": ["scratch", "goal", "real-project", "supervised", "governor-plan", "executor"]
+    },
+    {
       "id": "pet-life-diary-goal-program",
       "label": "Pet life diary goal program",
       "prompt": "Build a polished Pet Life Diary web app demo from scratch, then improve it through multiple development steps until it is ready to show as a small portfolio demo.",

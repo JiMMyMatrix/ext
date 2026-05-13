@@ -830,6 +830,56 @@ class HarnessPackageTests(unittest.TestCase):
             for output_ref in session_execution.PET_DIARY_OUTPUTS:
                 self.assertIn(output_ref, args)
 
+    def test_real_project_live_executor_requires_explicit_scratch_runtime_flag(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(session_execution.is_live_real_project_executor_enabled())
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                "CORGI_EXECUTOR_RUNTIME": "live",
+            },
+            clear=True,
+        ):
+            self.assertTrue(session_execution.is_live_real_project_executor_enabled())
+
+    def test_real_project_live_dispatch_uses_live_codex_executor(self) -> None:
+        source_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_SOURCE_ROOT": str(source_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "live",
+                },
+            ):
+                paths = resolve_paths(repo_root)
+                args: list[str] = []
+
+                session_execution.extend_live_real_project_dispatch_args(
+                    args,
+                    paths,
+                    dispatch_ref="lane/main/dispatch-live",
+                    run_ref="lane/main/dispatch-live/result/attempt-1",
+                    objective="Build the first local-first Pet Life Diary demo step.",
+                    accepted_ref=".agent/intakes/goal-step/accepted_intake.json",
+                )
+
+                joined = " ".join(args)
+                self.assertIn("--authorship-evidence-required", args)
+                self.assertIn("executor_live_codex_project.py", joined)
+                self.assertIn("validate_pet_diary_live_project.py", joined)
+                self.assertIn("scratch_live_executor", args)
+                self.assertNotIn("executor_write_readout.py", joined)
+                for output_ref in session_execution.PET_DIARY_OUTPUTS:
+                    self.assertIn(output_ref, args)
+
     def test_pet_diary_bugfix_executor_requires_explicit_scratch_test_metadata(self) -> None:
         objective = "Fix the pet diary app so adding a diary entry updates the visible list."
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -6068,6 +6118,57 @@ class HarnessPackageTests(unittest.TestCase):
                     for item in completed["feed"]
                 )
             )
+
+    def test_governor_goal_plan_accepts_common_dependency_ref_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(os.environ, {"CORGI_GOAL_PLAN_SOURCE": "governor"}, clear=False):
+                prepared = session.dispatch_session_action(
+                    "start_goal",
+                    text="Build a polished Pet Life Diary demo.",
+                    repo_root=repo_root,
+                    request_id="goal-plan-dependency-normalization-test",
+                    governor_runtime="external",
+                )
+            runtime_request = prepared["request"]
+            body = json.dumps(
+                {
+                    "user_visible_reply": "I split this into dependent bounded steps.",
+                    "steps": [
+                        {
+                            "title": "Create app shell",
+                            "objective": "Create the initial static Pet Life Diary app shell.",
+                            "expected_output": "README.md, index.html, src/app.js, and src/styles.css exist.",
+                            "depends_on_step_ref": None,
+                        },
+                        {
+                            "title": "Add diary interactions",
+                            "objective": "Add journal entry interactions to the app shell.",
+                            "expected_output": "The app can add and render a diary entry.",
+                            "depends_on_step_ref": "step_1",
+                        },
+                        {
+                            "title": "Document demo",
+                            "objective": "Document the completed portfolio demo.",
+                            "expected_output": "README.md explains how to inspect the demo.",
+                            "depends_on_step_ref": "2",
+                        },
+                    ],
+                }
+            )
+
+            completed = session.dispatch_session_action(
+                "complete_governor_turn",
+                repo_root=repo_root,
+                runtime_request_id=runtime_request["runtimeRequestId"],
+                runtime_body=body,
+                runtime_thread_id="app-thread-goal-deps",
+            )
+
+            goal_ref = completed["snapshot"]["currentGoalRef"]
+            goal_plan = load_json(repo_root / ".agent" / "goals" / goal_ref / "goal_plan.json")
+            self.assertEqual(goal_plan["steps"][1]["depends_on_step_ref"], "step-01")
+            self.assertEqual(goal_plan["steps"][2]["depends_on_step_ref"], "step-02")
 
     def test_invalid_governor_goal_plan_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

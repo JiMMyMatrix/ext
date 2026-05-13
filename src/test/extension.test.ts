@@ -46,6 +46,7 @@ import {
 	MCP_SERVER_ENTRYPOINT_PATH,
 	PACKAGE_JSON_PATH,
 	PET_DIARY_DEMO_DRIVER_PATH,
+	PRACTICAL_EXERCISE_MONITOR_SCRIPT_PATH,
 	PROCESS_REPLAN_HELPER_PATH,
 	PROCESS_SCRATCH_GOAL_RETRY_HELPER_PATH,
 	PROCESS_SCRATCH_RETRY_HELPER_PATH,
@@ -378,6 +379,10 @@ suite('Corgi Webview UX', () => {
 		const promptCatalogSource = fs.readFileSync(TEST_WINDOW_PROMPT_CATALOG_PATH, 'utf8');
 		const promptScriptSource = fs.readFileSync(TEST_WINDOW_PROMPT_SCRIPT_PATH, 'utf8');
 		const statusScriptSource = fs.readFileSync(TEST_WINDOW_STATUS_SCRIPT_PATH, 'utf8');
+		const practicalMonitorSource = fs.readFileSync(
+			PRACTICAL_EXERCISE_MONITOR_SCRIPT_PATH,
+			'utf8'
+		);
 		const processTestSource = fs.readFileSync(PROCESS_TEST_SCRIPT_PATH, 'utf8');
 		const promptCatalog = JSON.parse(promptCatalogSource) as {
 			defaultPromptId: string;
@@ -412,6 +417,7 @@ suite('Corgi Webview UX', () => {
 		assert.ok(webviewSource.includes('testWindowAutoPromptAction'));
 		assert.ok(webviewSource.includes('pet-life-diary-goal-program'));
 		assert.ok(webviewSource.includes('pet-life-diary-product-goal'));
+		assert.ok(webviewSource.includes('pet-life-diary-real-project'));
 		assert.ok(webviewSource.includes('auto-start test goal'));
 		assert.ok(webviewSource.includes('testWindowAutoStepMode'));
 		assert.ok(webviewSource.includes('auto-submit test prompt'));
@@ -424,8 +430,11 @@ suite('Corgi Webview UX', () => {
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_SCENARIO'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_PROMPT'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_STEPS'));
+		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_AUTO_ACTION'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_PROMPT_PRESET'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_WORKSPACE_MODE'));
+		assert.ok(launchScriptSource.includes('CORGI_GOAL_PLAN_SOURCE'));
+		assert.ok(launchScriptSource.includes('CORGI_EXECUTOR_RUNTIME'));
 		assert.ok(launchScriptSource.includes('CORGI_TEST_WINDOW_ROOT'));
 		assert.ok(launchScriptSource.includes('.corgi/test-window/extension-ext'));
 		assert.ok(launchScriptSource.includes('corgi-ui-test-workspace'));
@@ -541,6 +550,10 @@ suite('Corgi Webview UX', () => {
 		assert.ok(statusScriptSource.includes('latestReviewVerdict'));
 		assert.ok(statusScriptSource.includes('latestGovernorDecision'));
 		assert.ok(!statusScriptSource.includes('visibleError'));
+		assert.ok(practicalMonitorSource.includes('pet-life-diary-real-project'));
+		assert.ok(practicalMonitorSource.includes('readout_only_executor_fallback'));
+		assert.ok(practicalMonitorSource.includes('goal_plan_source_not_governor'));
+		assert.ok(!practicalMonitorSource.includes('close-corgi-test-window'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_AGENT_ROOT'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_SOURCE_ROOT'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_TARGET_WORKSPACE_MODE'));
@@ -593,6 +606,9 @@ suite('Corgi Webview UX', () => {
 		);
 		assert.ok(
 			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-product-goal')
+		);
+		assert.ok(
+			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-real-project')
 		);
 		assert.ok(
 			promptCatalog.prompts.some((prompt) => prompt.id === 'pet-life-diary-app-store-demo')
@@ -749,6 +765,18 @@ suite('Corgi Webview UX', () => {
 		assert.strictEqual(
 			scripts['test:window:product-goal:auto'],
 			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-product-goal CORGI_TEST_WINDOW_AUTO_STEPS=execute CORGI_TEST_WINDOW_MONITOR_TIMEOUT_SECONDS=420 bash scripts/run-corgi-test-window-auto.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:real-project'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-real-project CORGI_TEST_WINDOW_AUTO_ACTION=start_goal CORGI_TEST_WINDOW_AUTO_STEPS=execute CORGI_GOAL_PLAN_SOURCE=governor bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:real-project:live'],
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-real-project CORGI_TEST_WINDOW_AUTO_ACTION=start_goal CORGI_TEST_WINDOW_AUTO_STEPS=execute CORGI_GOAL_PLAN_SOURCE=governor CORGI_EXECUTOR_RUNTIME=live bash scripts/launch-corgi-test-window.sh'
+		);
+		assert.strictEqual(
+			scripts['test:window:real-project:monitor'],
+			'node scripts/corgi-practical-exercise-monitor.cjs'
 		);
 		assert.strictEqual(
 			scripts['test:window:project:auto'],

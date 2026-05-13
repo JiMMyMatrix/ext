@@ -23,6 +23,7 @@ AGGREGATE_WINDOW_SECONDS = 3600
 AGGREGATE_MAX_CALLS = 40
 ARCHITECT_ESCALATION_THRESHOLD = 3
 ARCHITECT_RESET_TIMEOUT_SECONDS = 300
+ADVISORY_BACKEND_TIMEOUT_SECONDS = 500
 MAX_DISTINCT_TOOLS_PER_CYCLE = 3
 _VALID_CYCLE_ID = re.compile(
     r"^(governor/[\w.-]+|[\w.-]+/[\w.-]+/[\w.-]+/[\w.-]+/[\w.-]+)$"
@@ -399,7 +400,7 @@ def _run_claude_code_sync(prompt: str, work_dir: str | None = None) -> str:
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=ADVISORY_BACKEND_TIMEOUT_SECONDS,
             cwd=str(resolved_work_dir),
             env={**os.environ},
             stdin=subprocess.DEVNULL,
@@ -418,7 +419,7 @@ def _run_claude_code_sync(prompt: str, work_dir: str | None = None) -> str:
             else "Warning: Empty response from Claude Code."
         )
     except subprocess.TimeoutExpired:
-        return "Error: Claude Code headless exceeded 300s timeout."
+        return f"Error: Claude Code headless exceeded {ADVISORY_BACKEND_TIMEOUT_SECONDS}s timeout."
     except Exception as exc:
         return f"Unexpected Error executing Claude Code: {exc}"
 
@@ -515,7 +516,7 @@ def _run_minimax_openai_sync(prompt: str, system_hint: str | None = None) -> str
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        with urllib.request.urlopen(request, timeout=ADVISORY_BACKEND_TIMEOUT_SECONDS) as response:
             response_payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = _redact_secret(exc.read().decode("utf-8", errors="replace"), api_key)[:1000]
@@ -523,7 +524,7 @@ def _run_minimax_openai_sync(prompt: str, system_hint: str | None = None) -> str
     except urllib.error.URLError as exc:
         return f"MiniMax API connection error: {exc.reason}"
     except TimeoutError:
-        return "MiniMax API exceeded 300s timeout."
+        return f"MiniMax API exceeded {ADVISORY_BACKEND_TIMEOUT_SECONDS}s timeout."
     except Exception as exc:
         return f"Unexpected MiniMax API error: {exc}"
 

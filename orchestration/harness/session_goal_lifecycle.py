@@ -444,13 +444,11 @@ def validate_goal_steps(steps: list[Any]) -> list[dict[str, Any]]:
 		if len(objective) > 700 or len(expected_output) > 500:
 			raise GoalPlanValidationError(f"Goal step {index} is too broad for a bounded step.")
 		step_ref = f"step-{index:02d}"
-		depends_on = raw_step.get("depends_on_step_ref")
-		if depends_on is not None:
-			depends_on = trim_text(depends_on)
-			if depends_on and depends_on not in seen_refs:
-				raise GoalPlanValidationError(
-					f"Goal step {index} depends on an unknown or later step."
-				)
+		depends_on = normalize_goal_step_dependency(
+			raw_step.get("depends_on_step_ref"),
+			seen_refs,
+			step_index=index,
+		)
 		validated.append(
 			{
 				"title": title,
@@ -462,6 +460,24 @@ def validate_goal_steps(steps: list[Any]) -> list[dict[str, Any]]:
 		)
 		seen_refs.add(step_ref)
 	return validated
+
+
+def normalize_goal_step_dependency(value: Any, seen_refs: set[str], *, step_index: int) -> str | None:
+	depends_on = trim_text(value)
+	if not depends_on:
+		return None
+	candidates = {depends_on, depends_on.lower().replace("_", "-").replace(" ", "-")}
+	normalized = depends_on.lower().replace("_", "-").replace(" ", "-")
+	if normalized.isdigit():
+		candidates.add(f"step-{int(normalized):02d}")
+	elif normalized.startswith("step-"):
+		suffix = normalized.removeprefix("step-")
+		if suffix.isdigit():
+			candidates.add(f"step-{int(suffix):02d}")
+	for candidate in candidates:
+		if candidate in seen_refs:
+			return candidate
+	raise GoalPlanValidationError(f"Goal step {step_index} depends on an unknown or later step.")
 
 
 def _extract_json_payload(body: str) -> Any:
