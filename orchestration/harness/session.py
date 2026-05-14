@@ -1529,6 +1529,7 @@ def _accept_pending_intake(
 	model["snapshot"]["task"] = envelope["task"]
 	model["snapshot"]["recentArtifacts"] = artifacts
 	model["snapshot"]["permissionScope"] = permission_scope
+	previous_plan_ready = model.get("planReadyRequest")
 	if permission_scope != "plan":
 		model["planReadyRequest"] = None
 	model["activeForegroundRequestId"] = (
@@ -1544,6 +1545,21 @@ def _accept_pending_intake(
 			request_id=request_id,
 		)
 		if dispatch_refs is None:
+			if model.get("executorRuntimeUnavailable"):
+				model.pop("executorRuntimeUnavailable", None)
+				model["snapshot"]["pendingPermissionRequest"] = None
+				model["snapshot"]["permissionScope"] = previous_permission_scope
+				model["planReadyRequest"] = previous_plan_ready
+				model["activeForegroundRequestId"] = current_foreground_request_id
+				_refresh_snapshot(
+					model,
+					now,
+					currentActor="orchestration",
+					currentStage="executor_runtime_unavailable",
+					runState="blocked",
+					transportState="connected",
+				)
+				return False
 			model["snapshot"]["pendingPermissionRequest"] = pending_permission
 			model["snapshot"]["permissionScope"] = previous_permission_scope
 			_refresh_snapshot(
@@ -2468,6 +2484,16 @@ def handle_set_permission_scope(
 			request_id=continuation_request_id,
 		)
 		if dispatch_refs is None:
+			if model.get("executorRuntimeUnavailable"):
+				model.pop("executorRuntimeUnavailable", None)
+				_refresh_snapshot(
+					model,
+					now,
+					currentActor="orchestration",
+					currentStage="executor_runtime_unavailable",
+					runState="blocked",
+					transportState="connected",
+				)
 			return
 		existing_artifacts = list(model["snapshot"].get("recentArtifacts") or [])
 		model["snapshot"]["permissionScope"] = permission_scope

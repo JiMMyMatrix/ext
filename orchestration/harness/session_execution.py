@@ -117,58 +117,34 @@ PET_DIARY_PRODUCT_PORTFOLIO_OUTPUTS = [
     "tests/product-validation.js",
 ]
 PET_DIARY_REAL_PROJECT_PRESET = "pet-life-diary-real-project"
-PET_DIARY_LIVE_ALLOWED_OUTPUTS = [
-    "README.md",
-    "index.html",
-    "src/app.js",
-    "src/styles.css",
-    "data/sample-pets.json",
-    "data/sample-entries.json",
-    "docs/product-spec.md",
-    "docs/demo-notes.md",
-    "tests/product-validation.js",
-]
 
-
-def is_live_real_project_executor_enabled() -> bool:
+def is_real_project_practical_exercise() -> bool:
     return (
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
         and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == PET_DIARY_REAL_PROJECT_PRESET
-        and os.environ.get("CORGI_EXECUTOR_RUNTIME") == "live"
     )
 
 
-def live_executor_timeout_seconds() -> int:
-    raw_value = os.environ.get("CORGI_LIVE_EXECUTOR_TIMEOUT_SECONDS", "900")
-    try:
-        value = int(raw_value)
-    except ValueError:
-        return 900
-    return max(value, 60)
+def selected_executor_runtime() -> str:
+    return trim_text(os.environ.get("CORGI_EXECUTOR_RUNTIME")) or "unset"
 
 
-def live_executor_command_timeout_seconds() -> int:
-    raw_value = os.environ.get("CORGI_LIVE_EXECUTOR_COMMAND_TIMEOUT_SECONDS")
-    if raw_value is not None:
-        try:
-            return max(int(raw_value), 60)
-        except ValueError:
-            pass
-    return live_executor_timeout_seconds() + 60
-
-
-def live_real_project_required_outputs(paths: Any, objective: str) -> list[str]:
-    lowered = objective.lower()
-    app_exists = (paths.repo_root / "index.html").exists() and (paths.repo_root / "src" / "app.js").exists()
-    if not app_exists:
-        return PET_DIARY_OUTPUTS.copy()
-    if any(token in lowered for token in ["readme", "documentation", "demo-ready", "demo ready", "portfolio"]):
-        return ["README.md"]
-    if any(token in lowered for token in ["style", "visual", "responsive", "polish", "layout"]):
-        return ["src/styles.css"]
-    if any(token in lowered for token in ["sample", "seed data", "fixture"]):
-        return ["data/sample-pets.json"]
-    return ["src/app.js"]
+def real_project_executor_runtime_unavailable_message() -> str:
+    runtime = selected_executor_runtime()
+    if runtime == "live":
+        return (
+            "The previous live Executor runtime used codex exec and has been removed. "
+            "Real-project execution is blocked until the patch-app-server Executor runtime is implemented."
+        )
+    if runtime == "patch-app-server":
+        return (
+            "The patch-app-server Executor runtime is reserved but not implemented yet. "
+            "Real-project execution is blocked instead of falling back to codex exec."
+        )
+    return (
+        "No supported real-project Executor runtime is available. "
+        "Real-project execution is blocked instead of using artifact-only readouts or codex exec."
+    )
 
 
 def accepted_goal_step(payload: dict[str, Any], step_ref: str) -> bool:
@@ -944,97 +920,6 @@ def extend_pet_diary_filter_retry_dispatch_args(
         args.extend(["--execution-evidence", evidence_ref])
 
 
-def extend_live_real_project_dispatch_args(
-    args: list[str],
-    paths: Any,
-    *,
-    dispatch_ref: str,
-    run_ref: str,
-    objective: str,
-    accepted_ref: str,
-) -> None:
-    required_outputs = live_real_project_required_outputs(paths, objective)
-    validation_ref = repo_relative(
-        paths.agent_root / "validations" / Path(dispatch_ref) / "pet_diary_live_project.json",
-        paths.repo_root,
-    )
-    manifest_ref = repo_relative(
-        paths.agent_root / "runs" / Path(run_ref) / "live_executor_manifest.json",
-        paths.repo_root,
-    )
-    last_message_ref = repo_relative(
-        paths.agent_root / "runs" / Path(run_ref) / "codex_last_message.md",
-        paths.repo_root,
-    )
-    for output_ref in required_outputs:
-        args.extend(["--run-produce", output_ref])
-        args.extend(["--required-output", output_ref])
-    for output_ref in PET_DIARY_LIVE_ALLOWED_OUTPUTS:
-        args.extend(["--run-touch", output_ref])
-
-    command_parts = [
-        command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
-        command_arg(script_ref("executor_live_codex_project.py", paths.repo_root)),
-        "--repo-root",
-        command_arg(str(paths.repo_root)),
-        "--dispatch-ref",
-        command_arg(dispatch_ref),
-        "--objective",
-        command_arg(objective),
-        "--accepted-intake",
-        command_arg(accepted_ref),
-        "--manifest",
-        command_arg(manifest_ref),
-        "--last-message",
-        command_arg(last_message_ref),
-        "--timeout-seconds",
-        command_arg(str(live_executor_timeout_seconds())),
-    ]
-    for output_ref in required_outputs:
-        command_parts.extend(["--required-output", command_arg(output_ref)])
-    for output_ref in PET_DIARY_LIVE_ALLOWED_OUTPUTS:
-        command_parts.extend(["--target-file", command_arg(output_ref)])
-
-    validator_parts = [
-        command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
-        command_arg(script_ref("validate_pet_diary_live_project.py", paths.repo_root)),
-        "--repo-root",
-        command_arg(str(paths.repo_root)),
-        "--report",
-        command_arg(validation_ref),
-    ]
-    for output_ref in required_outputs:
-        validator_parts.extend(["--required-output", command_arg(output_ref)])
-
-    args.extend(
-        [
-            "--authorship-evidence-required",
-            "--command-timeout-sec",
-            str(live_executor_command_timeout_seconds()),
-            "--command",
-            " ".join(command_parts),
-            "--validator-command",
-            " ".join(validator_parts),
-            "--execution-summary",
-            "Executor used the live scratch-only Codex runtime to advance the Pet Life Diary project.",
-            "--execution-claim",
-            "Executor performed real project work in the isolated scratch workspace instead of writing a readout artifact.",
-            "--execution-claim",
-            "This dispatch is part of the practical real-project exercise and must show authorship evidence for declared outputs.",
-            "--execution-evidence",
-            manifest_ref,
-            "--execution-evidence",
-            last_message_ref,
-            "--execution-evidence",
-            validation_ref,
-            "--execution-note",
-            "scratch_live_executor",
-            "--execution-next-action",
-            "Reviewer should verify the live Executor output, validation evidence, and authorship before Governor advances the goal.",
-        ]
-    )
-
-
 def emit_plan_execution_dispatch(
     session: dict[str, Any],
     now: str,
@@ -1045,6 +930,7 @@ def emit_plan_execution_dispatch(
     append_error: AppendError,
 ) -> dict[str, Any] | None:
     model = session["model"]
+    model.pop("executorRuntimeUnavailable", None)
     paths = resolve_paths(repo_root)
     branch = model["snapshot"].get("branch") or git_branch_name(repo_root)
     lane = model["snapshot"].get("lane") or default_lane(branch)
@@ -1115,6 +1001,29 @@ def emit_plan_execution_dispatch(
     is_goal_filter = is_pet_diary_goal_filter_dispatch(accepted_payload)
     is_goal_filter_retry = is_pet_diary_goal_filter_retry_dispatch(accepted_payload)
     is_goal_readme = is_pet_diary_goal_readme_dispatch(accepted_payload)
+    if is_real_project_practical_exercise():
+        model["snapshot"]["currentActor"] = "orchestration"
+        model["snapshot"]["currentStage"] = "executor_runtime_unavailable"
+        model["snapshot"]["runState"] = "blocked"
+        model["executorRuntimeUnavailable"] = {
+            "runtime": selected_executor_runtime(),
+            "requiredRuntime": "patch-app-server",
+            "reason": "executor_runtime_unavailable",
+        }
+        append_error(
+            model,
+            "Executor runtime unavailable",
+            real_project_executor_runtime_unavailable_message(),
+            now,
+            in_response_to_request_id=request_id,
+            presentation_key="error.executor_runtime_unavailable",
+            presentation_args={
+                "runtime": selected_executor_runtime(),
+                "requiredRuntime": "patch-app-server",
+                "reason": "executor_runtime_unavailable",
+            },
+        )
+        return None
     args = [
         "--dispatch-ref",
         dispatch_ref,
@@ -1142,16 +1051,7 @@ def emit_plan_execution_dispatch(
         "--root",
         str(paths.repo_root),
     ]
-    if is_live_real_project_executor_enabled():
-        extend_live_real_project_dispatch_args(
-            args,
-            paths,
-            dispatch_ref=dispatch_ref,
-            run_ref=run_ref,
-            objective=objective,
-            accepted_ref=accepted_ref,
-        )
-    elif is_product_goal_routines:
+    if is_product_goal_routines:
         extend_product_pet_diary_routines_dispatch_args(
             args,
             paths,

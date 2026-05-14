@@ -830,9 +830,9 @@ class HarnessPackageTests(unittest.TestCase):
             for output_ref in session_execution.PET_DIARY_OUTPUTS:
                 self.assertIn(output_ref, args)
 
-    def test_real_project_live_executor_requires_explicit_scratch_runtime_flag(self) -> None:
+    def test_real_project_codex_exec_executor_is_not_available(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(session_execution.is_live_real_project_executor_enabled())
+            self.assertFalse(session_execution.is_real_project_practical_exercise())
 
         with mock.patch.dict(
             os.environ,
@@ -843,112 +843,184 @@ class HarnessPackageTests(unittest.TestCase):
             },
             clear=True,
         ):
-            self.assertTrue(session_execution.is_live_real_project_executor_enabled())
+            self.assertTrue(session_execution.is_real_project_practical_exercise())
+            self.assertIn(
+                "codex exec",
+                session_execution.real_project_executor_runtime_unavailable_message(),
+            )
 
-    def test_real_project_live_dispatch_uses_live_codex_executor(self) -> None:
-        source_root = Path(__file__).resolve().parents[2]
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+            },
+            clear=True,
+        ):
+            self.assertTrue(session_execution.is_real_project_practical_exercise())
+            self.assertIn(
+                "not implemented yet",
+                session_execution.real_project_executor_runtime_unavailable_message(),
+            )
+
+    def test_real_project_dispatch_fails_closed_without_supported_executor_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()
             with mock.patch.dict(
                 os.environ,
                 {
                     "ORCHESTRATION_REPO_ROOT": str(repo_root),
-                    "ORCHESTRATION_SOURCE_ROOT": str(source_root),
                     "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
                     "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
                     "CORGI_EXECUTOR_RUNTIME": "live",
                 },
             ):
-                paths = resolve_paths(repo_root)
-                args: list[str] = []
+                intake_ref = "real-project-step"
+                write_json(
+                    intake.accepted_intake_path(intake_ref, repo_root=repo_root),
+                    {
+                        "intake_ref": intake_ref,
+                        "goal": "Build a portfolio-grade Pet Life Diary app.",
+                        "task": "Build the first local-first Pet Life Diary demo step.",
+                        "accepted_summary": "Build the first local-first Pet Life Diary demo step.",
+                    },
+                )
+                state = session.load_session(repo_root)
+                state["meta"]["activeIntakeRef"] = intake_ref
+                state["model"]["acceptedIntakeSummary"] = {
+                    "title": "Accepted intake summary",
+                    "body": "Build the first local-first Pet Life Diary demo step.",
+                }
+                state["model"]["planReadyRequest"] = {
+                    "id": "plan-ready-test",
+                    "foregroundRequestId": "corgi-request:plan",
+                    "contextRef": "plan-context-test",
+                    "planContextRef": "plan-context-test",
+                    "workRef": "work-real-project",
+                    "planRef": ".agent/work/work-real-project/plans/plan-v1.md",
+                    "planVersion": 1,
+                    "acceptedIntakeSummary": {
+                        "body": "Build the first local-first Pet Life Diary demo step.",
+                    },
+                    "allowedActions": ["execute_plan", "revise_plan"],
+                }
+                state["model"]["snapshot"]["task"] = "Build the first local-first Pet Life Diary demo step."
+                state["model"]["snapshot"]["currentStage"] = "plan_ready"
+                state["model"]["snapshot"]["permissionScope"] = "plan"
+                session.save_session(state, repo_root=repo_root)
 
-                session_execution.extend_live_real_project_dispatch_args(
-                    args,
-                    paths,
-                    dispatch_ref="lane/main/dispatch-live",
-                    run_ref="lane/main/dispatch-live/result/attempt-1",
-                    objective="Build the first local-first Pet Life Diary demo step.",
-                    accepted_ref=".agent/intakes/goal-step/accepted_intake.json",
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:execute-real-project",
+                    context_ref="plan-context-test",
+                    repo_root=repo_root,
                 )
 
-                joined = " ".join(args)
-                self.assertIn("--authorship-evidence-required", args)
-                self.assertIn("--command-timeout-sec", args)
-                self.assertIn("960", args)
-                self.assertIn("executor_live_codex_project.py", joined)
-                self.assertIn("--timeout-seconds 900", joined)
-                self.assertIn("validate_pet_diary_live_project.py", joined)
-                self.assertIn("scratch_live_executor", args)
-                self.assertNotIn("executor_write_readout.py", joined)
-                for output_ref in session_execution.PET_DIARY_OUTPUTS:
-                    self.assertIn(output_ref, args)
+                self.assertFalse((repo_root / ".agent" / "dispatches").exists())
+                self.assertEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
+                self.assertEqual(model["snapshot"]["runState"], "blocked")
+                self.assertEqual(model["feed"][-1]["type"], "error")
+                self.assertEqual(model["feed"][-1]["title"], "Executor runtime unavailable")
+                self.assertEqual(
+                    model["feed"][-1].get("presentation_key"),
+                    "error.executor_runtime_unavailable",
+                )
+                self.assertEqual(
+                    model["feed"][-1].get("presentation_args", {}).get("runtime"),
+                    "live",
+                )
+                self.assertNotIn("executorRuntimeUnavailable", model)
 
-    def test_live_executor_timeout_writes_failure_manifest(self) -> None:
-        source_root = Path(__file__).resolve().parents[2]
+    def test_real_project_runtime_marker_does_not_affect_later_dispatch_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            repo_root = Path(tmp_dir) / "scratch-workspaces" / "live-timeout"
-            repo_root.mkdir(parents=True)
-            intake_ref = ".agent/intakes/test/accepted_intake.json"
-            write_json(
-                repo_root / intake_ref,
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
                 {
-                    "goal": "Build a Pet Life Diary app.",
-                    "task": "Timeout test",
-                    "accepted_summary": "Timeout test",
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "live",
                 },
-            )
-            fake_codex = Path(tmp_dir) / "codex"
-            fake_codex.write_text(
-                "#!/usr/bin/env python3\n"
-                "import time\n"
-                "time.sleep(5)\n",
-                encoding="utf-8",
-            )
-            fake_codex.chmod(0o755)
-            manifest_ref = ".agent/runs/lane/main/dispatch-timeout/result/attempt-1/live_executor_manifest.json"
-            script = source_root / "orchestration" / "scripts" / "executor_live_codex_project.py"
-            env = {
-                **os.environ,
-                "CORGI_CODEX_BIN": str(fake_codex),
-                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
-                "ORCHESTRATION_SOURCE_ROOT": str(source_root),
-            }
+            ):
+                intake_ref = "real-project-step"
+                write_json(
+                    intake.accepted_intake_path(intake_ref, repo_root=repo_root),
+                    {
+                        "intake_ref": intake_ref,
+                        "goal": "Build a portfolio-grade Pet Life Diary app.",
+                        "task": "Build the first local-first Pet Life Diary demo step.",
+                        "accepted_summary": "Build the first local-first Pet Life Diary demo step.",
+                    },
+                )
+                state = session.load_session(repo_root)
+                state["meta"]["activeIntakeRef"] = intake_ref
+                state["model"]["acceptedIntakeSummary"] = {
+                    "title": "Accepted intake summary",
+                    "body": "Build the first local-first Pet Life Diary demo step.",
+                }
+                state["model"]["planReadyRequest"] = {
+                    "id": "plan-ready-test",
+                    "foregroundRequestId": "corgi-request:plan",
+                    "contextRef": "plan-context-test",
+                    "planContextRef": "plan-context-test",
+                    "workRef": "work-real-project",
+                    "planRef": ".agent/work/work-real-project/plans/plan-v1.md",
+                    "planVersion": 1,
+                    "acceptedIntakeSummary": {
+                        "body": "Build the first local-first Pet Life Diary demo step.",
+                    },
+                    "allowedActions": ["execute_plan", "revise_plan"],
+                }
+                state["model"]["snapshot"]["task"] = "Build the first local-first Pet Life Diary demo step."
+                state["model"]["snapshot"]["currentStage"] = "plan_ready"
+                state["model"]["snapshot"]["permissionScope"] = "plan"
+                session.save_session(state, repo_root=repo_root)
 
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    str(script),
-                    "--repo-root",
-                    str(repo_root),
-                    "--dispatch-ref",
-                    "lane/main/dispatch-timeout",
-                    "--objective",
-                    "Create the first Pet Life Diary file.",
-                    "--accepted-intake",
-                    intake_ref,
-                    "--manifest",
-                    manifest_ref,
-                    "--last-message",
-                    ".agent/runs/lane/main/dispatch-timeout/result/attempt-1/codex_last_message.md",
-                    "--target-file",
-                    "README.md",
-                    "--required-output",
-                    "README.md",
-                    "--timeout-seconds",
-                    "1",
-                ],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+                blocked = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:execute-real-project",
+                    context_ref="plan-context-test",
+                    repo_root=repo_root,
+                )
+                self.assertEqual(blocked["feed"][-1].get("presentation_key"), "error.executor_runtime_unavailable")
+                self.assertNotIn("executorRuntimeUnavailable", blocked)
 
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("timed out", proc.stderr)
-            manifest = load_json(repo_root / manifest_ref)
-            self.assertEqual(manifest["codex"]["returncode"], 124)
-            self.assertTrue(manifest["codex"]["timed_out"])
-            self.assertEqual(manifest["codex"]["timeout_seconds"], 1)
+            with mock.patch.dict(os.environ, {"ORCHESTRATION_REPO_ROOT": str(repo_root)}, clear=True):
+                state = session.load_session(repo_root)
+                state["meta"]["activeIntakeRef"] = "missing-intake-artifact"
+                state["model"]["acceptedIntakeSummary"] = {
+                    "title": "Accepted intake summary",
+                    "body": "Analyze the repo.",
+                }
+                state["model"]["planReadyRequest"] = {
+                    "id": "plan-ready-next",
+                    "foregroundRequestId": "corgi-request:plan-next",
+                    "contextRef": "plan-context-next",
+                    "planContextRef": "plan-context-next",
+                    "workRef": "work-next",
+                    "planRef": ".agent/work/work-next/plans/plan-v1.md",
+                    "planVersion": 1,
+                    "acceptedIntakeSummary": {"body": "Analyze the repo."},
+                    "allowedActions": ["execute_plan", "revise_plan"],
+                }
+                state["model"]["snapshot"]["task"] = "Analyze the repo."
+                state["model"]["snapshot"]["currentStage"] = "plan_ready"
+                state["model"]["snapshot"]["permissionScope"] = "plan"
+                session.save_session(state, repo_root=repo_root)
+
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:execute-next",
+                    context_ref="plan-context-next",
+                    repo_root=repo_root,
+                )
+
+                self.assertEqual(model["feed"][-1]["title"], "Accepted intake artifact missing")
+                self.assertEqual(model["feed"][-1].get("presentation_key"), "error.plan_not_ready")
+                self.assertNotEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
+                self.assertNotIn("executorRuntimeUnavailable", model)
 
     def test_pet_diary_bugfix_executor_requires_explicit_scratch_test_metadata(self) -> None:
         objective = "Fix the pet diary app so adding a diary entry updates the visible list."

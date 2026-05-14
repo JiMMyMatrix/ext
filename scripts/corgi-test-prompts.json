@@ -176,9 +176,10 @@
       ],
       "assertions": [
         "The goal plan comes from Governor, not the deterministic product-goal template.",
-        "The monitor is duration/progress based, not tied to a required number of goal steps.",
-        "A short completed run is treated as premature completion unless the session has actually run for the configured practical duration.",
-        "The scratch project should grow toward a few-thousand-line demo with real Executor file mutations.",
+        "The monitor is progress based and does not require a fixed step count, duration, or project size.",
+        "A short completed run is treated as premature when Corgi has not actually advanced the practical goal.",
+        "The scratch project should grow through real Executor file mutations once a supported real-project Executor runtime exists.",
+        "Until patch-app-server Executor support exists, real-project execution fails closed with executor_runtime_unavailable instead of using codex exec.",
         "Readout-only Executor fallback is treated as a blocker, not success.",
         "The scratch workspace remains isolated from the Corgi development repo."
       ],

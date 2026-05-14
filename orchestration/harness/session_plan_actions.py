@@ -154,6 +154,7 @@ def handle_execute_plan(
 		request_id=request_id,
 	)
 	if dispatch_refs is None:
+		model.pop("executorRuntimeUnavailable", None)
 		return
 	existing_artifacts = list(model["snapshot"].get("recentArtifacts") or [])
 	model["snapshot"]["pendingPermissionRequest"] = None
