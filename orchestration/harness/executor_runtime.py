@@ -319,6 +319,8 @@ def run_payload_validators(repo_root: Path, request: Dict) -> List[str]:
             check=True,
             cwd=str(cwd.resolve()),
             env=subprocess_env_for_source_root(repo_root),
+            text=True,
+            capture_output=True,
             timeout=command["timeout_sec"],
         )
         executed.append("validator: " + " ".join(command["argv"]))

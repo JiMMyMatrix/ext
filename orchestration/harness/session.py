@@ -325,6 +325,32 @@ def _prepare_governor_goal_revision_runtime_request(
 	)
 
 
+def _prepare_governor_goal_continuation_runtime_request(
+	session: dict[str, Any],
+	goal_ref: str,
+	now: str,
+	*,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	continuation_request_ref: str | None = None,
+	auto_consume_executor_after_plan: bool = False,
+	auto_governor_runtime_after_plan: str = "exec",
+	invalid_attempt_count: int = 0,
+) -> dict[str, Any]:
+	return session_governor_requests.prepare_governor_goal_continuation_runtime_request(
+		session,
+		goal_ref,
+		now,
+		refresh_snapshot=_refresh_snapshot,
+		repo_root=repo_root,
+		request_id=request_id,
+		continuation_request_ref=continuation_request_ref,
+		auto_consume_executor_after_plan=auto_consume_executor_after_plan,
+		auto_governor_runtime_after_plan=auto_governor_runtime_after_plan,
+		invalid_attempt_count=invalid_attempt_count,
+	)
+
+
 def _append_completed_governor_dialogue_response(
 	session: dict[str, Any],
 	pending: dict[str, Any],
@@ -476,6 +502,201 @@ def _complete_governor_goal_plan(
 	runtime_source: str = "app-server",
 ) -> bool:
 	model = session["model"]
+
+	def should_auto_consume_after_plan() -> bool:
+		return bool(pending.get("autoConsumeExecutorAfterPlan")) and not bool(
+			pending.get("deferAutoExecuteToClient")
+		)
+
+	if pending.get("turnType") == "goal_continuation":
+		goal_ref = pending.get("goalRef")
+		if not isinstance(goal_ref, str) or not goal_ref.strip():
+			_append_error(
+				model,
+				"Goal continuation rejected",
+				"Corgi could not find the active goal to continue.",
+				now,
+				in_response_to_request_id=pending.get("requestId"),
+				presentation_key="goal.blocked",
+				presentation_args={"reason": "missing_goal_ref"},
+			)
+			model["activeForegroundRequestId"] = None
+			return False
+		progress = session_goal_lifecycle.load_goal_progress(goal_ref, repo_root=repo_root)
+		if (
+			progress.get("continuation_state") != "pending"
+			or progress.get("pending_continuation_request_ref") != pending.get("continuationRequestRef")
+		):
+			_append_error(
+				model,
+				"Goal continuation rejected",
+				"The goal continuation checkpoint changed before the Governor reply was applied.",
+				now,
+				in_response_to_request_id=pending.get("requestId"),
+				presentation_key="error.stale_context",
+				presentation_args={"kind": "goal_continuation"},
+			)
+			model["activeForegroundRequestId"] = None
+			return False
+		try:
+			continuation = session_goal_lifecycle.parse_governor_goal_continuation_response(body)
+		except session_goal_lifecycle.GoalPlanValidationError as exc:
+			invalid_attempt_count = int(pending.get("invalidAttemptCount") or 0)
+			if invalid_attempt_count < 1:
+				_prepare_governor_goal_continuation_runtime_request(
+					session,
+					goal_ref,
+					now,
+					repo_root=repo_root,
+					request_id=pending.get("requestId"),
+					continuation_request_ref=pending.get("continuationRequestRef"),
+					auto_consume_executor_after_plan=bool(pending.get("autoConsumeExecutorAfterPlan")),
+					auto_governor_runtime_after_plan=str(pending.get("autoGovernorRuntimeAfterPlan") or "exec"),
+					invalid_attempt_count=invalid_attempt_count + 1,
+				)
+				return False
+			session_goal_lifecycle.mark_goal_blocked(
+				session,
+				goal_ref,
+				now,
+				"invalid_goal_continuation",
+				repo_root=repo_root,
+			)
+			_append_error(
+				model,
+				"Goal continuation rejected",
+				"Corgi could not validate the Governor goal-continuation decision.",
+				now,
+				in_response_to_request_id=pending.get("requestId"),
+				presentation_key="goal.blocked",
+				presentation_args={"reason": "invalid_goal_continuation", "detail": str(exc)},
+			)
+			_refresh_snapshot(
+				model,
+				now,
+				currentActor="orchestration",
+				currentStage="goal_blocked",
+				runState="idle",
+				transportState="connected",
+			)
+			model["activeForegroundRequestId"] = None
+			return False
+		governor_meta = _governor_dialogue_meta(session)
+		if app_server_thread_id:
+			governor_meta["appServerThreadId"] = app_server_thread_id
+		if app_server_turn_id:
+			governor_meta["lastAppServerTurnId"] = app_server_turn_id
+		if app_server_item_id:
+			governor_meta["lastAppServerItemId"] = app_server_item_id
+		governor_meta["lastRuntimeSource"] = runtime_source
+		governor_meta["lastUsedAt"] = utc_now()
+		reply = str(continuation.get("user_visible_reply") or "")
+		try:
+			outcome = session_goal_lifecycle.apply_goal_continuation_decision(
+				session,
+				goal_ref,
+				continuation,
+				now,
+				next_id=_next_id,
+				artifact_factory=_artifact,
+				feed_item=_feed_item,
+				repo_root=repo_root,
+			)
+		except session_goal_lifecycle.GoalPlanValidationError as exc:
+			session_goal_lifecycle.mark_goal_blocked(
+				session,
+				goal_ref,
+				now,
+				"invalid_goal_continuation",
+				repo_root=repo_root,
+			)
+			_append_error(
+				model,
+				"Goal continuation rejected",
+				"Corgi could not apply the Governor goal-continuation decision.",
+				now,
+				in_response_to_request_id=pending.get("requestId"),
+				presentation_key="goal.blocked",
+				presentation_args={"reason": "invalid_goal_continuation", "detail": str(exc)},
+			)
+			model["activeForegroundRequestId"] = None
+			return False
+		if reply and outcome in {"extended", "finalized"}:
+			model["feed"].append(
+				_feed_item(
+					"actor_event",
+					"Governor goal continuation",
+					reply,
+					authoritative=True,
+					now=now,
+					details=pending.get("details") if isinstance(pending.get("details"), list) else [],
+					source_layer="governor",
+					source_actor="governor",
+					turn_type="goal_continuation",
+					in_response_to_request_id=pending.get("requestId"),
+				)
+			)
+		elif reply and outcome == "blocked":
+			model["feed"].append(
+				_feed_item(
+					"system_status",
+					"Goal blocked",
+					reply,
+					authoritative=True,
+					now=now,
+					in_response_to_request_id=pending.get("requestId"),
+					presentation_key="goal.blocked",
+					presentation_args={
+						"reason": continuation.get("blocked_reason") or continuation.get("reason") or "goal_continuation_blocked",
+					},
+					activity={
+						"kind": "status",
+						"state": "blocked",
+						"summary": "Goal continuation blocked.",
+					},
+				)
+			)
+		if outcome == "extended":
+			_refresh_snapshot(
+				model,
+				now,
+				currentActor="governor",
+				currentStage="plan_ready",
+				runState="idle",
+				transportState="connected",
+			)
+			if should_auto_consume_after_plan():
+				plan_ready = model.get("planReadyRequest")
+				if isinstance(plan_ready, dict):
+					handle_execute_plan(
+						session,
+						repo_root=repo_root,
+						session_ref=model["snapshot"].get("sessionRef"),
+						request_id=_next_id("request"),
+						context_ref=plan_ready.get("contextRef"),
+						governor_runtime=str(pending.get("autoGovernorRuntimeAfterPlan") or "exec"),
+						auto_consume_executor=True,
+					)
+		elif outcome == "finalized":
+			_refresh_snapshot(
+				model,
+				now,
+				currentActor="governor",
+				currentStage="goal_completed",
+				runState="idle",
+				transportState="connected",
+			)
+		else:
+			_refresh_snapshot(
+				model,
+				now,
+				currentActor="orchestration",
+				currentStage="goal_blocked",
+				runState="idle",
+				transportState="connected",
+			)
+		model["activeForegroundRequestId"] = None
+		return True
 	try:
 		reply, steps = session_goal_lifecycle.parse_governor_goal_plan_response(body)
 	except session_goal_lifecycle.GoalPlanValidationError as exc:
@@ -584,7 +805,7 @@ def _complete_governor_goal_plan(
 			runState="idle",
 			transportState="connected",
 		)
-		if pending.get("autoConsumeExecutorAfterPlan"):
+		if should_auto_consume_after_plan():
 			plan_ready = model.get("planReadyRequest")
 			if isinstance(plan_ready, dict):
 				handle_execute_plan(
@@ -651,7 +872,7 @@ def _complete_governor_goal_plan(
 		runState="idle",
 		transportState="connected",
 	)
-	if pending.get("autoConsumeExecutorAfterPlan"):
+	if should_auto_consume_after_plan():
 		plan_ready = model.get("planReadyRequest")
 		if isinstance(plan_ready, dict):
 			handle_execute_plan(
@@ -2417,6 +2638,7 @@ def _auto_continue_goal_program(
 		"permission_needed",
 		"plan_ready",
 		"goal_planning",
+		"goal_continuation_pending",
 		"goal_blocked",
 		"blocked",
 		"executor_blocked",
@@ -2425,7 +2647,7 @@ def _auto_continue_goal_program(
 		"governor_finalization_blocked",
 		"revision_limit_reached",
 	}
-	for _ in range(8):
+	for _ in range(32):
 		if model["snapshot"].get("goalStatus") in {"completed", "blocked"}:
 			break
 		if model["snapshot"].get("currentStage") != "governor_decision_recorded":
@@ -2479,6 +2701,41 @@ def _auto_continue_goal_program(
 			repo_root=repo_root,
 		)
 		if outcome != "next_step":
+			if outcome == "continuation_pending":
+				goal_ref = model.get("currentGoalRef") or session.get("meta", {}).get("activeGoalRef")
+				if not isinstance(goal_ref, str) or not goal_ref.strip():
+					break
+				progress = session_goal_lifecycle.load_goal_progress(goal_ref, repo_root=repo_root)
+				request_ref = progress.get("pending_continuation_request_ref")
+				if (
+					governor_runtime == "external"
+					and not session_goal_lifecycle.goal_uses_template_plan(goal_ref, repo_root=repo_root)
+				):
+					_prepare_governor_goal_continuation_runtime_request(
+						session,
+						goal_ref,
+						utc_now(),
+						repo_root=repo_root,
+						request_id=_next_id("request"),
+						continuation_request_ref=request_ref if isinstance(request_ref, str) else None,
+						auto_consume_executor_after_plan=True,
+						auto_governor_runtime_after_plan=governor_runtime,
+					)
+				else:
+					session_goal_lifecycle.apply_goal_continuation_decision(
+						session,
+						goal_ref,
+						{
+							"decision": "finalize",
+							"reason": "All planned template goal steps completed.",
+							"user_visible_reply": "",
+						},
+						utc_now(),
+						next_id=_next_id,
+						artifact_factory=_artifact,
+						feed_item=_feed_item,
+						repo_root=repo_root,
+					)
 			break
 		plan_ready = model.get("planReadyRequest")
 		if not isinstance(plan_ready, dict):
@@ -2752,7 +3009,17 @@ def handle_complete_governor_turn(
 	turn_id: str | None = None,
 	item_id: str | None = None,
 	runtime_source: str = "app-server",
+	defer_auto_execute: bool = False,
 ) -> None:
+	pending = _pending_governor_runtime_request(session)
+	if (
+		defer_auto_execute
+		and pending
+		and runtime_request_id
+		and pending.get("runtimeRequestId") == runtime_request_id
+		and pending.get("runtimeKind") == "goal_plan"
+	):
+		pending["deferAutoExecuteToClient"] = True
 	session_governor_turn_actions.handle_complete_governor_turn(
 		session,
 		repo_root=repo_root,
@@ -2903,9 +3170,10 @@ def dispatch_session_action(
 	runtime_thread_id: str | None = None,
 	runtime_turn_id: str | None = None,
 	runtime_item_id: str | None = None,
-	runtime_source: str = "app-server",
-	fallback_reason: str | None = None,
-	auto_consume_executor: bool = False,
+		runtime_source: str = "app-server",
+		fallback_reason: str | None = None,
+		defer_auto_execute: bool = False,
+		auto_consume_executor: bool = False,
 ) -> dict[str, Any]:
 	session = load_session(repo_root)
 	now = utc_now()
@@ -3042,6 +3310,7 @@ def dispatch_session_action(
 			turn_id=runtime_turn_id,
 			item_id=runtime_item_id,
 			runtime_source=runtime_source,
+			defer_auto_execute=defer_auto_execute,
 		)
 	elif command == "fallback_governor_turn":
 		handle_fallback_governor_turn(
@@ -3083,9 +3352,10 @@ def dispatch_session_action(
 	elif command != "state":
 		raise ValueError(f"unsupported session command: {command}")
 
-	if command not in {"state", "complete_governor_turn", "fallback_governor_turn", "fail_governor_turn"}:
-		session_guards.remember_request(session, request_id, command, now)
-	save_session(session, repo_root=repo_root)
+	if command != "state":
+		if command not in {"complete_governor_turn", "fallback_governor_turn", "fail_governor_turn"}:
+			session_guards.remember_request(session, request_id, command, now)
+		save_session(session, repo_root=repo_root)
 	pending = _pending_governor_runtime_request(session)
 	if pending and (
 		governor_runtime == "external"

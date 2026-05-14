@@ -33,8 +33,9 @@ suite('Corgi Execution Transport', () => {
 		assert.ok(transportSource.includes("get<string>('governorRuntime')"));
 		assert.ok(transportSource.includes("configured === 'exec' ? 'exec' : 'app-server'"));
 		assert.ok(transportSource.includes("'--governor-runtime', 'external'"));
-		assert.ok(transportSource.includes("'complete-governor-turn'"));
-		assert.ok(transportSource.includes('const completed = await this.runRaw'));
+			assert.ok(transportSource.includes("'complete-governor-turn'"));
+			assert.ok(transportSource.includes("'--defer-auto-execute'"));
+			assert.ok(transportSource.includes('const completed = await this.runRaw'));
 		assert.ok(transportSource.includes('isGovernorRuntimeResponse(completed)'));
 		assert.ok(transportSource.includes("'fail-governor-turn'"));
 		assert.ok(transportSource.includes('isAppServerShutdownReason'));

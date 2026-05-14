@@ -128,12 +128,12 @@ def initial_governor_goal_plan_prompt(goal_text: str) -> str:
 	return "\n\n".join(
 		[
 			"Governor goal-program planner for Corgi.",
-			"Purpose: decompose one large user goal into a small ordered set of bounded work steps.",
+			"Purpose: decompose one large user goal into the next useful ordered tranche of bounded work steps.",
 			"Authority rules:\n"
 			"- You propose the goal plan; orchestration validates and sequences it.\n"
 			"- Do not create dispatch truth, start execution, or imply Execute permission.\n"
 			"- Each step must be executable through the existing Governor / Executor / Reviewer lifecycle.\n"
-			"- Prefer 4 to 6 serial steps for broad product goals. Keep every step bounded and testable.\n"
+			"- Choose the next useful serial tranche of bounded, testable work; do not treat a broad practical project as complete after one short pass.\n"
 			"- If a step depends on an earlier step, use depends_on_step_ref like step-01 or step-02; otherwise use null.\n"
 			"- Return JSON only; no Markdown fences.",
 			"JSON shape:\n"
@@ -182,7 +182,7 @@ def initial_governor_goal_revision_prompt(
 			"- Return only replacement steps for the current and remaining unfinished work.\n"
 			"- Orchestration validates this proposal and keeps the same goalRef.\n"
 			"- Do not create dispatch truth, start execution, or imply Execute permission.\n"
-			"- Prefer 1 to 4 serial steps. Keep every step bounded and testable.\n"
+			"- Return the next useful bounded serial tranche for unfinished work. Keep every step bounded and testable.\n"
 			"- Return JSON only; no Markdown fences.",
 			"JSON shape:\n"
 			"{\n"
@@ -212,6 +212,56 @@ def resume_governor_goal_revision_prompt(goal_text: str, revision_reason: str) -
 			"Return JSON only with user_visible_reply and replacement steps for unfinished work.",
 			f"User goal: {trim_text(goal_text)}",
 			f"Revision reason: {trim_text(revision_reason) or 'Goal path needs adjustment.'}",
+		]
+	)
+
+
+def initial_governor_goal_continuation_prompt(
+	goal_text: str,
+	completed_steps: list[dict] | None = None,
+	plan_version: int | None = None,
+) -> str:
+	completed_summary = _goal_step_summary(completed_steps or [])
+	return "\n\n".join(
+		[
+			"Governor goal-continuation checkpoint for Corgi.",
+			"Purpose: decide whether the active user goal is complete, needs more bounded steps, or is blocked.",
+			"Authority rules:\n"
+			"- You propose the continuation decision; orchestration validates and sequences it.\n"
+			"- Do not start execution, create dispatch truth, or imply Execute permission.\n"
+			"- If the completed steps satisfy the original goal well enough, choose finalize.\n"
+			"- If important work remains, choose extend and provide the next useful bounded serial tranche.\n"
+			"- For long-running practical-development goals, prefer extending with the next meaningful work unless the project is genuinely demo-ready.\n"
+			"- If the goal cannot safely continue, choose block and explain the blocker.\n"
+			"- Return JSON only; no Markdown fences.",
+			"JSON shape:\n"
+			"{\n"
+			'  "decision": "finalize | extend | block",\n'
+			'  "user_visible_reply": "short user-facing summary",\n'
+			'  "reason": "brief internal-safe reason",\n'
+			'  "steps": [\n'
+			"    {\n"
+			'      "title": "short next step title",\n'
+			'      "objective": "specific bounded objective for Executor/Reviewer",\n'
+			'      "expected_output": "concrete output or validation evidence",\n'
+			'      "depends_on_step_ref": null\n'
+			"    }\n"
+			"  ],\n"
+			'  "blocked_reason": "required only when decision is block"\n'
+			"}",
+			f"User goal: {trim_text(goal_text)}",
+			f"Current plan version: {plan_version or 1}",
+			f"Completed steps: {completed_summary or 'none'}",
+		]
+	)
+
+
+def resume_governor_goal_continuation_prompt(goal_text: str) -> str:
+	return "\n\n".join(
+		[
+			"Continue as the Governor goal-continuation checkpoint for Corgi.",
+			"Return JSON only with decision, user_visible_reply, reason, optional steps, and optional blocked_reason.",
+			f"User goal: {trim_text(goal_text)}",
 		]
 	)
 

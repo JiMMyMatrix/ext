@@ -30,6 +30,14 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def tail_text(value: str | bytes | None, limit: int = 4000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return value[-limit:]
+
+
 def repo_local_path(repo_root: Path, value: str) -> Path:
     rel = Path(value)
     if rel.is_absolute() or ".." in rel.parts:
@@ -186,13 +194,27 @@ def main(argv: list[str] | None = None) -> int:
         str(last_message_path),
         prompt,
     ]
-    proc = subprocess.run(
-        command,
-        cwd=str(repo_root),
-        text=True,
-        capture_output=True,
-        timeout=args.timeout_seconds,
-    )
+    timed_out = False
+    timeout_stdout = ""
+    timeout_stderr = ""
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(repo_root),
+            text=True,
+            capture_output=True,
+            timeout=args.timeout_seconds,
+        )
+        returncode = proc.returncode
+        stdout_tail = tail_text(proc.stdout)
+        stderr_tail = tail_text(proc.stderr)
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        timeout_stdout = tail_text(exc.stdout)
+        timeout_stderr = tail_text(exc.stderr)
+        returncode = 124
+        stdout_tail = timeout_stdout
+        stderr_tail = timeout_stderr
     after = {rel: signature(repo_root, rel) for rel in target_files}
     changes = changed_files(repo_root, before, target_files)
     manifest = {
@@ -205,15 +227,19 @@ def main(argv: list[str] | None = None) -> int:
         "target_files": target_files,
         "changed_files": changes,
         "codex": {
-            "returncode": proc.returncode,
-            "stdout_tail": proc.stdout[-4000:],
-            "stderr_tail": proc.stderr[-4000:],
+            "returncode": returncode,
+            "timed_out": timed_out,
+            "timeout_seconds": args.timeout_seconds,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
             "last_message_ref": args.last_message,
         },
     }
     write_json(manifest_path, manifest)
-    if proc.returncode != 0:
-        raise SystemExit(f"live Executor codex turn failed with exit code {proc.returncode}; see {args.manifest}")
+    if timed_out:
+        raise SystemExit(f"live Executor codex turn timed out after {args.timeout_seconds}s; see {args.manifest}")
+    if returncode != 0:
+        raise SystemExit(f"live Executor codex turn failed with exit code {returncode}; see {args.manifest}")
 
     changed_required = {item["path"] for item in changes}
     missing_changed_required = [rel for rel in required_outputs if rel not in changed_required]

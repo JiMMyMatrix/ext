@@ -72,7 +72,7 @@ PRODUCT_GOAL_STEPS = [
 	},
 ]
 
-GOAL_PLAN_MAX_STEPS = 6
+GOAL_CONTINUATION_STATES = {"idle", "pending", "extending", "finalizing", "blocked"}
 
 
 class GoalPlanValidationError(ValueError):
@@ -163,8 +163,6 @@ def validate_goal_plan_payload(
 	if not isinstance(steps, list) or not steps:
 		failures.append("invalid_goal_artifact: goal_plan steps must be a non-empty list")
 		return
-	if len(steps) > GOAL_PLAN_MAX_STEPS:
-		failures.append(f"invalid_goal_artifact: goal_plan steps must be <= {GOAL_PLAN_MAX_STEPS}")
 	seen_refs: set[str] = set()
 	for index, step in enumerate(steps, start=1):
 		if not isinstance(step, dict):
@@ -205,6 +203,16 @@ def validate_goal_progress_payload(
 	status = payload.get("status")
 	if status not in {"active", "completed", "blocked"}:
 		failures.append("invalid_goal_artifact: goal_progress status is invalid")
+	continuation_state = payload.get("continuation_state", "idle")
+	if continuation_state not in GOAL_CONTINUATION_STATES:
+		failures.append("invalid_goal_artifact: goal_progress continuation_state is invalid")
+	pending_continuation_request_ref = payload.get("pending_continuation_request_ref")
+	if pending_continuation_request_ref is not None and not isinstance(pending_continuation_request_ref, str):
+		failures.append("invalid_goal_artifact: pending_continuation_request_ref must be a string when present")
+	if continuation_state == "pending" and status != "active":
+		failures.append("invalid_goal_artifact: pending continuation requires active goal_progress")
+	if continuation_state != "pending" and pending_continuation_request_ref is not None:
+		failures.append("invalid_goal_artifact: pending_continuation_request_ref requires pending continuation")
 	steps = [step for step in (plan or {}).get("steps", []) if isinstance(step, dict)]
 	step_by_ref = {
 		step.get("step_ref"): step
@@ -213,7 +221,7 @@ def validate_goal_progress_payload(
 	}
 	current_ref = payload.get("current_step_ref")
 	current_index = payload.get("current_step_index")
-	if status == "active":
+	if status == "active" and continuation_state != "pending":
 		if not isinstance(current_ref, str) or not current_ref.strip():
 			failures.append("invalid_goal_artifact: active goal_progress requires current_step_ref")
 		if not isinstance(current_index, int) or current_index < 1:
@@ -424,11 +432,34 @@ def parse_governor_goal_plan_response(body: str) -> tuple[str, list[dict[str, An
 	return reply, validate_goal_steps(steps)
 
 
+def parse_governor_goal_continuation_response(body: str) -> dict[str, Any]:
+	payload = _extract_json_payload(body)
+	if not isinstance(payload, dict):
+		raise GoalPlanValidationError("Governor goal continuation must be a JSON object.")
+	decision = trim_text(payload.get("decision")).lower()
+	if decision not in {"finalize", "extend", "block"}:
+		raise GoalPlanValidationError("Goal continuation decision must be finalize, extend, or block.")
+	reply = trim_text(payload.get("user_visible_reply"))
+	reason = trim_text(payload.get("reason")) or "goal_continuation"
+	continuation: dict[str, Any] = {
+		"decision": decision,
+		"user_visible_reply": reply,
+		"reason": reason,
+	}
+	if decision == "extend":
+		raw_steps = payload.get("steps")
+		if not isinstance(raw_steps, list):
+			raise GoalPlanValidationError("Extend continuation must include a steps array.")
+		continuation["steps"] = validate_goal_steps(raw_steps)
+	elif decision == "block":
+		blocked_reason = trim_text(payload.get("blocked_reason")) or reason
+		continuation["blocked_reason"] = blocked_reason
+	return continuation
+
+
 def validate_goal_steps(steps: list[Any]) -> list[dict[str, Any]]:
 	if not steps:
 		raise GoalPlanValidationError("Goal plan must contain at least one step.")
-	if len(steps) > GOAL_PLAN_MAX_STEPS:
-		raise GoalPlanValidationError(f"Goal plan cannot contain more than {GOAL_PLAN_MAX_STEPS} steps.")
 	seen_refs: set[str] = set()
 	validated: list[dict[str, Any]] = []
 	for index, raw_step in enumerate(steps, start=1):
@@ -506,6 +537,8 @@ def apply_goal_snapshot(
 	step_count: int | None,
 	status: str | None,
 	latest_decision_ref: str | None = None,
+	continuation_state: str | None = None,
+	pending_continuation_request_ref: str | None = None,
 ) -> None:
 	model = session["model"]
 	snapshot = model["snapshot"]
@@ -516,6 +549,8 @@ def apply_goal_snapshot(
 	model["goalStepCount"] = step_count
 	model["goalStatus"] = status
 	model["latestGoalDecisionRef"] = latest_decision_ref
+	model["goalContinuationState"] = continuation_state
+	model["pendingGoalContinuationRequestRef"] = pending_continuation_request_ref
 	snapshot["currentGoalRef"] = goal_ref
 	snapshot["currentGoalTitle"] = goal_title
 	snapshot["currentGoalStepRef"] = step.get("step_ref") if step else None
@@ -523,6 +558,8 @@ def apply_goal_snapshot(
 	snapshot["goalStepCount"] = step_count
 	snapshot["goalStatus"] = status
 	snapshot["latestGoalDecisionRef"] = latest_decision_ref
+	snapshot["goalContinuationState"] = continuation_state
+	snapshot["pendingGoalContinuationRequestRef"] = pending_continuation_request_ref
 
 
 def create_goal_program(
@@ -576,6 +613,8 @@ def create_goal_program(
 		"linked_work_refs": [],
 		"blocked_reason": None,
 		"final_goal_decision_ref": None,
+		"continuation_state": "idle",
+		"pending_continuation_request_ref": None,
 		"created_at": now,
 		"updated_at": now,
 	}
@@ -590,6 +629,7 @@ def create_goal_program(
 		step=step_payloads[0] if step_payloads else None,
 		step_count=len(step_payloads),
 		status="active",
+		continuation_state="idle",
 	)
 	return {
 		"goal_ref": goal_ref,
@@ -688,6 +728,8 @@ def revise_goal_program(
 	progress["blocked_reason"] = None
 	progress["updated_at"] = now
 	progress["goal_plan_version"] = next_version
+	progress["continuation_state"] = "idle"
+	progress["pending_continuation_request_ref"] = None
 	save_goal_progress(goal_ref, progress, repo_root=repo_root)
 	goal_payload["updated_at"] = now
 	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
@@ -792,6 +834,7 @@ def begin_goal_step(
 		step_count=len(load_goal_plan(goal_ref, repo_root=repo_root).get("steps", [])),
 		status="active",
 		latest_decision_ref=model.get("latestGoalDecisionRef"),
+		continuation_state="idle",
 	)
 	plan_body = "\n\n".join(
 		[
@@ -856,6 +899,309 @@ def current_goal_step(
 		if isinstance(step, dict) and step.get("step_ref") == step_ref:
 			return step
 	return None
+
+
+def goal_uses_template_plan(goal_ref: str, *, repo_root: str | Path | None = None) -> bool:
+	plan = load_goal_plan(goal_ref, repo_root=repo_root)
+	return plan.get("plan_source") == "orchestration_template"
+
+
+def mark_goal_continuation_pending(
+	session: dict[str, Any],
+	goal_ref: str,
+	now: str,
+	*,
+	next_id: NextId,
+	feed_item: FeedItemFactory,
+	repo_root: str | Path | None = None,
+) -> str:
+	model = session["model"]
+	progress = load_goal_progress(goal_ref, repo_root=repo_root)
+	plan = load_goal_plan(goal_ref, repo_root=repo_root)
+	goal_payload = load_goal(goal_ref, repo_root=repo_root)
+	existing_ref = progress.get("pending_continuation_request_ref")
+	request_ref = existing_ref if isinstance(existing_ref, str) and existing_ref.strip() else next_id("goal-continuation")
+	progress["status"] = "active"
+	progress["current_step_ref"] = None
+	progress["current_step_index"] = None
+	progress["continuation_state"] = "pending"
+	progress["pending_continuation_request_ref"] = request_ref
+	progress["updated_at"] = now
+	save_goal_progress(goal_ref, progress, repo_root=repo_root)
+	goal_payload["status"] = "active"
+	goal_payload["updated_at"] = now
+	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
+	apply_goal_snapshot(
+		session,
+		goal_ref=goal_ref,
+		goal_title=goal_payload.get("title"),
+		step=None,
+		step_count=len(plan.get("steps", [])),
+		status="active",
+		latest_decision_ref=progress.get("final_goal_decision_ref"),
+		continuation_state="pending",
+		pending_continuation_request_ref=request_ref,
+	)
+	model["feed"].append(
+		feed_item(
+			"system_status",
+			"Goal continuation needed",
+			"Governor will decide whether to finalize the goal, extend it with more steps, or block it.",
+			authoritative=True,
+			now=now,
+			source_artifact_ref=repo_relative(goal_progress_path(goal_ref, repo_root=repo_root), repo_root),
+			presentation_key="goal.continuation_pending",
+			presentation_args={
+				"goalRef": goal_ref,
+				"continuationRequestRef": request_ref,
+			},
+			activity={
+				"kind": "status",
+				"state": "waiting",
+				"summary": "Governor is checking whether the goal is complete.",
+			},
+		)
+	)
+	return request_ref
+
+
+def finalize_goal_program(
+	session: dict[str, Any],
+	goal_ref: str,
+	now: str,
+	*,
+	reason: str | None = None,
+	feed_item: FeedItemFactory,
+	repo_root: str | Path | None = None,
+) -> str:
+	model = session["model"]
+	progress = load_goal_progress(goal_ref, repo_root=repo_root)
+	plan = load_goal_plan(goal_ref, repo_root=repo_root)
+	goal_payload = load_goal(goal_ref, repo_root=repo_root)
+	steps = [step for step in plan.get("steps", []) if isinstance(step, dict)]
+	completed_refs = {
+		step.get("step_ref")
+		for step in progress.get("completed_steps", [])
+		if isinstance(step, dict) and isinstance(step.get("step_ref"), str)
+	}
+	unfinished_steps = [
+		step
+		for step in steps
+		if not isinstance(step.get("step_ref"), str)
+		or step.get("step_ref") not in completed_refs
+		or step.get("status") != "completed"
+	]
+	if goal_payload.get("status") != "active" or progress.get("status") != "active":
+		raise GoalPlanValidationError("Only an active goal can be finalized.")
+	if progress.get("continuation_state") != "pending":
+		raise GoalPlanValidationError("Goal finalization requires a pending continuation checkpoint.")
+	if not isinstance(progress.get("pending_continuation_request_ref"), str) or not progress.get("pending_continuation_request_ref"):
+		raise GoalPlanValidationError("Goal finalization requires a pending continuation request ref.")
+	if progress.get("current_step_ref") is not None or progress.get("current_step_index") is not None:
+		raise GoalPlanValidationError("Goal finalization requires no active current step.")
+	if not steps:
+		raise GoalPlanValidationError("Goal finalization requires at least one planned step.")
+	if unfinished_steps:
+		raise GoalPlanValidationError("Goal finalization requires every planned step to be completed.")
+	progress["status"] = "completed"
+	progress["current_step_ref"] = None
+	progress["current_step_index"] = None
+	progress["continuation_state"] = "idle"
+	progress["pending_continuation_request_ref"] = None
+	progress["updated_at"] = now
+	decision_ref = write_goal_decision(
+		session,
+		goal_ref,
+		now,
+		progress,
+		reason=reason or "All planned goal steps reached accepted Governor decisions.",
+		repo_root=repo_root,
+	)
+	progress["final_goal_decision_ref"] = decision_ref
+	save_goal_progress(goal_ref, progress, repo_root=repo_root)
+	goal_payload["status"] = "completed"
+	goal_payload["updated_at"] = now
+	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
+	apply_goal_snapshot(
+		session,
+		goal_ref=goal_ref,
+		goal_title=goal_payload.get("title"),
+		step=None,
+		step_count=len(plan.get("steps", [])),
+		status="completed",
+		latest_decision_ref=decision_ref,
+		continuation_state="idle",
+	)
+	model["feed"].append(
+		feed_item(
+			"system_status",
+			"Goal completed",
+			f"Corgi completed {len(progress.get('completed_steps', []))} goal steps and recorded the final goal decision.",
+			authoritative=True,
+			now=now,
+			source_artifact_ref=decision_ref,
+			presentation_key="goal.final_decision",
+			presentation_args={
+				"completedSteps": len(progress.get("completed_steps", [])),
+				"decision": "accept",
+			},
+		)
+	)
+	return decision_ref
+
+
+def extend_goal_program(
+	session: dict[str, Any],
+	goal_ref: str,
+	new_steps: list[dict[str, Any]],
+	now: str,
+	*,
+	reason: str,
+	next_id: NextId,
+	artifact_factory: ArtifactFactory,
+	feed_item: FeedItemFactory,
+	repo_root: str | Path | None = None,
+) -> dict[str, Any]:
+	model = session["model"]
+	goal_payload = load_goal(goal_ref, repo_root=repo_root)
+	progress = load_goal_progress(goal_ref, repo_root=repo_root)
+	plan = load_goal_plan(goal_ref, repo_root=repo_root)
+	previous_goal_payload = deepcopy(goal_payload)
+	previous_progress = deepcopy(progress)
+	previous_plan = deepcopy(plan)
+	previous_model = deepcopy(model)
+	previous_meta = deepcopy(session.get("meta", {}))
+	if goal_payload.get("status") != "active" or progress.get("status") != "active":
+		raise GoalPlanValidationError("Only an active goal can be extended.")
+	if progress.get("continuation_state") != "pending":
+		raise GoalPlanValidationError("Goal extension requires a pending continuation checkpoint.")
+	old_steps = [step for step in plan.get("steps", []) if isinstance(step, dict)]
+	start_index = len(old_steps) + 1
+	normalized_new_steps = _normalize_steps_from_index(new_steps, start_index=start_index)
+	if not normalized_new_steps:
+		raise GoalPlanValidationError("Goal extension must include at least one step.")
+	previous_version = int(plan.get("plan_version") or 1)
+	next_version = previous_version + 1
+	history = [entry for entry in plan.get("revision_history", []) if isinstance(entry, dict)]
+	history.append(
+		{
+			"from_plan_version": previous_version,
+			"to_plan_version": next_version,
+			"reason": trim_text(reason) or "goal_continuation_extend",
+			"revised_at": now,
+			"preserved_step_refs": [
+				step.get("step_ref") for step in old_steps if isinstance(step.get("step_ref"), str)
+			],
+			"appended_step_refs": [
+				step.get("step_ref") for step in normalized_new_steps if isinstance(step.get("step_ref"), str)
+			],
+			"extension_from_step_index": start_index,
+		}
+	)
+	plan["plan_version"] = next_version
+	plan["last_revised_at"] = now
+	plan["last_revision_reason"] = trim_text(reason) or "goal_continuation_extend"
+	plan["last_revised_by"] = "governor"
+	plan["revision_history"] = history
+	plan["steps"] = old_steps + normalized_new_steps
+	_write_goal_plan(goal_ref, plan, repo_root=repo_root)
+	try:
+		begin_goal_step(
+			session,
+			goal_ref,
+			normalized_new_steps[0],
+			now,
+			next_id=next_id,
+			artifact_factory=artifact_factory,
+			feed_item=feed_item,
+			repo_root=repo_root,
+		)
+	except Exception as exc:
+		_write_goal_plan(goal_ref, previous_plan, repo_root=repo_root)
+		save_goal_progress(goal_ref, previous_progress, repo_root=repo_root)
+		_write_goal(goal_ref, previous_goal_payload, repo_root=repo_root)
+		model.clear()
+		model.update(previous_model)
+		session["meta"] = previous_meta
+		raise GoalPlanValidationError("Could not activate the extended goal step.") from exc
+	progress["current_step_ref"] = normalized_new_steps[0]["step_ref"]
+	progress["current_step_index"] = normalized_new_steps[0]["step_index"]
+	progress["status"] = "active"
+	progress["blocked_reason"] = None
+	progress["updated_at"] = now
+	progress["goal_plan_version"] = next_version
+	progress["continuation_state"] = "idle"
+	progress["pending_continuation_request_ref"] = None
+	save_goal_progress(goal_ref, progress, repo_root=repo_root)
+	goal_payload["updated_at"] = now
+	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
+	plan = load_goal_plan(goal_ref, repo_root=repo_root)
+	model["feed"].append(
+		feed_item(
+			"system_status",
+			"Goal extended",
+			f"Governor added more work to the active goal. Corgi will continue with step {normalized_new_steps[0]['step_index']} of {len(plan['steps'])}.",
+			authoritative=True,
+			now=now,
+			source_artifact_ref=repo_relative(goal_plan_path(goal_ref, repo_root=repo_root), repo_root),
+			presentation_key="goal.plan_extended",
+			presentation_args={
+				"goalRef": goal_ref,
+				"planVersion": next_version,
+				"currentStep": normalized_new_steps[0]["title"],
+				"stepIndex": normalized_new_steps[0]["step_index"],
+				"stepCount": len(plan["steps"]),
+			},
+		)
+	)
+	return {"goal_ref": goal_ref, "plan_version": next_version, "steps": plan["steps"]}
+
+
+def apply_goal_continuation_decision(
+	session: dict[str, Any],
+	goal_ref: str,
+	decision: dict[str, Any],
+	now: str,
+	*,
+	next_id: NextId,
+	artifact_factory: ArtifactFactory,
+	feed_item: FeedItemFactory,
+	repo_root: str | Path | None = None,
+) -> str:
+	decision_kind = trim_text(decision.get("decision")).lower()
+	if decision_kind == "finalize":
+		finalize_goal_program(
+			session,
+			goal_ref,
+			now,
+			reason=trim_text(decision.get("reason")) or "Governor finalized the goal.",
+			feed_item=feed_item,
+			repo_root=repo_root,
+		)
+		return "finalized"
+	if decision_kind == "extend":
+		extend_goal_program(
+			session,
+			goal_ref,
+			decision.get("steps") if isinstance(decision.get("steps"), list) else [],
+			now,
+			reason=trim_text(decision.get("reason")) or "Governor extended the goal.",
+			next_id=next_id,
+			artifact_factory=artifact_factory,
+			feed_item=feed_item,
+			repo_root=repo_root,
+		)
+		return "extended"
+	if decision_kind == "block":
+		mark_goal_blocked(
+			session,
+			goal_ref,
+			now,
+			trim_text(decision.get("blocked_reason")) or trim_text(decision.get("reason")) or "goal_continuation_blocked",
+			repo_root=repo_root,
+		)
+		return "blocked"
+	raise GoalPlanValidationError("Unsupported goal continuation decision.")
 
 
 def advance_goal_after_decision(
@@ -961,6 +1307,8 @@ def advance_goal_after_decision(
 		progress["current_step_ref"] = next_step["step_ref"]
 		progress["current_step_index"] = next_step["step_index"]
 		progress["status"] = "active"
+		progress["continuation_state"] = "idle"
+		progress["pending_continuation_request_ref"] = None
 		save_goal_progress(goal_ref, progress, repo_root=repo_root)
 		begin_goal_step(
 			session,
@@ -973,41 +1321,35 @@ def advance_goal_after_decision(
 			repo_root=repo_root,
 		)
 		return "next_step"
-	progress["status"] = "completed"
 	progress["current_step_ref"] = None
 	progress["current_step_index"] = None
-	decision_ref = write_goal_decision(session, goal_ref, now, progress, repo_root=repo_root)
-	progress["final_goal_decision_ref"] = decision_ref
-	save_goal_progress(goal_ref, progress, repo_root=repo_root)
-	goal_payload = load_json(goal_json_path(goal_ref, repo_root=repo_root))
-	goal_payload["status"] = "completed"
-	goal_payload["updated_at"] = now
-	_write_goal(goal_ref, goal_payload, repo_root=repo_root)
-	apply_goal_snapshot(
-		session,
-		goal_ref=goal_ref,
-		goal_title=goal_payload.get("title"),
-		step=None,
-		step_count=len(steps),
-		status="completed",
-		latest_decision_ref=decision_ref,
-	)
-	model["feed"].append(
-		feed_item(
-			"system_status",
-			"Goal completed",
-			f"Corgi completed {len(completed_steps)} goal steps and recorded the final goal decision.",
-			authoritative=True,
-			now=now,
-			source_artifact_ref=decision_ref,
-			presentation_key="goal.final_decision",
-			presentation_args={
-				"completedSteps": len(completed_steps),
-				"decision": "accept",
-			},
+	if goal_uses_template_plan(goal_ref, repo_root=repo_root):
+		progress["status"] = "active"
+		progress["continuation_state"] = "pending"
+		progress["pending_continuation_request_ref"] = next_id("goal-continuation")
+		save_goal_progress(goal_ref, progress, repo_root=repo_root)
+		finalize_goal_program(
+			session,
+			goal_ref,
+			now,
+			reason="All planned template goal steps completed.",
+			feed_item=feed_item,
+			repo_root=repo_root,
 		)
+		return "completed"
+	progress["status"] = "active"
+	progress["continuation_state"] = "pending"
+	progress["pending_continuation_request_ref"] = next_id("goal-continuation")
+	save_goal_progress(goal_ref, progress, repo_root=repo_root)
+	mark_goal_continuation_pending(
+		session,
+		goal_ref,
+		now,
+		next_id=next_id,
+		feed_item=feed_item,
+		repo_root=repo_root,
 	)
-	return "completed"
+	return "continuation_pending"
 
 
 def goal_stage_is_blocked(stage: Any) -> bool:
@@ -1032,6 +1374,8 @@ def mark_goal_blocked(
 	progress = load_goal_progress(goal_ref, repo_root=repo_root)
 	progress["status"] = "blocked"
 	progress["blocked_reason"] = reason
+	progress["continuation_state"] = "blocked"
+	progress["pending_continuation_request_ref"] = None
 	progress["updated_at"] = now
 	save_goal_progress(goal_ref, progress, repo_root=repo_root)
 	step = current_goal_step(goal_ref, repo_root=repo_root)
@@ -1054,6 +1398,7 @@ def mark_goal_blocked(
 		step_count=len(load_goal_plan(goal_ref, repo_root=repo_root).get("steps", [])),
 		status="blocked",
 		latest_decision_ref=progress.get("final_goal_decision_ref"),
+		continuation_state="blocked",
 	)
 
 
@@ -1063,6 +1408,7 @@ def write_goal_decision(
 	now: str,
 	progress: dict[str, Any],
 	*,
+	reason: str | None = None,
 	repo_root: str | Path | None = None,
 ) -> str:
 	goal_payload = load_json(goal_json_path(goal_ref, repo_root=repo_root))
@@ -1070,7 +1416,7 @@ def write_goal_decision(
 		"schema_version": "corgi.goal_decision.v1",
 		"goal_ref": goal_ref,
 		"decision": "accept",
-		"reason": "All planned goal steps reached accepted Governor decisions.",
+		"reason": trim_text(reason) or "All planned goal steps reached accepted Governor decisions.",
 		"completed_steps": progress.get("completed_steps", []),
 		"linked_work_refs": progress.get("linked_work_refs", []),
 		"recorded_at": now,

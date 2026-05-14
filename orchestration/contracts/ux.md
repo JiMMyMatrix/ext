@@ -24,6 +24,8 @@ The orchestration layer may provide:
 - `currentGoalStepIndex`
 - `goalStepCount`
 - `goalStatus`
+- `goalContinuationState`
+- `pendingGoalContinuationRequestRef`
 - `latestGoalDecisionRef`
 - `currentPlanVersion`
 - `currentAttemptNumber`
@@ -130,8 +132,13 @@ preconditions must fail closed and must not trigger route guessing.
   - each goal step becomes one normal accepted work item with its own `workRef`
   - after a step reaches accepted Governor decision, orchestration may advance
     to the next step without asking the human
+  - after the last planned Governor-authored step is accepted, orchestration
+    enters `goalContinuationState=pending` and asks Governor whether to
+    finalize, extend, or block the goal
+  - deterministic orchestration-template goals may finalize automatically to
+    preserve command-test compatibility
   - must pause only for permission, clarification, safety/material blocker,
-    retry-limit failure, or final checkpoint
+    retry-limit failure, final checkpoint, or a Governor continuation decision
   - goal progress must come from `.agent/goals/<goal_ref>/goal_progress.json`,
     not local UI guesses
 - `answer-clarification`

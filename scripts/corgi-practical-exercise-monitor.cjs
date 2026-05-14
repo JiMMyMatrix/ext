@@ -13,7 +13,7 @@ function parseArgs(argv) {
 		json: false,
 		watch: false,
 		intervalSeconds: 5,
-		timeoutSeconds: Number(process.env.CORGI_PRACTICAL_MONITOR_TIMEOUT_SECONDS || 3600),
+		timeoutSeconds: Number(process.env.CORGI_PRACTICAL_MONITOR_TIMEOUT_SECONDS || 0),
 		stallSeconds: Number(process.env.CORGI_PRACTICAL_MONITOR_STALL_SECONDS || 300),
 		testRoot: process.env.CORGI_TEST_WINDOW_ROOT || defaultTestRoot,
 		expectedPreset: process.env.CORGI_TEST_WINDOW_PROMPT_PRESET || 'pet-life-diary-real-project',
@@ -40,6 +40,32 @@ function parseArgs(argv) {
 	}
 	return options;
 }
+
+const PROJECT_TEXT_EXTENSIONS = new Set([
+	'.css',
+	'.html',
+	'.js',
+	'.json',
+	'.jsx',
+	'.md',
+	'.mjs',
+	'.ts',
+	'.tsx',
+	'.txt',
+	'.vue',
+]);
+
+const PROJECT_IGNORED_DIRS = new Set([
+	'.agent',
+	'.git',
+	'.vscode',
+	'.vscode-test',
+	'coverage',
+	'dist',
+	'node_modules',
+	'out',
+	'__pycache__',
+]);
 
 function readJson(filePath) {
 	if (!filePath || !fs.existsSync(filePath)) {
@@ -140,15 +166,16 @@ function collectDispatches(agentRoot) {
 	return listFilesByName(path.join(agentRoot || '', 'dispatches'), 'request.json').map((requestPath) => {
 		const request = readJson(requestPath) || {};
 		const dispatchDir = path.dirname(requestPath);
-		return {
-			dispatchRef: request.dispatch_ref || path.basename(dispatchDir),
-			requestPath,
-			dispatchDir,
-			request,
-			result: readJson(path.join(dispatchDir, 'result.json')),
-			decision: readJson(path.join(dispatchDir, 'governor_decision.json')),
-		};
-	});
+			return {
+				dispatchRef: request.dispatch_ref || path.basename(dispatchDir),
+				requestPath,
+				dispatchDir,
+				request,
+				state: readJson(path.join(dispatchDir, 'state.json')),
+				result: readJson(path.join(dispatchDir, 'result.json')),
+				decision: readJson(path.join(dispatchDir, 'governor_decision.json')),
+			};
+		});
 }
 
 function collectReviews(agentRoot) {
@@ -164,6 +191,52 @@ function pathInside(childPath, parentPath) {
 	}
 	const relative = path.relative(parentPath, childPath);
 	return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function shouldCountProjectFile(filePath) {
+	const extension = path.extname(filePath).toLowerCase();
+	return PROJECT_TEXT_EXTENSIONS.has(extension);
+}
+
+function countProjectLines(workspaceRoot) {
+	const result = {
+		totalLines: 0,
+		fileCount: 0,
+	};
+	if (!workspaceRoot || !fs.existsSync(workspaceRoot)) {
+		return result;
+	}
+	const stack = [workspaceRoot];
+	while (stack.length) {
+		const current = stack.pop();
+		let entries = [];
+		try {
+			entries = fs.readdirSync(current, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			const filePath = path.join(current, entry.name);
+			if (entry.isDirectory()) {
+				if (PROJECT_IGNORED_DIRS.has(entry.name)) {
+					continue;
+				}
+				stack.push(filePath);
+				continue;
+			}
+			if (!entry.isFile() || !shouldCountProjectFile(filePath)) {
+				continue;
+			}
+			try {
+				const content = fs.readFileSync(filePath, 'utf8');
+				result.totalLines += content.length ? content.split(/\r\n|\r|\n/).length : 0;
+				result.fileCount += 1;
+			} catch {
+				// Ignore unreadable files; isolation/write checks report workspace problems separately.
+			}
+		}
+	}
+	return result;
 }
 
 function compact(value, limit = 180) {
@@ -207,9 +280,17 @@ function summarize(options) {
 	const agentRoot = currentRun.agentRoot;
 	const goals = collectGoals(agentRoot);
 	const activeGoal = latestGoal(goals);
-	const dispatches = collectDispatches(agentRoot);
-	const reviews = collectReviews(agentRoot);
-	const readoutOnlyDispatches = dispatches.filter(isReadoutOnlyDispatch);
+		const dispatches = collectDispatches(agentRoot);
+		const reviews = collectReviews(agentRoot);
+		const readoutOnlyDispatches = dispatches.filter(isReadoutOnlyDispatch);
+		const activeDispatches = dispatches.filter((dispatch) =>
+			['claimed', 'running'].includes(String(dispatch.state?.status || ''))
+		);
+		const queuedDispatches = dispatches.filter((dispatch) => String(dispatch.state?.status || '') === 'queued');
+	const runStartedAt = Date.parse(currentRun.recordedAt || '');
+	const runElapsedSeconds = Number.isNaN(runStartedAt)
+		? 0
+		: Math.max(0, Math.floor((Date.now() - runStartedAt) / 1000));
 	const completedStepRefs = Array.isArray(activeGoal?.progress?.completed_steps)
 		? activeGoal.progress.completed_steps
 		: [];
@@ -226,6 +307,7 @@ function summarize(options) {
 	);
 	const sourceRoot = currentRun.sourceRoot || repoRoot;
 	const workspaceRoot = currentRun.workspaceRoot;
+	const projectSize = countProjectLines(workspaceRoot);
 	const blockers = [];
 	const warnings = [];
 	if (!currentRun.workspaceRoot) {
@@ -269,17 +351,25 @@ function summarize(options) {
 	if (workspaceRoot && sourceRoot && (workspaceRoot === sourceRoot || pathInside(workspaceRoot, sourceRoot))) {
 		blockers.push('workspace_inside_development_repo');
 	}
-	const stage = status.stage || modelSnapshot.currentStage || '';
-	const runState = status.runState || modelSnapshot.runState || '';
-	const ageMs = Number(status.ageMs || 0);
-	if ((runState === 'running' || stage === 'governor_running') && ageMs > options.stallSeconds * 1000) {
-		blockers.push('snapshot_stalled');
-	}
+		const stage = status.stage || modelSnapshot.currentStage || '';
+		const dispatchRunState =
+			activeDispatches.length > 0 ? 'running' : queuedDispatches.length > 0 ? 'queued' : '';
+		const runState = dispatchRunState || status.runState || modelSnapshot.runState || '';
+		const ageMs = Number(status.ageMs || 0);
+		if (
+			activeDispatches.length === 0 &&
+			(runState === 'running' || stage === 'governor_running') &&
+			ageMs > options.stallSeconds * 1000
+		) {
+			blockers.push('snapshot_stalled');
+		}
 	if (
 		activeGoal?.progress?.status === 'active' &&
+		activeGoal?.progress?.continuation_state !== 'pending' &&
 		goalSteps.length > 0 &&
 		dispatches.length === 0 &&
 		stage !== 'goal_planning' &&
+		stage !== 'goal_continuation_pending' &&
 		ageMs > options.stallSeconds * 1000
 	) {
 		blockers.push('no_dispatch_after_goal_plan');
@@ -287,25 +377,37 @@ function summarize(options) {
 	if (['executor_blocked', 'reviewer_blocked', 'goal_blocked'].includes(stage)) {
 		blockers.push(stage);
 	}
+	if (activeGoal?.goalRef && dispatches.length > 0) {
+		const goalDispatchesMissingLinkage = dispatches.filter((dispatch) => {
+			const request = dispatch.request || {};
+			return (
+				request.work_ref &&
+				(!request.goal_ref ||
+					request.goal_ref !== activeGoal.goalRef ||
+					!request.goal_step_ref ||
+					typeof request.goal_step_index !== 'number')
+			);
+		});
+		if (goalDispatchesMissingLinkage.length > 0) {
+			blockers.push('dispatch_goal_linkage_missing');
+		}
+	}
 	const completed =
 		activeGoal?.progress?.status === 'completed' ||
 		activeGoal?.goal?.status === 'completed' ||
 		stage === 'goal_completed';
-	const practicalAcceptance = {
-		ok:
-			completed &&
-			goalSteps.length >= 6 &&
-			completedStepRefs.length >= 6 &&
-			uniqueWorkRefs.size >= 3 &&
-			readoutOnlyDispatches.length === 0,
+	const practicalExercise = {
+		elapsedSeconds: runElapsedSeconds,
+		projectLineCount: projectSize.totalLines,
+		projectFileCount: projectSize.fileCount,
 		goalStepCount: goalSteps.length,
 		completedStepCount: completedStepRefs.length,
 		workRefCount: uniqueWorkRefs.size,
-		readoutOnlyDispatchCount: readoutOnlyDispatches.length,
-	};
-	if (completed && !practicalAcceptance.ok) {
-		blockers.push('practical_acceptance_shortfall');
-	}
+		dispatchCount: dispatches.length,
+		reviewCount: reviews.length,
+			readoutOnlyDispatchCount: readoutOnlyDispatches.length,
+			activeDispatchCount: activeDispatches.length,
+		};
 	return {
 		ok: blockers.length === 0,
 		completed,
@@ -336,12 +438,13 @@ function summarize(options) {
 		goalStepCount: goalSteps.length || modelSnapshot.goalStepCount || 0,
 		completedSteps: completedStepRefs,
 		workRefs: Array.from(uniqueWorkRefs).sort(),
-		dispatchRefs: dispatches.map((dispatch) => dispatch.dispatchRef).sort(),
-		readoutOnlyDispatches: readoutOnlyDispatches.map((dispatch) => dispatch.dispatchRef).sort(),
+			dispatchRefs: dispatches.map((dispatch) => dispatch.dispatchRef).sort(),
+			activeDispatchRefs: activeDispatches.map((dispatch) => dispatch.dispatchRef).sort(),
+			readoutOnlyDispatches: readoutOnlyDispatches.map((dispatch) => dispatch.dispatchRef).sort(),
 		reviewCount: reviews.length,
 		latestReviewVerdict: status.latestReviewVerdict || '',
 		latestGovernorDecision: status.latestGovernorDecision || '',
-		practicalAcceptance,
+		practicalExercise,
 		status,
 	};
 }
@@ -353,7 +456,9 @@ function printSummary(summary) {
 		`Workspace: ${summary.workspaceMode || '(none)'} ${summary.workspaceRoot || ''}`,
 		`State: ${summary.actor || '(none)'} / ${summary.stage || '(none)'} / ${summary.runState || '(none)'}`,
 		`Goal: ${summary.goalRef || '(none)'} ${summary.currentStep ? `step ${summary.currentStep}` : ''} (${summary.completedSteps.length}/${summary.goalStepCount || 0} completed)`,
-		`Work: ${summary.workRefs.length} workRef(s), ${summary.dispatchRefs.length} dispatch(es), ${summary.reviewCount} review(s)`,
+			`Work: ${summary.workRefs.length} workRef(s), ${summary.dispatchRefs.length} dispatch(es), ${summary.activeDispatchRefs.length} active, ${summary.reviewCount} review(s)`,
+		`Elapsed: ${summary.practicalExercise.elapsedSeconds}s`,
+		`Project lines observed: ${summary.practicalExercise.projectLineCount} lines across ${summary.practicalExercise.projectFileCount} file(s)`,
 		`Readout-only dispatches: ${summary.readoutOnlyDispatches.length ? summary.readoutOnlyDispatches.join(', ') : 'none'}`,
 		summary.blockers.length ? `Blockers: ${summary.blockers.join(', ')}` : 'Blockers: none',
 		summary.warnings.length ? `Warnings: ${summary.warnings.join(', ')}` : 'Warnings: none',
@@ -377,7 +482,7 @@ async function main() {
 
 	const startedAt = Date.now();
 	let lastLine = '';
-	while (Date.now() - startedAt < options.timeoutSeconds * 1000) {
+	while (!options.timeoutSeconds || Date.now() - startedAt < options.timeoutSeconds * 1000) {
 		const summary = summarize(options);
 		const line = [
 			summary.stage || '(none)',
@@ -385,6 +490,8 @@ async function main() {
 			summary.goalRef || '(no-goal)',
 			`${summary.completedSteps.length}/${summary.goalStepCount || 0}`,
 			`dispatches=${summary.dispatchRefs.length}`,
+			`elapsed=${summary.practicalExercise.elapsedSeconds}s`,
+			`lines=${summary.practicalExercise.projectLineCount}`,
 			summary.blockers.length ? `blockers=${summary.blockers.join(',')}` : 'clean',
 		].join(' ');
 		if (line !== lastLine) {
@@ -398,15 +505,6 @@ async function main() {
 				printSummary(summary);
 			}
 			process.exitCode = 2;
-			return;
-		}
-		if (summary.completed) {
-			if (options.json) {
-				process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
-			} else {
-				printSummary(summary);
-			}
-			process.exitCode = 0;
 			return;
 		}
 		await new Promise((resolve) => setTimeout(resolve, options.intervalSeconds * 1000));

@@ -41,6 +41,8 @@ def initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str,
 			"currentGoalStepIndex": None,
 			"goalStepCount": None,
 			"goalStatus": None,
+			"goalContinuationState": None,
+			"pendingGoalContinuationRequestRef": None,
 			"latestGoalDecisionRef": None,
 			"snapshotFreshness": {"receivedAt": now},
 		},
@@ -72,6 +74,8 @@ def initial_model(now: str, *, repo_root: str | Path | None = None) -> dict[str,
 		"currentGoalStepIndex": None,
 		"goalStepCount": None,
 		"goalStatus": None,
+		"goalContinuationState": None,
+		"pendingGoalContinuationRequestRef": None,
 		"latestGoalDecisionRef": None,
 		"planVersion": 0,
 	}
@@ -177,6 +181,8 @@ def normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pat
 	snapshot.setdefault("currentGoalStepIndex", model.get("currentGoalStepIndex"))
 	snapshot.setdefault("goalStepCount", model.get("goalStepCount"))
 	snapshot.setdefault("goalStatus", model.get("goalStatus"))
+	snapshot.setdefault("goalContinuationState", model.get("goalContinuationState"))
+	snapshot.setdefault("pendingGoalContinuationRequestRef", model.get("pendingGoalContinuationRequestRef"))
 	snapshot.setdefault("latestGoalDecisionRef", model.get("latestGoalDecisionRef"))
 	snapshot.setdefault("snapshotFreshness", {"receivedAt": now})
 	model.setdefault("feed", [])
@@ -199,6 +205,8 @@ def normalize_session(session: dict[str, Any], now: str, *, repo_root: str | Pat
 	model.setdefault("currentGoalStepIndex", snapshot.get("currentGoalStepIndex"))
 	model.setdefault("goalStepCount", snapshot.get("goalStepCount"))
 	model.setdefault("goalStatus", snapshot.get("goalStatus"))
+	model.setdefault("goalContinuationState", snapshot.get("goalContinuationState"))
+	model.setdefault("pendingGoalContinuationRequestRef", snapshot.get("pendingGoalContinuationRequestRef"))
 	model.setdefault("latestGoalDecisionRef", snapshot.get("latestGoalDecisionRef"))
 	model.setdefault("planVersion", 0)
 	if isinstance(model.get("activeClarification"), dict):

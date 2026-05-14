@@ -138,6 +138,25 @@ def is_live_real_project_executor_enabled() -> bool:
     )
 
 
+def live_executor_timeout_seconds() -> int:
+    raw_value = os.environ.get("CORGI_LIVE_EXECUTOR_TIMEOUT_SECONDS", "900")
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return 900
+    return max(value, 60)
+
+
+def live_executor_command_timeout_seconds() -> int:
+    raw_value = os.environ.get("CORGI_LIVE_EXECUTOR_COMMAND_TIMEOUT_SECONDS")
+    if raw_value is not None:
+        try:
+            return max(int(raw_value), 60)
+        except ValueError:
+            pass
+    return live_executor_timeout_seconds() + 60
+
+
 def live_real_project_required_outputs(paths: Any, objective: str) -> list[str]:
     lowered = objective.lower()
     app_exists = (paths.repo_root / "index.html").exists() and (paths.repo_root / "src" / "app.js").exists()
@@ -968,6 +987,8 @@ def extend_live_real_project_dispatch_args(
         command_arg(manifest_ref),
         "--last-message",
         command_arg(last_message_ref),
+        "--timeout-seconds",
+        command_arg(str(live_executor_timeout_seconds())),
     ]
     for output_ref in required_outputs:
         command_parts.extend(["--required-output", command_arg(output_ref)])
@@ -988,6 +1009,8 @@ def extend_live_real_project_dispatch_args(
     args.extend(
         [
             "--authorship-evidence-required",
+            "--command-timeout-sec",
+            str(live_executor_command_timeout_seconds()),
             "--command",
             " ".join(command_parts),
             "--validator-command",
@@ -1052,6 +1075,24 @@ def emit_plan_execution_dispatch(
     work_ref = trim_text(plan_ready.get("workRef")) if plan_ready else ""
     plan_ref = trim_text(plan_ready.get("planRef")) if plan_ready else ""
     plan_version = plan_ready.get("planVersion") if plan_ready else None
+    goal_ref = (
+        trim_text(accepted_payload.get("goal_ref"))
+        or trim_text(model.get("currentGoalRef"))
+        or trim_text(model["snapshot"].get("currentGoalRef"))
+    )
+    goal_step_ref = (
+        trim_text(accepted_payload.get("goal_step_ref"))
+        or trim_text(model.get("currentGoalStepRef"))
+        or trim_text(model["snapshot"].get("currentGoalStepRef"))
+    )
+    raw_goal_step_index = (
+        accepted_payload.get("goal_step_index")
+        if accepted_payload.get("goal_step_index") is not None
+        else model.get("currentGoalStepIndex")
+        if model.get("currentGoalStepIndex") is not None
+        else model["snapshot"].get("currentGoalStepIndex")
+    )
+    goal_step_index = raw_goal_step_index if isinstance(raw_goal_step_index, int) else None
     attempt_number = int(model.get("currentAttemptNumber") or 0) + 1
     inputs = [
         ref
@@ -1219,6 +1260,12 @@ def emit_plan_execution_dispatch(
         args.extend(["--plan-ref", plan_ref])
     if isinstance(plan_version, int):
         args.extend(["--plan-version", str(plan_version)])
+    if goal_ref:
+        args.extend(["--goal-ref", goal_ref])
+    if goal_step_ref:
+        args.extend(["--goal-step-ref", goal_step_ref])
+    if isinstance(goal_step_index, int):
+        args.extend(["--goal-step-index", str(goal_step_index)])
     revision_of_dispatch_ref = trim_text(model.get("revisionOfDispatchRef"))
     if revision_of_dispatch_ref:
         args.extend(["--revision-of-dispatch-ref", revision_of_dispatch_ref])
@@ -1247,6 +1294,9 @@ def emit_plan_execution_dispatch(
         "work_ref": work_ref or None,
         "plan_ref": plan_ref or None,
         "plan_version": plan_version,
+        "goal_ref": goal_ref or None,
+        "goal_step_ref": goal_step_ref or None,
+        "goal_step_index": goal_step_index,
         "attempt_number": attempt_number,
     }
 

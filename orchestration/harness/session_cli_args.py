@@ -109,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
 	complete_governor.add_argument("--turn-id")
 	complete_governor.add_argument("--item-id")
 	complete_governor.add_argument("--runtime-source", default="app-server")
+	complete_governor.add_argument("--defer-auto-execute", action="store_true")
 
 	fallback_governor = subparsers.add_parser("fallback_governor_turn")
 	fallback_governor.add_argument("--runtime-request-id", required=True)
@@ -170,6 +171,7 @@ def dispatch_kwargs_from_args(
 		"runtime_turn_id": getattr(args, "turn_id", None),
 		"runtime_item_id": getattr(args, "item_id", None),
 		"runtime_source": getattr(args, "runtime_source", "app-server"),
+		"defer_auto_execute": bool(getattr(args, "defer_auto_execute", False)),
 		"fallback_reason": getattr(args, "reason", None),
 		"auto_consume_executor": bool(getattr(args, "auto_consume_executor", False)),
 	}

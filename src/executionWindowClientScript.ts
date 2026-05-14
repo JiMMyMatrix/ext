@@ -676,11 +676,13 @@ export function getExecutionWindowClientScript(
 					return 'Checked result';
 				case 'permission_needed':
 					return 'Permission needed';
-					case 'semantic_intake':
-						return 'Understanding request';
-					case 'goal_planning':
-						return 'Breaking goal into steps';
-					case 'executor_completed':
+				case 'semantic_intake':
+					return 'Understanding request';
+				case 'goal_planning':
+					return 'Breaking goal into steps';
+				case 'goal_continuation_pending':
+					return 'Checking goal progress';
+				case 'executor_completed':
 					return 'Changes written';
 				case 'governor_decision_recorded':
 					return 'Finalized';
@@ -1105,6 +1107,33 @@ export function getExecutionWindowClientScript(
 			}
 		}
 
+		function visibleActivityLabelForKey(summaryKey) {
+			switch (summaryKey) {
+				case 'dispatch_queued':
+					return 'Executor is ready';
+				case 'executor_running':
+					return 'Executor is writing';
+				case 'reviewer_running':
+					return 'Reviewer is checking';
+				case 'governor_drafting_plan':
+					return 'Governor is drafting';
+				case 'goal_planning':
+					return 'Governor is breaking the goal into steps';
+				case 'goal_continuation_pending':
+					return 'Governor is checking goal progress';
+				default:
+					return summaryForActivityKey(summaryKey, {});
+			}
+		}
+
+		function shouldUseLifecycleBodyAsActivitySummary(summaryKey) {
+			return (
+				summaryKey === 'executor_running' ||
+				summaryKey === 'reviewer_running' ||
+				summaryKey === 'recovery_running'
+			);
+		}
+
 		function clearGovernorWaitTimers() {
 			for (const timer of governorWaitTimers) {
 				clearTimeout(timer);
@@ -1505,29 +1534,47 @@ export function getExecutionWindowClientScript(
 					);
 				} else if (event.stage === 'draft_preview') {
 					clearGovernorWaitTimers();
+					const isSemanticIntake = event.runtimeKind === 'semantic_intake';
 					const isPlan = event.runtimeKind === 'plan';
 					const isGoalPlan = event.runtimeKind === 'goal_plan';
 					replaceForegroundTail(
-						isGoalPlan ? 'Breaking goal into steps' : isPlan ? 'Drafting plan' : 'Drafting reply',
+						isSemanticIntake
+							? 'Understanding request'
+							: isGoalPlan
+								? 'Breaking goal into steps'
+							: isPlan
+								? 'Drafting plan'
+								: 'Drafting reply',
 						'active',
-						isGoalPlan ? 'Breaking the goal into bounded steps...' : isPlan ? 'Drafting the plan...' : 'Drafting a reply...'
+						isSemanticIntake
+							? 'Understanding request...'
+							: isGoalPlan
+								? 'Breaking the goal into bounded steps...'
+							: isPlan
+								? 'Drafting the plan...'
+								: 'Drafting a reply...'
 					);
-				if (typeof event.previewText === 'string' && event.previewText.trim()) {
-					setDraftPreviewTarget(event.previewText);
+					if (
+						!isSemanticIntake &&
+						!isGoalPlan &&
+						typeof event.previewText === 'string' &&
+						event.previewText.trim()
+					) {
+						setDraftPreviewTarget(event.previewText);
+					}
+				} else if (event.stage === 'governor_runtime_failed') {
+					clearGovernorWaitTimers();
+					replaceForegroundTail(
+						'Runtime had trouble',
+						'failed',
+						'Corgi is updating the state now.'
+					);
+					resetDraftPreview();
+				} else if (event.stage === 'governor_runtime_completed') {
+					clearGovernorWaitTimers();
+				} else {
+					return;
 				}
-			} else if (event.stage === 'governor_runtime_failed') {
-				clearGovernorWaitTimers();
-				replaceForegroundTail(
-					'Runtime had trouble',
-					'failed',
-					'Corgi is updating the state now.'
-				);
-				resetDraftPreview();
-			} else if (event.stage === 'governor_runtime_completed') {
-				clearGovernorWaitTimers();
-			} else {
-				return;
-			}
 			persistUiState();
 			renderFeed();
 			renderComposer();
@@ -2076,7 +2123,7 @@ export function getExecutionWindowClientScript(
 				const runtimeActivity = runtimeActivityForItem(item);
 				const lifecycleSummaryKey = lifecycleActivitySummaryKey(item);
 				if (lifecycleSummaryKey) {
-					return summaryForActivityKey(lifecycleSummaryKey, {});
+					return visibleActivityLabelForKey(lifecycleSummaryKey);
 				}
 				if (runtimeActivity?.summary) {
 					return runtimeActivity.summary;
@@ -2520,8 +2567,16 @@ export function getExecutionWindowClientScript(
 						? 'failed'
 						: activity.state || 'completed';
 			const label = activityLabel(item);
+			const lifecycleBodySummary =
+				lifecycleSummaryKey &&
+				shouldUseLifecycleBodyAsActivitySummary(lifecycleSummaryKey) &&
+				item.body
+					? item.body
+					: undefined;
 			const summaryCandidate =
-				runtimeActivity?.detail
+				lifecycleBodySummary
+					? lifecycleBodySummary
+				: runtimeActivity?.detail
 					? runtimeActivity.detail
 					: runtimeActivity && runtimeActivity.summary !== label
 					? runtimeActivity.summary
@@ -2630,6 +2685,43 @@ export function getExecutionWindowClientScript(
 			return undefined;
 		}
 
+		function activityRepresentsForegroundState(item) {
+			const lifecycleSummaryKey = lifecycleActivitySummaryKey(item);
+			if (
+				lifecycleSummaryKey === 'dispatch_queued' ||
+				lifecycleSummaryKey === 'executor_running' ||
+				lifecycleSummaryKey === 'reviewer_running' ||
+				lifecycleSummaryKey === 'recovery_running'
+			) {
+				return true;
+			}
+			const activityState = String(item?.activity?.state || '').toLowerCase();
+			return activityState === 'running' || activityState === 'waiting';
+		}
+
+		function visibleActivityAlreadyShowsForegroundState() {
+			if (!model) {
+				return false;
+			}
+			const visibleActivities = visibleActivityIds(5);
+			return model.feed.some(
+				(item) =>
+					visibleActivities.has(item.id) &&
+					feedItemVisibility(item) === 'activity' &&
+					activityRepresentsForegroundState(item)
+			);
+		}
+
+		function visibleBlockingSurfaceAlreadyShowsForegroundState(requestKey) {
+			return Boolean(
+				model?.activeClarification ||
+				model?.snapshot?.pendingPermissionRequest ||
+				model?.snapshot?.pendingInterrupt ||
+				latestRequestError(requestKey) ||
+				latestSemanticBlockStatus(requestKey)
+			);
+		}
+
 		function renderForegroundRequest() {
 			if (!ui.foregroundRequest) {
 				return '';
@@ -2699,13 +2791,24 @@ export function getExecutionWindowClientScript(
 					'<div>' + escapeHtml(draftPreviewText) + '</div>' +
 				  '</div>'
 				: '';
-
-			return (
-				(ui.foregroundRequest.userText && !hasAuthoritativeUserEcho
+			const userEchoMarkup =
+				ui.foregroundRequest.userText && !hasAuthoritativeUserEcho
 					? '<article class="message user">' +
 						'<div class="message-body">' + escapeHtml(ui.foregroundRequest.userText) + '</div>' +
 					  '</article>'
-					: '') +
+					: '';
+			const shouldHideDuplicateOperationalState =
+				!draftPreviewText &&
+				(
+					visibleActivityAlreadyShowsForegroundState() ||
+					visibleBlockingSurfaceAlreadyShowsForegroundState(requestKey)
+				);
+			if (shouldHideDuplicateOperationalState) {
+				return userEchoMarkup;
+			}
+
+			return (
+				userEchoMarkup +
 				'<article class="message assistant is-informational progress-cluster ' +
 					'activity-trace ' +
 					(ui.foregroundRequest.status === 'frozen' ? 'is-frozen' : '') +

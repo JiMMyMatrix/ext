@@ -873,12 +873,82 @@ class HarnessPackageTests(unittest.TestCase):
 
                 joined = " ".join(args)
                 self.assertIn("--authorship-evidence-required", args)
+                self.assertIn("--command-timeout-sec", args)
+                self.assertIn("960", args)
                 self.assertIn("executor_live_codex_project.py", joined)
+                self.assertIn("--timeout-seconds 900", joined)
                 self.assertIn("validate_pet_diary_live_project.py", joined)
                 self.assertIn("scratch_live_executor", args)
                 self.assertNotIn("executor_write_readout.py", joined)
                 for output_ref in session_execution.PET_DIARY_OUTPUTS:
                     self.assertIn(output_ref, args)
+
+    def test_live_executor_timeout_writes_failure_manifest(self) -> None:
+        source_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir) / "scratch-workspaces" / "live-timeout"
+            repo_root.mkdir(parents=True)
+            intake_ref = ".agent/intakes/test/accepted_intake.json"
+            write_json(
+                repo_root / intake_ref,
+                {
+                    "goal": "Build a Pet Life Diary app.",
+                    "task": "Timeout test",
+                    "accepted_summary": "Timeout test",
+                },
+            )
+            fake_codex = Path(tmp_dir) / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env python3\n"
+                "import time\n"
+                "time.sleep(5)\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o755)
+            manifest_ref = ".agent/runs/lane/main/dispatch-timeout/result/attempt-1/live_executor_manifest.json"
+            script = source_root / "orchestration" / "scripts" / "executor_live_codex_project.py"
+            env = {
+                **os.environ,
+                "CORGI_CODEX_BIN": str(fake_codex),
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_SOURCE_ROOT": str(source_root),
+            }
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--repo-root",
+                    str(repo_root),
+                    "--dispatch-ref",
+                    "lane/main/dispatch-timeout",
+                    "--objective",
+                    "Create the first Pet Life Diary file.",
+                    "--accepted-intake",
+                    intake_ref,
+                    "--manifest",
+                    manifest_ref,
+                    "--last-message",
+                    ".agent/runs/lane/main/dispatch-timeout/result/attempt-1/codex_last_message.md",
+                    "--target-file",
+                    "README.md",
+                    "--required-output",
+                    "README.md",
+                    "--timeout-seconds",
+                    "1",
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("timed out", proc.stderr)
+            manifest = load_json(repo_root / manifest_ref)
+            self.assertEqual(manifest["codex"]["returncode"], 124)
+            self.assertTrue(manifest["codex"]["timed_out"])
+            self.assertEqual(manifest["codex"]["timeout_seconds"], 1)
 
     def test_pet_diary_bugfix_executor_requires_explicit_scratch_test_metadata(self) -> None:
         objective = "Fix the pet diary app so adding a diary entry updates the visible list."
@@ -2537,6 +2607,18 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(model["snapshot"]["currentStage"], "ready_for_acceptance")
             self.assertIsNotNone(model["snapshot"].get("pendingPermissionRequest") or model["snapshot"].get("pendingApproval"))
             self.assertIsNone(model["activeClarification"])
+
+    def test_session_state_is_read_only_and_does_not_save_stale_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            session.dispatch_session_action("state", repo_root=repo_root)
+            with mock.patch(
+                "orchestration.harness.session.save_session",
+                side_effect=AssertionError("state command must be read-only"),
+            ):
+                model = session.dispatch_session_action("state", repo_root=repo_root)
+
+            self.assertEqual(model["snapshot"]["currentStage"], "idle")
 
     def test_session_state_reads_running_dispatch_fixture(self) -> None:
         with temporary_scenario_repo("running_dispatch") as repo_root:
@@ -5844,6 +5926,13 @@ class HarnessPackageTests(unittest.TestCase):
             self.assertEqual(goal_progress["status"], "completed")
             self.assertGreaterEqual(len(goal_progress["completed_steps"]), 3)
             self.assertGreaterEqual(len(set(goal_progress["linked_work_refs"])), 2)
+            dispatch_requests = sorted((repo_root / ".agent" / "dispatches").glob("**/request.json"))
+            self.assertGreaterEqual(len(dispatch_requests), 3)
+            for request_path in dispatch_requests:
+                request_payload = load_json(request_path)
+                self.assertEqual(request_payload.get("goal_ref"), goal_ref)
+                self.assertIsInstance(request_payload.get("goal_step_ref"), str)
+                self.assertIsInstance(request_payload.get("goal_step_index"), int)
             self.assertEqual(goal_decision["decision"], "accept")
             self.assertTrue((repo_root / "README.md").exists())
             self.assertIn("Demo highlights", (repo_root / "README.md").read_text(encoding="utf-8"))
@@ -5875,6 +5964,191 @@ class HarnessPackageTests(unittest.TestCase):
                     item.get("presentation_key") == "goal.blocked"
                     and item.get("presentation_args", {}).get("reason") == "active_goal_exists"
                     for item in second["feed"]
+                )
+            )
+
+    def test_governor_goal_continuation_can_extend_then_finalize(self) -> None:
+        source_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo_root, check=False, capture_output=True)
+            exclude = repo_root / ".git" / "info" / "exclude"
+            if exclude.exists():
+                exclude.write_text(exclude.read_text(encoding="utf-8") + "\n.agent/\n", encoding="utf-8")
+            env = {
+                "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                "ORCHESTRATION_SOURCE_ROOT": str(source_root),
+                "ORCHESTRATION_AGENT_ROOT": str(repo_root / ".agent"),
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_APPROVED_PYTHON": sys.executable,
+            }
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                runtime_support,
+                "APPROVED_PYTHON",
+                Path(sys.executable),
+            ):
+                start = session.dispatch_session_action(
+                    "start_goal",
+                    text="Build a Pet Life Diary demo and keep improving it until it is ready to show.",
+                    repo_root=repo_root,
+                    request_id="goal-continuation-start",
+                    governor_runtime="external",
+                    auto_consume_executor=True,
+                )
+                self.assertEqual(start["kind"], "governor_runtime_request")
+                first_step_plan = {
+                    "user_visible_reply": "I will start with the base app.",
+                    "steps": [
+                        {
+                            "title": "Create the base diary app",
+                            "objective": "Build a simple static Pet Life Diary app from scratch.",
+                            "expected_output": "README.md, index.html, src/app.js, src/styles.css, and data/sample-pets.json exist.",
+                            "prompt_preset": "pet-life-diary-goal-base",
+                        }
+                    ],
+                }
+                continuation = session.dispatch_session_action(
+                    "complete_governor_turn",
+                    repo_root=repo_root,
+                    runtime_request_id=start["request"]["runtimeRequestId"],
+                    runtime_body=json.dumps(first_step_plan),
+                    runtime_thread_id="thread-goal-continuation",
+                )
+                self.assertEqual(continuation["kind"], "governor_runtime_request")
+                self.assertEqual(continuation["model"]["snapshot"]["goalStatus"], "active")
+                self.assertEqual(continuation["model"]["snapshot"]["goalContinuationState"], "pending")
+                self.assertEqual(continuation["request"]["resultStage"], "goal_continuation_ready")
+
+                extend_decision = {
+                    "decision": "extend",
+                    "user_visible_reply": "One more polish step is needed.",
+                    "reason": "The base app exists but documentation needs a demo-ready pass.",
+                    "steps": [
+                        {
+                            "title": "Polish the README",
+                            "objective": "Polish the Pet Life Diary README so the demo is ready for review.",
+                            "expected_output": "README.md explains the demo clearly for a human reviewer.",
+                            "prompt_preset": "pet-life-diary-readme-polish",
+                        }
+                    ],
+                }
+                second_continuation = session.dispatch_session_action(
+                    "complete_governor_turn",
+                    repo_root=repo_root,
+                    runtime_request_id=continuation["request"]["runtimeRequestId"],
+                    runtime_body=json.dumps(extend_decision),
+                    runtime_thread_id="thread-goal-continuation",
+                )
+                self.assertEqual(second_continuation["kind"], "governor_runtime_request")
+                self.assertEqual(second_continuation["model"]["snapshot"]["goalContinuationState"], "pending")
+
+                final_decision = {
+                    "decision": "finalize",
+                    "user_visible_reply": "The demo goal is complete enough to show.",
+                    "reason": "The required base app and documentation polish steps passed review.",
+                }
+                completed = session.dispatch_session_action(
+                    "complete_governor_turn",
+                    repo_root=repo_root,
+                    runtime_request_id=second_continuation["request"]["runtimeRequestId"],
+                    runtime_body=json.dumps(final_decision),
+                    runtime_thread_id="thread-goal-continuation",
+                )
+
+            snapshot = completed["snapshot"]
+            self.assertEqual(snapshot["goalStatus"], "completed")
+            self.assertEqual(snapshot["goalContinuationState"], "idle")
+            goal_ref = snapshot["currentGoalRef"]
+            goal_dir = repo_root / ".agent" / "goals" / goal_ref
+            goal_plan = load_json(goal_dir / "goal_plan.json")
+            goal_progress = load_json(goal_dir / "goal_progress.json")
+            self.assertEqual(goal_plan["plan_version"], 2)
+            self.assertEqual(len(goal_plan["steps"]), 2)
+            self.assertEqual(goal_progress["status"], "completed")
+            self.assertEqual(len(goal_progress["completed_steps"]), 2)
+            self.assertIsNone(goal_progress["pending_continuation_request_ref"])
+
+    def test_goal_continuation_rejected_finalize_does_not_commit_governor_reply(self) -> None:
+        source_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo_root, check=False, capture_output=True)
+            exclude = repo_root / ".git" / "info" / "exclude"
+            if exclude.exists():
+                exclude.write_text(exclude.read_text(encoding="utf-8") + "\n.agent/\n", encoding="utf-8")
+            env = {
+                "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                "ORCHESTRATION_SOURCE_ROOT": str(source_root),
+                "ORCHESTRATION_AGENT_ROOT": str(repo_root / ".agent"),
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_APPROVED_PYTHON": sys.executable,
+            }
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                runtime_support,
+                "APPROVED_PYTHON",
+                Path(sys.executable),
+            ):
+                start = session.dispatch_session_action(
+                    "start_goal",
+                    text="Build a Pet Life Diary demo and keep improving it until it is ready to show.",
+                    repo_root=repo_root,
+                    request_id="goal-continuation-reject-start",
+                    governor_runtime="external",
+                    auto_consume_executor=True,
+                )
+                plan = {
+                    "user_visible_reply": "I will start with the base app.",
+                    "steps": [
+                        {
+                            "title": "Create the base diary app",
+                            "objective": "Build a simple static Pet Life Diary app from scratch.",
+                            "expected_output": "README.md, index.html, src/app.js, src/styles.css, and data/sample-pets.json exist.",
+                            "prompt_preset": "pet-life-diary-goal-base",
+                        }
+                    ],
+                }
+                continuation = session.dispatch_session_action(
+                    "complete_governor_turn",
+                    repo_root=repo_root,
+                    runtime_request_id=start["request"]["runtimeRequestId"],
+                    runtime_body=json.dumps(plan),
+                    runtime_thread_id="thread-goal-continuation-reject",
+                )
+                goal_ref = continuation["model"]["snapshot"]["currentGoalRef"]
+                goal_dir = repo_root / ".agent" / "goals" / goal_ref
+                goal_plan_path = goal_dir / "goal_plan.json"
+                goal_plan = load_json(goal_plan_path)
+                goal_plan["steps"][0]["status"] = "active"
+                goal_plan_path.write_text(json.dumps(goal_plan, indent=2) + "\n", encoding="utf-8")
+
+                rejected = session.dispatch_session_action(
+                    "complete_governor_turn",
+                    repo_root=repo_root,
+                    runtime_request_id=continuation["request"]["runtimeRequestId"],
+                    runtime_body=json.dumps(
+                        {
+                            "decision": "finalize",
+                            "user_visible_reply": "This should not be committed.",
+                            "reason": "Incorrect premature finalization.",
+                        }
+                    ),
+                    runtime_thread_id="thread-goal-continuation-reject",
+                )
+
+            self.assertEqual(rejected["snapshot"]["goalStatus"], "blocked")
+            self.assertFalse((goal_dir / "goal_decision.json").exists())
+            self.assertFalse(
+                any(
+                    item.get("type") == "actor_event"
+                    and item.get("body") == "This should not be committed."
+                    for item in rejected["feed"]
+                )
+            )
+            self.assertTrue(
+                any(
+                    item.get("presentation_key") == "goal.blocked"
+                    and item.get("presentation_args", {}).get("reason") == "invalid_goal_continuation"
+                    for item in rejected["feed"]
                 )
             )
 
@@ -6119,6 +6393,46 @@ class HarnessPackageTests(unittest.TestCase):
                 )
             )
 
+    def test_complete_governor_goal_plan_can_defer_client_auto_execute(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(os.environ, {"CORGI_GOAL_PLAN_SOURCE": "governor"}, clear=False):
+                prepared = session.dispatch_session_action(
+                    "start_goal",
+                    text="Build a polished Pet Life Diary demo.",
+                    repo_root=repo_root,
+                    request_id="goal-plan-defer-auto-execute-test",
+                    governor_runtime="external",
+                    auto_consume_executor=True,
+                )
+            runtime_request = prepared["request"]
+            body = json.dumps(
+                {
+                    "user_visible_reply": "I split this into one bounded step.",
+                    "steps": [
+                        {
+                            "title": "Create app shell",
+                            "objective": "Create the initial static Pet Life Diary app shell.",
+                            "expected_output": "README.md and index.html exist.",
+                        }
+                    ],
+                }
+            )
+
+            completed = session.dispatch_session_action(
+                "complete_governor_turn",
+                repo_root=repo_root,
+                runtime_request_id=runtime_request["runtimeRequestId"],
+                runtime_body=body,
+                runtime_thread_id="app-thread-goal-defer",
+                defer_auto_execute=True,
+            )
+
+            self.assertEqual(completed["snapshot"]["currentStage"], "plan_ready")
+            self.assertEqual(completed["snapshot"]["runState"], "idle")
+            self.assertIsInstance(completed.get("planReadyRequest"), dict)
+            self.assertFalse((repo_root / ".agent" / "dispatches").exists())
+
     def test_governor_goal_plan_accepts_common_dependency_ref_forms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()
@@ -6169,6 +6483,46 @@ class HarnessPackageTests(unittest.TestCase):
             goal_plan = load_json(repo_root / ".agent" / "goals" / goal_ref / "goal_plan.json")
             self.assertEqual(goal_plan["steps"][1]["depends_on_step_ref"], "step-01")
             self.assertEqual(goal_plan["steps"][2]["depends_on_step_ref"], "step-02")
+
+    def test_governor_goal_plan_is_not_capped_to_a_fixed_practical_step_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(os.environ, {"CORGI_GOAL_PLAN_SOURCE": "governor"}, clear=False):
+                prepared = session.dispatch_session_action(
+                    "start_goal",
+                    text="Build a portfolio-scale Pet Life Diary demo.",
+                    repo_root=repo_root,
+                    request_id="goal-plan-uncapped-test",
+                    governor_runtime="external",
+                )
+            runtime_request = prepared["request"]
+            body = json.dumps(
+                {
+                    "user_visible_reply": "I split the goal into the work I currently think is useful.",
+                    "steps": [
+                        {
+                            "title": f"Goal slice {index}",
+                            "objective": f"Complete bounded product slice {index}.",
+                            "expected_output": f"Evidence for product slice {index}.",
+                            "depends_on_step_ref": f"step-{index - 1:02d}" if index > 1 else None,
+                        }
+                        for index in range(1, 9)
+                    ],
+                }
+            )
+
+            completed = session.dispatch_session_action(
+                "complete_governor_turn",
+                repo_root=repo_root,
+                runtime_request_id=runtime_request["runtimeRequestId"],
+                runtime_body=body,
+                runtime_thread_id="app-thread-goal-uncapped",
+            )
+
+            goal_ref = completed["snapshot"]["currentGoalRef"]
+            goal_plan = load_json(repo_root / ".agent" / "goals" / goal_ref / "goal_plan.json")
+            self.assertEqual(len(goal_plan["steps"]), 8)
+            self.assertEqual(completed["snapshot"]["currentStage"], "plan_ready")
 
     def test_invalid_governor_goal_plan_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

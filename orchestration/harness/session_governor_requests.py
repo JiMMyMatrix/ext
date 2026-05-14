@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from orchestration.harness import governor_runtime
 from orchestration.harness import session_context
+from orchestration.harness import session_goal_lifecycle
 from orchestration.harness.session_feed import _next_id
 
 RefreshSnapshot = Callable[..., None]
@@ -290,6 +291,77 @@ def prepare_governor_goal_revision_runtime_request(
 		now,
 		currentActor="governor",
 		currentStage="goal_planning",
+		runState="running",
+		transportState="connected",
+	)
+	return pending
+
+
+def prepare_governor_goal_continuation_runtime_request(
+	session: dict[str, Any],
+	goal_ref: str,
+	now: str,
+	*,
+	refresh_snapshot: RefreshSnapshot,
+	repo_root: str | Path | None = None,
+	request_id: str | None = None,
+	continuation_request_ref: str | None = None,
+	auto_consume_executor_after_plan: bool = False,
+	auto_governor_runtime_after_plan: str = "exec",
+	invalid_attempt_count: int = 0,
+) -> dict[str, Any]:
+	goal_payload = session_goal_lifecycle.load_goal(goal_ref, repo_root=repo_root)
+	goal_plan = session_goal_lifecycle.load_goal_plan(goal_ref, repo_root=repo_root)
+	goal_progress = session_goal_lifecycle.load_goal_progress(goal_ref, repo_root=repo_root)
+	completed_steps = [
+		step for step in goal_progress.get("completed_steps", []) if isinstance(step, dict)
+	]
+	governor_meta = session_context.governor_dialogue_meta(session)
+	model_name, reasoning = governor_runtime.governor_runtime_settings(repo_root)
+	runtime_request_id = _next_id("governor-runtime")
+	pending = {
+		"runtimeKind": "goal_plan",
+		"runtimeRequestId": runtime_request_id,
+		"requestId": request_id,
+		"preferredAppServerThreadId": governor_meta.get("appServerThreadId")
+		if isinstance(governor_meta.get("appServerThreadId"), str)
+		else None,
+		"initialPrompt": governor_runtime.initial_governor_goal_continuation_prompt(
+			str(goal_payload.get("original_goal") or goal_payload.get("title") or ""),
+			completed_steps=completed_steps,
+			plan_version=goal_plan.get("plan_version") if isinstance(goal_plan.get("plan_version"), int) else 1,
+		),
+		"resumePrompt": governor_runtime.resume_governor_goal_continuation_prompt(
+			str(goal_payload.get("original_goal") or goal_payload.get("title") or "")
+		),
+		"model": model_name,
+		"reasoning": reasoning,
+		"resultStage": "goal_continuation_ready",
+		"createdAt": now,
+		"prompt": str(goal_payload.get("original_goal") or goal_payload.get("title") or ""),
+		"goalRef": goal_ref,
+		"continuationRequestRef": continuation_request_ref,
+		"details": ["Governor is deciding whether the active goal is complete or needs more steps."],
+		"primaryRef": None,
+		"turnType": "goal_continuation",
+		"invalidAttemptCount": invalid_attempt_count,
+		"returnAsRuntimeRequest": True,
+		"autoConsumeExecutorAfterPlan": auto_consume_executor_after_plan,
+		"autoGovernorRuntimeAfterPlan": auto_governor_runtime_after_plan,
+		"context": {
+			"sessionRef": session["model"]["snapshot"].get("sessionRef"),
+			"foregroundRequestId": request_id,
+			"currentStage": session["model"]["snapshot"].get("currentStage"),
+			"goalRef": goal_ref,
+			"continuationRequestRef": continuation_request_ref,
+		},
+	}
+	session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = pending
+	refresh_snapshot(
+		session["model"],
+		now,
+		currentActor="governor",
+		currentStage="goal_continuation_pending",
 		runState="running",
 		transportState="connected",
 	)

@@ -71,7 +71,7 @@ def parse_json_file(path: Optional[str]) -> Optional[Dict[str, Any]]:
     return json.loads(payload_path.read_text(encoding="utf-8"))
 
 
-def parse_command_specs(values: List[str]) -> List[Dict[str, Any]]:
+def parse_command_specs(values: List[str], *, timeout_sec: Optional[int] = None) -> List[Dict[str, Any]]:
     specs: List[Dict[str, Any]] = []
     for value in values:
         argv = shlex.split(value)
@@ -80,7 +80,7 @@ def parse_command_specs(values: List[str]) -> List[Dict[str, Any]]:
         specs.append({
             "argv": argv,
             "cwd": ".",
-            "timeout_sec": None,
+            "timeout_sec": timeout_sec,
             "allow_failure": False,
             "name": argv[0],
         })
@@ -124,9 +124,12 @@ def build_execution_payload(args: argparse.Namespace) -> Optional[Dict[str, Any]
 
     payload: Dict[str, Any] = {}
     if args.command:
-        payload["commands"] = parse_command_specs(args.command)
+        payload["commands"] = parse_command_specs(args.command, timeout_sec=args.command_timeout_sec)
     if args.validator_command:
-        payload["validator_commands"] = parse_command_specs(args.validator_command)
+        payload["validator_commands"] = parse_command_specs(
+            args.validator_command,
+            timeout_sec=args.validator_timeout_sec,
+        )
     if args.execution_summary:
         payload["summary"] = args.execution_summary
     if args.sample_id:
@@ -236,6 +239,9 @@ def build_emit_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-ref")
     parser.add_argument("--plan-ref")
     parser.add_argument("--plan-version", type=int)
+    parser.add_argument("--goal-ref")
+    parser.add_argument("--goal-step-ref")
+    parser.add_argument("--goal-step-index", type=int)
     parser.add_argument("--revision-of-dispatch-ref")
     parser.add_argument("--escalated", action="store_true")
     parser.add_argument("--escalation-context-file")
@@ -245,6 +251,8 @@ def build_emit_parser() -> argparse.ArgumentParser:
     parser.add_argument("--execution-payload-file")
     parser.add_argument("--command", action="append", default=[])
     parser.add_argument("--validator-command", action="append", default=[])
+    parser.add_argument("--command-timeout-sec", type=int)
+    parser.add_argument("--validator-timeout-sec", type=int)
     parser.add_argument("--execution-summary")
     parser.add_argument("--sample-id")
     parser.add_argument("--execution-claim", action="append", default=[])
@@ -340,6 +348,12 @@ def emit_main(argv: Optional[List[str]] = None) -> int:
             request["plan_ref"] = args.plan_ref
         if args.plan_version is not None:
             request["plan_version"] = args.plan_version
+        if args.goal_ref:
+            request["goal_ref"] = args.goal_ref
+        if args.goal_step_ref:
+            request["goal_step_ref"] = args.goal_step_ref
+        if args.goal_step_index is not None:
+            request["goal_step_index"] = args.goal_step_index
         if args.revision_of_dispatch_ref:
             request["revision_of_dispatch_ref"] = args.revision_of_dispatch_ref
         if args.task_track:

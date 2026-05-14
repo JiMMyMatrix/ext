@@ -553,6 +553,14 @@ suite('Corgi Webview UX', () => {
 		assert.ok(practicalMonitorSource.includes('pet-life-diary-real-project'));
 		assert.ok(practicalMonitorSource.includes('readout_only_executor_fallback'));
 		assert.ok(practicalMonitorSource.includes('goal_plan_source_not_governor'));
+		assert.ok(practicalMonitorSource.includes('Project lines observed'));
+		assert.ok(practicalMonitorSource.includes('while (!options.timeoutSeconds'));
+		assert.ok(!practicalMonitorSource.includes('CORGI_PRACTICAL_DURATION_SECONDS'));
+		assert.ok(!practicalMonitorSource.includes('CORGI_PRACTICAL_MIN_PROJECT_LINES'));
+		assert.ok(!practicalMonitorSource.includes('practical_completed_too_early'));
+		assert.ok(!practicalMonitorSource.includes('practical_project_too_small'));
+		assert.ok(!practicalMonitorSource.includes('practical_acceptance_shortfall'));
+		assert.ok(!practicalMonitorSource.includes('goalSteps.length >= 6'));
 		assert.ok(!practicalMonitorSource.includes('close-corgi-test-window'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_AGENT_ROOT'));
 		assert.ok(processTestSource.includes('ORCHESTRATION_SOURCE_ROOT'));
@@ -882,7 +890,11 @@ suite('Corgi Webview UX', () => {
 		assert.ok(clientSource.includes('app-server emitted malformed JSON'));
 		assert.ok(runtimeSource.includes("account.kind === 'apiKey'"));
 		assert.ok(runtimeSource.includes('expects ChatGPT auth'));
-		assert.ok(runtimeSource.includes("previewEnabled: request.runtimeKind !== 'semantic_intake'"));
+		assert.ok(
+			runtimeSource.includes(
+				"previewEnabled: request.runtimeKind !== 'semantic_intake' && request.runtimeKind !== 'goal_plan'"
+			)
+		);
 		assert.ok(runtimeSource.includes('CORGI_SEMANTIC_INTAKE_TIMEOUT_MS'));
 		assert.ok(runtimeSource.includes('DEFAULT_SEMANTIC_INTAKE_TIMEOUT_MS = 60_000'));
 		assert.ok(!runtimeSource.includes("? 25_000"));
@@ -900,6 +912,8 @@ suite('Corgi Webview UX', () => {
 		assert.ok(clientSource.includes('Plan draft preview'));
 		assert.ok(transportSource.includes('runtimeKind: event.runtimeKind'));
 		assert.ok(webviewSource.includes("event.runtimeKind === 'semantic_intake'"));
+		assert.ok(webviewSource.includes('!isSemanticIntake &&'));
+		assert.ok(webviewSource.includes('!isGoalPlan &&'));
 		assert.ok(webviewSource.includes("event.runtimeKind === 'plan'"));
 		assert.ok(webviewSource.includes('if (event.model)'));
 		assert.ok(webviewSource.includes('this.model = event.model'));
@@ -2011,10 +2025,14 @@ suite('Corgi Webview UX', () => {
 
 		const snapshot = renderWebviewSnapshot(model);
 		const messageText = snapshot.messages.map((message) => message.text).join('\n');
+		const activityText = snapshot.activity.map((message) => message.text).join('\n');
 
 		assert.match(snapshot.goalStrip, /Step: Writing/);
 		assert.match(snapshot.goalStrip, /Running/);
 		assert.ok(!messageText.includes('Executor starting'));
+		assert.match(activityText, /Executor is writing/);
+		assert.match(activityText, /Executor is starting from the accepted plan/);
+		assert.deepStrictEqual(snapshot.progress, []);
 		assert.strictEqual(snapshot.composer.context, 'Scope: Execute');
 	});
 

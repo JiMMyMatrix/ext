@@ -72,7 +72,9 @@ def handle_complete_governor_turn(
 			app_server_item_id=item_id,
 			runtime_source=runtime_source,
 		)
-		session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
+		current_pending = pending_governor_runtime_request(session)
+		if not current_pending or current_pending.get("runtimeRequestId") == runtime_request_id:
+			session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
 		return
 	append_completed_governor_dialogue_response(
 		session,
@@ -207,7 +209,9 @@ def handle_fallback_governor_turn(
 			repo_root=repo_root,
 			runtime_source="exec-fallback",
 		)
-		session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
+		current_pending = pending_governor_runtime_request(session)
+		if not current_pending or current_pending.get("runtimeRequestId") == runtime_request_id:
+			session.setdefault("meta", {})["pendingGovernorRuntimeRequest"] = None
 		return
 	append_completed_governor_dialogue_response(
 		session,

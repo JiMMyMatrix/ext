@@ -187,6 +187,8 @@ export interface ContextSnapshot {
 	currentGoalStepIndex?: number;
 	goalStepCount?: number;
 	goalStatus?: 'active' | 'blocked' | 'completed';
+	goalContinuationState?: 'idle' | 'pending' | 'extending' | 'finalizing' | 'blocked';
+	pendingGoalContinuationRequestRef?: string;
 	latestGoalDecisionRef?: string;
 	currentPlanVersion?: number;
 	currentAttemptNumber?: number;

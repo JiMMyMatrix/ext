@@ -162,7 +162,7 @@
     {
       "id": "pet-life-diary-real-project",
       "label": "Pet life diary real project",
-      "prompt": "Build a local-first Pet Life Diary web app suitable as a small portfolio demo, with journal entries, pet profiles, care routines, search/filtering, persistence, import/export, validation, and clear documentation. Improve it over multiple rounds until it is demo-ready.",
+      "prompt": "Build a local-first Pet Life Diary web app suitable as a small portfolio demo, with journal entries, pet profiles, care routines, search/filtering, persistence, import/export, validation, and clear documentation. Treat this as a long-running practical development exercise: keep improving the project in bounded rounds until the supervisor stops the session, rather than finishing after one short pass.",
       "category": "scratch_real_project_exercise",
       "requiresScenario": "fresh-session",
       "purpose": "Supervised practical exercise that forces Governor-owned decomposition and exposes whether Corgi can keep advancing real project work without canned product-goal templates.",
@@ -176,8 +176,9 @@
       ],
       "assertions": [
         "The goal plan comes from Governor, not the deterministic product-goal template.",
-        "At least six goal steps are attempted or a blocker explains why the run stopped earlier.",
-        "At least three workRef values should complete under one goalRef before this counts as practical progress.",
+        "The monitor is duration/progress based, not tied to a required number of goal steps.",
+        "A short completed run is treated as premature completion unless the session has actually run for the configured practical duration.",
+        "The scratch project should grow toward a few-thousand-line demo with real Executor file mutations.",
         "Readout-only Executor fallback is treated as a blocker, not success.",
         "The scratch workspace remains isolated from the Corgi development repo."
       ],

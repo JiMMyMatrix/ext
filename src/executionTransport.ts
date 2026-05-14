@@ -521,6 +521,7 @@ class OrchestrationExecutionTransport implements ExecutionTransport {
 					result.body,
 					'--runtime-source',
 					result.runtimeSource,
+					...(request.runtimeKind === 'goal_plan' ? ['--defer-auto-execute'] : []),
 					...(result.threadId ? ['--thread-id', result.threadId] : []),
 					...(result.turnId ? ['--turn-id', result.turnId] : []),
 					...(result.itemId ? ['--item-id', result.itemId] : []),

@@ -132,7 +132,7 @@ export class AppServerGovernorRuntime implements GovernorRuntime {
 			requestId: request.requestId,
 			runtimeRequestId: request.runtimeRequestId,
 			runtimeKind: request.runtimeKind,
-			previewEnabled: request.runtimeKind !== 'semantic_intake',
+			previewEnabled: request.runtimeKind !== 'semantic_intake' && request.runtimeKind !== 'goal_plan',
 			threadId,
 			prompt: threadId ? request.resumePrompt : request.initialPrompt,
 			model: request.model,
