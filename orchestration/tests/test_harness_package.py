@@ -849,21 +849,6 @@ class HarnessPackageTests(unittest.TestCase):
                 session_execution.real_project_executor_runtime_unavailable_message(),
             )
 
-        with mock.patch.dict(
-            os.environ,
-            {
-                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
-                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
-                "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
-            },
-            clear=True,
-        ):
-            self.assertTrue(session_execution.is_real_project_practical_exercise())
-            self.assertIn(
-                "not implemented yet",
-                session_execution.real_project_executor_runtime_unavailable_message(),
-            )
-
     def test_real_project_dispatch_fails_closed_without_supported_executor_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()
@@ -929,6 +914,141 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertEqual(
                     model["feed"][-1].get("presentation_args", {}).get("runtime"),
                     "live",
+                )
+                self.assertNotIn("executorRuntimeUnavailable", model)
+
+    def test_real_project_patch_executor_allows_known_goal_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                intake_ref = "real-project-step-01"
+                write_json(
+                    intake.accepted_intake_path(intake_ref, repo_root=repo_root),
+                    {
+                        "intake_ref": intake_ref,
+                        "goal_ref": "goal-real-project",
+                        "goal_step_ref": "step-01",
+                        "goal_step_index": 1,
+                        "goal": "Build a portfolio-grade Pet Life Diary app.",
+                        "task": "Create the base Pet Life Diary app.",
+                        "accepted_summary": "Create the base Pet Life Diary app.",
+                    },
+                )
+                state = session.load_session(repo_root)
+                state["meta"]["activeIntakeRef"] = intake_ref
+                state["model"]["acceptedIntakeSummary"] = {
+                    "title": "Accepted intake summary",
+                    "body": "Create the base Pet Life Diary app.",
+                }
+                state["model"]["planReadyRequest"] = {
+                    "id": "plan-ready-real-project",
+                    "foregroundRequestId": "corgi-request:plan",
+                    "contextRef": "plan-context-real-project",
+                    "planContextRef": "plan-context-real-project",
+                    "workRef": "work-real-project",
+                    "planRef": ".agent/work/work-real-project/plans/plan-v1.md",
+                    "planVersion": 1,
+                    "acceptedIntakeSummary": {"body": "Create the base Pet Life Diary app."},
+                    "allowedActions": ["execute_plan", "revise_plan"],
+                }
+                state["model"]["snapshot"]["task"] = "Create the base Pet Life Diary app."
+                state["model"]["snapshot"]["currentStage"] = "plan_ready"
+                state["model"]["snapshot"]["permissionScope"] = "plan"
+                session.save_session(state, repo_root=repo_root)
+
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:execute-real-project",
+                    context_ref="plan-context-real-project",
+                    repo_root=repo_root,
+                )
+
+                request_paths = list(repo_root.glob(".agent/dispatches/**/request.json"))
+                self.assertEqual(len(request_paths), 1)
+                request = load_json(request_paths[0])
+                command_text = " ".join(
+                    " ".join(command.get("argv", []))
+                    for command in request.get("execution_payload", {}).get("commands", [])
+                    if isinstance(command, dict)
+                )
+                self.assertIn("executor_create_goal_pet_diary_base.py", command_text)
+                self.assertNotIn("codex exec", command_text)
+                self.assertNotIn("executor_write_readout.py", command_text)
+                self.assertNotEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
+                self.assertNotIn("executorRuntimeUnavailable", model)
+
+    def test_real_project_patch_executor_blocks_unknown_goal_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                intake_ref = "real-project-step-02-unsupported"
+                write_json(
+                    intake.accepted_intake_path(intake_ref, repo_root=repo_root),
+                    {
+                        "intake_ref": intake_ref,
+                        "goal_ref": "goal-real-project",
+                        "goal_step_ref": "step-02",
+                        "goal_step_index": 2,
+                        "goal": "Build a portfolio-grade Pet Life Diary app.",
+                        "task": "Add a medication calendar surface.",
+                        "accepted_summary": "Add a medication calendar surface.",
+                    },
+                )
+                state = session.load_session(repo_root)
+                state["meta"]["activeIntakeRef"] = intake_ref
+                state["model"]["acceptedIntakeSummary"] = {
+                    "title": "Accepted intake summary",
+                    "body": "Add a medication calendar surface.",
+                }
+                state["model"]["planReadyRequest"] = {
+                    "id": "plan-ready-real-project-unsupported",
+                    "foregroundRequestId": "corgi-request:plan",
+                    "contextRef": "plan-context-real-project",
+                    "planContextRef": "plan-context-real-project",
+                    "workRef": "work-real-project",
+                    "planRef": ".agent/work/work-real-project/plans/plan-v1.md",
+                    "planVersion": 1,
+                    "acceptedIntakeSummary": {"body": "Add a medication calendar surface."},
+                    "allowedActions": ["execute_plan", "revise_plan"],
+                }
+                state["model"]["snapshot"]["task"] = "Add a medication calendar surface."
+                state["model"]["snapshot"]["currentStage"] = "plan_ready"
+                state["model"]["snapshot"]["permissionScope"] = "plan"
+                session.save_session(state, repo_root=repo_root)
+
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:execute-real-project",
+                    context_ref="plan-context-real-project",
+                    repo_root=repo_root,
+                )
+
+                self.assertFalse((repo_root / ".agent" / "dispatches").exists())
+                self.assertEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
+                self.assertEqual(model["snapshot"]["runState"], "blocked")
+                self.assertEqual(
+                    model["feed"][-1].get("presentation_args", {}).get("runtime"),
+                    "patch-app-server",
+                )
+                self.assertEqual(
+                    model["feed"][-1].get("presentation_args", {}).get("reason"),
+                    "executor_step_unsupported",
                 )
                 self.assertNotIn("executorRuntimeUnavailable", model)
 

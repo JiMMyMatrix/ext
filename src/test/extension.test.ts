@@ -776,7 +776,7 @@ suite('Corgi Webview UX', () => {
 		);
 		assert.strictEqual(
 			scripts['test:window:real-project'],
-			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-real-project CORGI_TEST_WINDOW_AUTO_ACTION=start_goal CORGI_TEST_WINDOW_AUTO_STEPS=execute CORGI_GOAL_PLAN_SOURCE=governor bash scripts/launch-corgi-test-window.sh'
+			'CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-real-project CORGI_TEST_WINDOW_AUTO_ACTION=start_goal CORGI_TEST_WINDOW_AUTO_STEPS=execute CORGI_GOAL_PLAN_SOURCE=governor CORGI_EXECUTOR_RUNTIME=patch-app-server bash scripts/launch-corgi-test-window.sh'
 		);
 		assert.strictEqual(
 			scripts['test:window:real-project:monitor'],

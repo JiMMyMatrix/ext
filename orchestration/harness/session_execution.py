@@ -117,6 +117,7 @@ PET_DIARY_PRODUCT_PORTFOLIO_OUTPUTS = [
     "tests/product-validation.js",
 ]
 PET_DIARY_REAL_PROJECT_PRESET = "pet-life-diary-real-project"
+PATCH_APP_SERVER_EXECUTOR_RUNTIME = "patch-app-server"
 
 def is_real_project_practical_exercise() -> bool:
     return (
@@ -134,16 +135,18 @@ def real_project_executor_runtime_unavailable_message() -> str:
     if runtime == "live":
         return (
             "The previous live Executor runtime used codex exec and has been removed. "
-            "Real-project execution is blocked until the patch-app-server Executor runtime is implemented."
-        )
-    if runtime == "patch-app-server":
-        return (
-            "The patch-app-server Executor runtime is reserved but not implemented yet. "
-            "Real-project execution is blocked instead of falling back to codex exec."
+            "Use patch-app-server for validated scratch project dispatches."
         )
     return (
         "No supported real-project Executor runtime is available. "
         "Real-project execution is blocked instead of using artifact-only readouts or codex exec."
+    )
+
+
+def real_project_executor_step_unsupported_message() -> str:
+    return (
+        "The patch-app-server Executor runtime could not map this goal step to a validated scratch "
+        "project dispatch. Real-project execution is blocked instead of using artifact-only readouts."
     )
 
 
@@ -229,6 +232,13 @@ def matches_pet_diary_filter_request(objective: str, accepted_ref: str | None) -
     return "pet" in combined and "diary" in combined and ("filter" in combined or "species" in combined)
 
 
+def matches_pet_diary_readme_request(objective: str, accepted_ref: str | None) -> bool:
+    combined = f"{objective} {accepted_ref or ''}".lower()
+    return "pet" in combined and "diary" in combined and (
+        "readme" in combined or "documentation" in combined or "portfolio" in combined
+    )
+
+
 def is_pet_diary_filter_test_dispatch(objective: str, accepted_ref: str | None) -> bool:
     return (
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
@@ -267,6 +277,37 @@ def is_pet_diary_goal_readme_dispatch(accepted_payload: dict[str, Any]) -> bool:
 		and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") != "pet-life-diary-product-goal"
 		and accepted_goal_step(accepted_payload, "step-03")
 	)
+
+
+def real_project_patch_executor_can_handle(
+    *,
+    is_product_goal_routines: bool,
+    is_product_goal_portfolio: bool,
+    is_product_pet_diary: bool,
+    is_goal_base: bool,
+    is_static_pet_diary: bool,
+    is_pet_diary_bugfix: bool,
+    is_goal_filter_retry: bool,
+    is_pet_diary_filter_retry: bool,
+    is_goal_filter: bool,
+    is_pet_diary_filter: bool,
+    is_goal_readme: bool,
+) -> bool:
+    return any(
+        [
+            is_product_goal_routines,
+            is_product_goal_portfolio,
+            is_product_pet_diary,
+            is_goal_base,
+            is_static_pet_diary,
+            is_pet_diary_bugfix,
+            is_goal_filter_retry,
+            is_pet_diary_filter_retry,
+            is_goal_filter,
+            is_pet_diary_filter,
+            is_goal_readme,
+        ]
+    )
 
 
 def extend_goal_pet_diary_base_dispatch_args(
@@ -1002,28 +1043,53 @@ def emit_plan_execution_dispatch(
     is_goal_filter_retry = is_pet_diary_goal_filter_retry_dispatch(accepted_payload)
     is_goal_readme = is_pet_diary_goal_readme_dispatch(accepted_payload)
     if is_real_project_practical_exercise():
-        model["snapshot"]["currentActor"] = "orchestration"
-        model["snapshot"]["currentStage"] = "executor_runtime_unavailable"
-        model["snapshot"]["runState"] = "blocked"
-        model["executorRuntimeUnavailable"] = {
-            "runtime": selected_executor_runtime(),
-            "requiredRuntime": "patch-app-server",
-            "reason": "executor_runtime_unavailable",
-        }
-        append_error(
-            model,
-            "Executor runtime unavailable",
-            real_project_executor_runtime_unavailable_message(),
-            now,
-            in_response_to_request_id=request_id,
-            presentation_key="error.executor_runtime_unavailable",
-            presentation_args={
-                "runtime": selected_executor_runtime(),
-                "requiredRuntime": "patch-app-server",
-                "reason": "executor_runtime_unavailable",
-            },
-        )
-        return None
+        runtime = selected_executor_runtime()
+        reason = "executor_runtime_unavailable"
+        message = real_project_executor_runtime_unavailable_message()
+        if runtime == PATCH_APP_SERVER_EXECUTOR_RUNTIME:
+            real_project_goal_base = is_goal_base and "pet life diary" in objective.lower()
+            real_project_goal_filter = is_goal_filter and matches_pet_diary_filter_request(objective, accepted_ref)
+            real_project_goal_readme = is_goal_readme and matches_pet_diary_readme_request(objective, accepted_ref)
+            if real_project_patch_executor_can_handle(
+                is_product_goal_routines=is_product_goal_routines,
+                is_product_goal_portfolio=is_product_goal_portfolio,
+                is_product_pet_diary=is_product_pet_diary,
+                is_goal_base=real_project_goal_base,
+                is_static_pet_diary=is_static_pet_diary,
+                is_pet_diary_bugfix=is_pet_diary_bugfix,
+                is_goal_filter_retry=is_goal_filter_retry,
+                is_pet_diary_filter_retry=is_pet_diary_filter_retry,
+                is_goal_filter=real_project_goal_filter,
+                is_pet_diary_filter=is_pet_diary_filter,
+                is_goal_readme=real_project_goal_readme,
+            ):
+                reason = ""
+            else:
+                reason = "executor_step_unsupported"
+                message = real_project_executor_step_unsupported_message()
+        if reason:
+            model["snapshot"]["currentActor"] = "orchestration"
+            model["snapshot"]["currentStage"] = "executor_runtime_unavailable"
+            model["snapshot"]["runState"] = "blocked"
+            model["executorRuntimeUnavailable"] = {
+                "runtime": runtime,
+                "requiredRuntime": PATCH_APP_SERVER_EXECUTOR_RUNTIME,
+                "reason": reason,
+            }
+            append_error(
+                model,
+                "Executor runtime unavailable",
+                message,
+                now,
+                in_response_to_request_id=request_id,
+                presentation_key="error.executor_runtime_unavailable",
+                presentation_args={
+                    "runtime": runtime,
+                    "requiredRuntime": PATCH_APP_SERVER_EXECUTOR_RUNTIME,
+                    "reason": reason,
+                },
+            )
+            return None
     args = [
         "--dispatch-ref",
         dispatch_ref,
