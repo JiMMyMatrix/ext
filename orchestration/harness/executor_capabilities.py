@@ -20,6 +20,11 @@ REAL_PROJECT_PATCH_CAPABILITIES: list[dict[str, str]] = [
 		"purpose": "Create the first product-scale Pet Life Diary static app files, sample data, validation notes, and documentation.",
 	},
 	{
+		"id": "diary_utilities",
+		"title": "Add diary utilities",
+		"purpose": "Mutate the existing product app with search/filter, import/export, and utility validation improvements.",
+	},
+	{
 		"id": "care_routines",
 		"title": "Add care routines",
 		"purpose": "Mutate the existing product app with care-routine planning and validation evidence.",
@@ -82,11 +87,16 @@ def classify_real_project_step(
 	accepted_ref: str | None = None,
 ) -> str | None:
 	explicit = capability_id(step.get("executor_capability"))
+	text = step_text(step, accepted_ref=accepted_ref)
+	if explicit == "product_app_foundation" and step_index is not None and step_index > 2:
+		if any(term in text for term in ["search", "filter", "import", "export", "utility", "utilities"]):
+			return "diary_utilities"
 	if explicit:
 		return explicit
-	text = step_text(step, accepted_ref=accepted_ref)
 	if not text:
 		return None
+	if any(term in text for term in ["search/filter", "search", "filter", "import/export", "import", "export"]):
+		return "diary_utilities"
 	if (
 		("project structure" in text or "baseline" in text or "runnable/testable" in text)
 		and ("without making product changes" in text or "inspect" in text)

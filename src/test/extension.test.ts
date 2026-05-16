@@ -945,7 +945,7 @@ suite('Corgi Webview UX', () => {
 		);
 		assert.match(
 			webviewSource,
-			/session_ref:\s*action\.session_ref\s*\?\?\s*\(\s*action\.type !== 'submit_prompt' && includeSessionRef\s*\?\s*this\.model\.snapshot\.sessionRef\s*:\s*undefined\s*\)/
+			/session_ref:\s*action\.session_ref\s*\?\?\s*\(\s*action\.type !== 'submit_prompt' && action\.type !== 'start_goal' && includeSessionRef\s*\?\s*this\.model\.snapshot\.sessionRef\s*:\s*undefined\s*\)/
 		);
 	});
 

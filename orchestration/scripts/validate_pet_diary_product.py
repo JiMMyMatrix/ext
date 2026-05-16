@@ -42,6 +42,7 @@ def main() -> None:
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--report", required=True)
     parser.add_argument("--min-lines", type=int, default=3000)
+    parser.add_argument("--require-utilities", action="store_true")
     parser.add_argument("--require-routines", action="store_true")
     parser.add_argument("--require-portfolio", action="store_true")
     args = parser.parse_args()
@@ -125,6 +126,27 @@ def main() -> None:
         if not passed:
             failures.append(f"{rel_path} expected at least {minimum} records, found {count}")
 
+    if args.require_utilities:
+        utility_markers = {
+            "index.html": ["data-import-json", "data-action=\"import-json\""],
+            "src/state.js": ["importState", "assertRecordList"],
+            "src/ui.js": ["importState", "data-action=\"import-json\""],
+            "src/styles.css": ["import-tools"],
+            "README.md": ["Diary utilities"],
+            "tests/product-validation.js": ["utilityReadiness"],
+        }
+        for rel_path, markers in utility_markers.items():
+            if not (root / rel_path).exists():
+                failures.append(f"{rel_path} missing for utility validation")
+                add_check(checks, f"utility_file:{rel_path}", False)
+                continue
+            source = read_text(root, rel_path)
+            for marker in markers:
+                passed = marker in source
+                add_check(checks, f"utility_marker:{rel_path}:{marker}", passed)
+                if not passed:
+                    failures.append(f"{rel_path} missing utility marker {marker}")
+
     if args.require_routines:
         routine_markers = {
             "index.html": ["view-routines", "data-routine-board"],
@@ -168,6 +190,7 @@ def main() -> None:
         "status": "pass" if not failures else "fail",
         "total_lines": total_lines,
         "min_lines": args.min_lines,
+        "require_utilities": bool(args.require_utilities),
         "require_routines": bool(args.require_routines),
         "require_portfolio": bool(args.require_portfolio),
         "line_counts": line_counts,

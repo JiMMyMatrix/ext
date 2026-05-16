@@ -559,7 +559,7 @@ export class ExecutionWindowPanel implements vscode.WebviewViewProvider {
 			context_ref: action.context_ref ?? this.contextRefForAction(action.type),
 			session_ref:
 				action.session_ref ??
-				(action.type !== 'submit_prompt' && includeSessionRef
+				(action.type !== 'submit_prompt' && action.type !== 'start_goal' && includeSessionRef
 					? this.model.snapshot.sessionRef
 					: undefined),
 		};

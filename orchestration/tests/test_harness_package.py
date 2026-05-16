@@ -665,6 +665,79 @@ class HarnessPackageTests(unittest.TestCase):
             guard.assert_not_called()
             self.assertTrue((dispatch_dir / "governor_decision.json").exists())
 
+    def test_finalize_allows_scratch_workspace_without_git_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            dispatch_ref = "lane/main/dispatch-scratch"
+            output_ref = ".agent/baselines/lane/main/dispatch-scratch/project_baseline.md"
+            dispatch_dir = repo_root / ".agent" / "dispatches" / dispatch_ref
+            write_json(
+                dispatch_dir / "request.json",
+                {
+                    "dispatch_ref": dispatch_ref,
+                    "lane": "lane/main",
+                    "execution_mode": "command_chain",
+                    "execution_payload": {"commands": []},
+                    "required_outputs": [output_ref],
+                    "review_required": False,
+                },
+            )
+            write_json(
+                dispatch_dir / "result.json",
+                {
+                    "dispatch_ref": dispatch_ref,
+                    "status": "completed",
+                    "blocker": None,
+                    "written_or_updated": [output_ref],
+                    "runtime_behavior_changed": False,
+                    "scope_respected": True,
+                },
+            )
+            write_json(dispatch_dir / "state.json", {"status": "completed"})
+            (repo_root / output_ref).parent.mkdir(parents=True, exist_ok=True)
+            (repo_root / output_ref).write_text("# Baseline\n", encoding="utf-8")
+
+            self.assertFalse((repo_root / ".git").exists())
+            self.assertEqual(dispatch.finalize_main(["--dispatch-dir", str(dispatch_dir)]), 0)
+            self.assertTrue((dispatch_dir / "governor_decision.json").exists())
+
+    def test_finalize_allows_scratch_workspace_with_empty_git_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            subprocess.run(["git", "init"], cwd=repo_root, check=True, capture_output=True, text=True)
+            dispatch_ref = "lane/main/dispatch-scratch"
+            output_ref = ".agent/baselines/lane/main/dispatch-scratch/project_baseline.md"
+            dispatch_dir = repo_root / ".agent" / "dispatches" / dispatch_ref
+            write_json(
+                dispatch_dir / "request.json",
+                {
+                    "dispatch_ref": dispatch_ref,
+                    "lane": "lane/main",
+                    "execution_mode": "command_chain",
+                    "execution_payload": {"commands": []},
+                    "required_outputs": [output_ref],
+                    "review_required": False,
+                },
+            )
+            write_json(
+                dispatch_dir / "result.json",
+                {
+                    "dispatch_ref": dispatch_ref,
+                    "status": "completed",
+                    "blocker": None,
+                    "written_or_updated": [output_ref],
+                    "runtime_behavior_changed": False,
+                    "scope_respected": True,
+                },
+            )
+            write_json(dispatch_dir / "state.json", {"status": "completed"})
+            (repo_root / output_ref).parent.mkdir(parents=True, exist_ok=True)
+            (repo_root / output_ref).write_text("# Baseline\n", encoding="utf-8")
+
+            self.assertTrue((repo_root / ".git").exists())
+            self.assertEqual(dispatch.finalize_main(["--dispatch-dir", str(dispatch_dir)]), 0)
+            self.assertTrue((dispatch_dir / "governor_decision.json").exists())
+
     def test_artifact_only_readout_guard_is_shared_by_finalizer_and_executor_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo_root = Path(tmp_dir).resolve()
@@ -1184,6 +1257,105 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertIn("executor_create_product_pet_diary.py", command_text)
                 self.assertNotIn("codex exec", command_text)
                 self.assertNotIn("executor_write_readout.py", command_text)
+                self.assertNotEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
+
+    def test_real_project_utility_step_remaps_mistagged_foundation_capability(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+            },
+            clear=True,
+        ):
+            payload = {
+                "goal_ref": "goal-real-project",
+                "goal_step_ref": "step-03",
+                "goal_step_index": 3,
+                "task": "Complete diary utility features",
+                "accepted_summary": "Extend the foundation with search/filtering plus JSON import/export validation.",
+                "executor_capability": "product_app_foundation",
+            }
+
+            self.assertEqual(
+                session_execution.real_project_patch_executor_capability(
+                    payload,
+                    "Extend the foundation with search/filtering plus JSON import/export validation.",
+                    ".agent/intakes/test/accepted_intake.json",
+                ),
+                "diary_utilities",
+            )
+
+    def test_real_project_patch_executor_uses_utility_helper_for_followup_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                intake_ref = "real-project-utility-step"
+                objective = "Extend the foundation with search/filtering plus JSON import/export validation."
+                write_json(
+                    intake.accepted_intake_path(intake_ref, repo_root=repo_root),
+                    {
+                        "intake_ref": intake_ref,
+                        "goal_ref": "goal-real-project",
+                        "goal_step_ref": "step-03",
+                        "goal_step_index": 3,
+                        "goal": objective,
+                        "task": "Complete diary utility features",
+                        "accepted_summary": objective,
+                        "executor_capability": "product_app_foundation",
+                    },
+                )
+                state = session.load_session(repo_root)
+                state["meta"]["activeIntakeRef"] = intake_ref
+                state["model"]["acceptedIntakeSummary"] = {
+                    "title": "Accepted intake summary",
+                    "body": objective,
+                }
+                state["model"]["planReadyRequest"] = {
+                    "id": "plan-ready-real-project-utilities",
+                    "foregroundRequestId": "corgi-request:plan",
+                    "contextRef": "plan-context-real-project-utilities",
+                    "planContextRef": "plan-context-real-project-utilities",
+                    "workRef": "work-real-project-utilities",
+                    "planRef": ".agent/work/work-real-project-utilities/plans/plan-v1.md",
+                    "planVersion": 1,
+                    "acceptedIntakeSummary": {"body": objective},
+                    "allowedActions": ["execute_plan", "revise_plan"],
+                }
+                state["model"]["snapshot"]["task"] = "Complete diary utility features"
+                state["model"]["snapshot"]["currentStage"] = "plan_ready"
+                state["model"]["snapshot"]["permissionScope"] = "plan"
+                session.save_session(state, repo_root=repo_root)
+
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:execute-real-project-utilities",
+                    context_ref="plan-context-real-project-utilities",
+                    repo_root=repo_root,
+                )
+
+                request_paths = list(repo_root.glob(".agent/dispatches/**/request.json"))
+                self.assertEqual(len(request_paths), 1)
+                request = load_json(request_paths[0])
+                command_text = " ".join(
+                    " ".join(command.get("argv", []))
+                    for command in request.get("execution_payload", {}).get("commands", [])
+                    if isinstance(command, dict)
+                )
+                self.assertIn("executor_add_product_pet_diary_utilities.py", command_text)
+                self.assertNotIn("executor_create_product_pet_diary.py", command_text)
+                self.assertIn("README.md", request.get("required_outputs", []))
+                self.assertIn("src/state.js", request.get("required_outputs", []))
+                self.assertNotIn("src/app.js", request.get("required_outputs", []))
                 self.assertNotEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
 
     def test_real_project_unsupported_goal_plan_reprompts_with_capability_feedback(self) -> None:

@@ -210,8 +210,13 @@ def run_git(repo_root: Path, *argv: str) -> str:
 
 
 def branch_changed_files(repo_root: Path, base_ref: str) -> List[str]:
-    merge_base = run_git(repo_root, "merge-base", "HEAD", base_ref).strip()
-    changed = run_git(repo_root, "diff", "--name-only", f"{merge_base}..HEAD").splitlines()
+    if not (repo_root / ".git").exists():
+        return []
+    try:
+        merge_base = run_git(repo_root, "merge-base", "HEAD", base_ref).strip()
+        changed = run_git(repo_root, "diff", "--name-only", f"{merge_base}..HEAD").splitlines()
+    except subprocess.CalledProcessError:
+        return []
     return [normalize_scope_entry(path) for path in changed if path.strip() and not tracked_path_is_auxiliary(path)]
 
 

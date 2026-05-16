@@ -105,6 +105,14 @@ PET_DIARY_PRODUCT_OUTPUTS = [
     "data/sample-entries.json",
     "tests/product-validation.js",
 ]
+PET_DIARY_PRODUCT_UTILITY_OUTPUTS = [
+    "README.md",
+    "index.html",
+    "src/state.js",
+    "src/ui.js",
+    "src/styles.css",
+    "tests/product-validation.js",
+]
 PET_DIARY_PRODUCT_ROUTINE_OUTPUTS = [
     "README.md",
     "index.html",
@@ -642,6 +650,75 @@ def extend_product_pet_diary_routines_dispatch_args(
             "scratch_pet_diary_product_routines",
             "--execution-next-action",
             "Reviewer should verify the routine-planning feature and validation evidence before Governor advances the goal.",
+        ]
+    )
+
+
+def extend_product_pet_diary_utilities_dispatch_args(
+    args: list[str],
+    paths: Any,
+    *,
+    dispatch_ref: str,
+    objective: str,
+) -> None:
+    validation_ref = repo_relative(
+        paths.agent_root / "validations" / Path(dispatch_ref) / "pet_diary_product_utilities.json",
+        paths.repo_root,
+    )
+    for output_ref in PET_DIARY_PRODUCT_UTILITY_OUTPUTS:
+        args.extend(["--run-produce", output_ref])
+        args.extend(["--run-touch", output_ref])
+        args.extend(["--required-output", output_ref])
+    args.extend(
+        [
+            "--authorship-evidence-required",
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_add_product_pet_diary_utilities.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                ]
+            ),
+            "--validator-command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("validate_pet_diary_product.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--report",
+                    command_arg(validation_ref),
+                    "--require-utilities",
+                ]
+            ),
+            "--execution-summary",
+            "Executor added diary utility features to the product-scale Pet Life Diary app.",
+            "--execution-claim",
+            "Executor mutated existing product app files with import validation, JSON restore, and utility readout details.",
+            "--execution-claim",
+            "This dispatch improved the existing app without recreating the foundation.",
+            "--execution-evidence",
+            "index.html",
+            "--execution-evidence",
+            "src/state.js",
+            "--execution-evidence",
+            "src/ui.js",
+            "--execution-evidence",
+            "src/styles.css",
+            "--execution-evidence",
+            "README.md",
+            "--execution-evidence",
+            validation_ref,
+            "--execution-note",
+            "scratch_pet_diary_product_utilities",
+            "--execution-next-action",
+            "Reviewer should verify import/export utility behavior and authorship evidence before Governor advances the goal.",
         ]
     )
 
@@ -1238,6 +1315,13 @@ def emit_plan_execution_dispatch(
             dispatch_ref=dispatch_ref,
             objective=objective,
             accepted_ref=accepted_ref,
+        )
+    elif real_project_capability == "diary_utilities":
+        extend_product_pet_diary_utilities_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
         )
     elif real_project_capability == "care_routines":
         extend_product_pet_diary_routines_dispatch_args(
