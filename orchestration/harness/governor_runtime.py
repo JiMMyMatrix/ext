@@ -12,6 +12,7 @@ try:
 except ModuleNotFoundError:  # Python < 3.11
 	tomllib = None  # type: ignore[assignment]
 
+from orchestration.harness import executor_capabilities
 from orchestration.harness.paths import prompt_path, resolve_paths, trim_text
 
 
@@ -124,7 +125,19 @@ def resume_governor_semantic_intake_prompt(context_prompt: str) -> str:
 	)
 
 
-def initial_governor_goal_plan_prompt(goal_text: str) -> str:
+def _goal_capability_prompt() -> str:
+	if (
+		not executor_capabilities.is_real_project_practical_exercise()
+		or executor_capabilities.selected_executor_runtime()
+		!= executor_capabilities.PATCH_APP_SERVER_EXECUTOR_RUNTIME
+	):
+		return ""
+	return executor_capabilities.real_project_capability_summary()
+
+
+def initial_governor_goal_plan_prompt(goal_text: str, preflight_feedback: str | None = None) -> str:
+	capability_prompt = _goal_capability_prompt()
+	feedback = trim_text(preflight_feedback)
 	return "\n\n".join(
 		[
 			"Governor goal-program planner for Corgi.",
@@ -136,6 +149,8 @@ def initial_governor_goal_plan_prompt(goal_text: str) -> str:
 			"- Choose the next useful serial tranche of bounded, testable work; do not treat a broad practical project as complete after one short pass.\n"
 			"- If a step depends on an earlier step, use depends_on_step_ref like step-01 or step-02; otherwise use null.\n"
 			"- Return JSON only; no Markdown fences.",
+			capability_prompt,
+			f"Orchestration preflight feedback: {feedback}" if feedback else "",
 			"JSON shape:\n"
 			"{\n"
 			'  "user_visible_reply": "short explanation of the step plan",\n'
@@ -144,6 +159,7 @@ def initial_governor_goal_plan_prompt(goal_text: str) -> str:
 			'      "title": "short step title",\n'
 			'      "objective": "specific bounded objective for Executor/Reviewer",\n'
 			'      "expected_output": "concrete output or validation evidence",\n'
+			'      "executor_capability": "optional supported capability id when capability list is provided",\n'
 			'      "depends_on_step_ref": null\n'
 			"    }\n"
 			"  ]\n"
@@ -154,10 +170,12 @@ def initial_governor_goal_plan_prompt(goal_text: str) -> str:
 
 
 def resume_governor_goal_plan_prompt(goal_text: str) -> str:
+	capability_prompt = _goal_capability_prompt()
 	return "\n\n".join(
 		[
 			"Continue as the Governor goal-program planner for Corgi.",
 			"Return JSON only with user_visible_reply and steps. Do not execute or authorize execution.",
+			capability_prompt,
 			f"User goal: {trim_text(goal_text)}",
 		]
 	)
@@ -173,6 +191,7 @@ def initial_governor_goal_revision_prompt(
 	completed_summary = _goal_step_summary(completed_steps or [])
 	current_summary = _goal_step_summary([current_step] if isinstance(current_step, dict) else [])
 	remaining_summary = _goal_step_summary(remaining_steps or [])
+	capability_prompt = _goal_capability_prompt()
 	return "\n\n".join(
 		[
 			"Governor goal-plan revision for Corgi.",
@@ -184,6 +203,7 @@ def initial_governor_goal_revision_prompt(
 			"- Do not create dispatch truth, start execution, or imply Execute permission.\n"
 			"- Return the next useful bounded serial tranche for unfinished work. Keep every step bounded and testable.\n"
 			"- Return JSON only; no Markdown fences.",
+			capability_prompt,
 			"JSON shape:\n"
 			"{\n"
 			'  "user_visible_reply": "short explanation of the revision",\n'
@@ -192,6 +212,7 @@ def initial_governor_goal_revision_prompt(
 			'      "title": "short replacement step title",\n'
 			'      "objective": "specific bounded objective for Executor/Reviewer",\n'
 			'      "expected_output": "concrete output or validation evidence",\n'
+			'      "executor_capability": "optional supported capability id when capability list is provided",\n'
 			'      "depends_on_step_ref": null\n'
 			"    }\n"
 			"  ]\n"
@@ -206,10 +227,12 @@ def initial_governor_goal_revision_prompt(
 
 
 def resume_governor_goal_revision_prompt(goal_text: str, revision_reason: str) -> str:
+	capability_prompt = _goal_capability_prompt()
 	return "\n\n".join(
 		[
 			"Continue as the Governor goal-plan revision planner for Corgi.",
 			"Return JSON only with user_visible_reply and replacement steps for unfinished work.",
+			capability_prompt,
 			f"User goal: {trim_text(goal_text)}",
 			f"Revision reason: {trim_text(revision_reason) or 'Goal path needs adjustment.'}",
 		]
@@ -220,8 +243,11 @@ def initial_governor_goal_continuation_prompt(
 	goal_text: str,
 	completed_steps: list[dict] | None = None,
 	plan_version: int | None = None,
+	preflight_feedback: str | None = None,
 ) -> str:
 	completed_summary = _goal_step_summary(completed_steps or [])
+	capability_prompt = _goal_capability_prompt()
+	feedback = trim_text(preflight_feedback)
 	return "\n\n".join(
 		[
 			"Governor goal-continuation checkpoint for Corgi.",
@@ -234,6 +260,8 @@ def initial_governor_goal_continuation_prompt(
 			"- For long-running practical-development goals, prefer extending with the next meaningful work unless the project is genuinely demo-ready.\n"
 			"- If the goal cannot safely continue, choose block and explain the blocker.\n"
 			"- Return JSON only; no Markdown fences.",
+			capability_prompt,
+			f"Orchestration preflight feedback: {feedback}" if feedback else "",
 			"JSON shape:\n"
 			"{\n"
 			'  "decision": "finalize | extend | block",\n'
@@ -244,6 +272,7 @@ def initial_governor_goal_continuation_prompt(
 			'      "title": "short next step title",\n'
 			'      "objective": "specific bounded objective for Executor/Reviewer",\n'
 			'      "expected_output": "concrete output or validation evidence",\n'
+			'      "executor_capability": "optional supported capability id when capability list is provided",\n'
 			'      "depends_on_step_ref": null\n'
 			"    }\n"
 			"  ],\n"
@@ -257,10 +286,12 @@ def initial_governor_goal_continuation_prompt(
 
 
 def resume_governor_goal_continuation_prompt(goal_text: str) -> str:
+	capability_prompt = _goal_capability_prompt()
 	return "\n\n".join(
 		[
 			"Continue as the Governor goal-continuation checkpoint for Corgi.",
 			"Return JSON only with decision, user_visible_reply, reason, optional steps, and optional blocked_reason.",
+			capability_prompt,
 			f"User goal: {trim_text(goal_text)}",
 		]
 	)

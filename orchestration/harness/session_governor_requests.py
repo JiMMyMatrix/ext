@@ -189,6 +189,8 @@ def prepare_governor_goal_plan_runtime_request(
 	request_id: str | None = None,
 	auto_consume_executor_after_plan: bool = False,
 	auto_governor_runtime_after_plan: str = "exec",
+	unsupported_attempt_count: int = 0,
+	preflight_feedback: str | None = None,
 ) -> dict[str, Any]:
 	governor_meta = session_context.governor_dialogue_meta(session)
 	model_name, reasoning = governor_runtime.governor_runtime_settings(repo_root)
@@ -200,7 +202,10 @@ def prepare_governor_goal_plan_runtime_request(
 		"preferredAppServerThreadId": governor_meta.get("appServerThreadId")
 		if isinstance(governor_meta.get("appServerThreadId"), str)
 		else None,
-		"initialPrompt": governor_runtime.initial_governor_goal_plan_prompt(goal_text),
+		"initialPrompt": governor_runtime.initial_governor_goal_plan_prompt(
+			goal_text,
+			preflight_feedback=preflight_feedback,
+		),
 		"resumePrompt": governor_runtime.resume_governor_goal_plan_prompt(goal_text),
 		"model": model_name,
 		"reasoning": reasoning,
@@ -212,6 +217,8 @@ def prepare_governor_goal_plan_runtime_request(
 		"turnType": "goal_program",
 		"autoConsumeExecutorAfterPlan": auto_consume_executor_after_plan,
 		"autoGovernorRuntimeAfterPlan": auto_governor_runtime_after_plan,
+		"unsupportedAttemptCount": unsupported_attempt_count,
+		"preflightFeedback": preflight_feedback,
 		"context": {
 			"sessionRef": session["model"]["snapshot"].get("sessionRef"),
 			"foregroundRequestId": request_id,
@@ -309,6 +316,8 @@ def prepare_governor_goal_continuation_runtime_request(
 	auto_consume_executor_after_plan: bool = False,
 	auto_governor_runtime_after_plan: str = "exec",
 	invalid_attempt_count: int = 0,
+	unsupported_attempt_count: int = 0,
+	preflight_feedback: str | None = None,
 ) -> dict[str, Any]:
 	goal_payload = session_goal_lifecycle.load_goal(goal_ref, repo_root=repo_root)
 	goal_plan = session_goal_lifecycle.load_goal_plan(goal_ref, repo_root=repo_root)
@@ -330,6 +339,7 @@ def prepare_governor_goal_continuation_runtime_request(
 			str(goal_payload.get("original_goal") or goal_payload.get("title") or ""),
 			completed_steps=completed_steps,
 			plan_version=goal_plan.get("plan_version") if isinstance(goal_plan.get("plan_version"), int) else 1,
+			preflight_feedback=preflight_feedback,
 		),
 		"resumePrompt": governor_runtime.resume_governor_goal_continuation_prompt(
 			str(goal_payload.get("original_goal") or goal_payload.get("title") or "")
@@ -345,6 +355,8 @@ def prepare_governor_goal_continuation_runtime_request(
 		"primaryRef": None,
 		"turnType": "goal_continuation",
 		"invalidAttemptCount": invalid_attempt_count,
+		"unsupportedAttemptCount": unsupported_attempt_count,
+		"preflightFeedback": preflight_feedback,
 		"returnAsRuntimeRequest": True,
 		"autoConsumeExecutorAfterPlan": auto_consume_executor_after_plan,
 		"autoGovernorRuntimeAfterPlan": auto_governor_runtime_after_plan,

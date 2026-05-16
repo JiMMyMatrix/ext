@@ -13,6 +13,7 @@ from orchestration.harness.intake import (
 	start_intake,
 )
 from orchestration.harness import governor_runtime
+from orchestration.harness import executor_capabilities
 from orchestration.harness import session_cli_args
 from orchestration.harness import session_control_actions
 from orchestration.harness import session_context
@@ -266,6 +267,8 @@ def _prepare_governor_goal_plan_runtime_request(
 	request_id: str | None = None,
 	auto_consume_executor_after_plan: bool = False,
 	auto_governor_runtime_after_plan: str = "exec",
+	unsupported_attempt_count: int = 0,
+	preflight_feedback: str | None = None,
 ) -> dict[str, Any]:
 	return session_governor_requests.prepare_governor_goal_plan_runtime_request(
 		session,
@@ -276,6 +279,8 @@ def _prepare_governor_goal_plan_runtime_request(
 		request_id=request_id,
 		auto_consume_executor_after_plan=auto_consume_executor_after_plan,
 		auto_governor_runtime_after_plan=auto_governor_runtime_after_plan,
+		unsupported_attempt_count=unsupported_attempt_count,
+		preflight_feedback=preflight_feedback,
 	)
 
 
@@ -336,6 +341,8 @@ def _prepare_governor_goal_continuation_runtime_request(
 	auto_consume_executor_after_plan: bool = False,
 	auto_governor_runtime_after_plan: str = "exec",
 	invalid_attempt_count: int = 0,
+	unsupported_attempt_count: int = 0,
+	preflight_feedback: str | None = None,
 ) -> dict[str, Any]:
 	return session_governor_requests.prepare_governor_goal_continuation_runtime_request(
 		session,
@@ -348,6 +355,8 @@ def _prepare_governor_goal_continuation_runtime_request(
 		auto_consume_executor_after_plan=auto_consume_executor_after_plan,
 		auto_governor_runtime_after_plan=auto_governor_runtime_after_plan,
 		invalid_attempt_count=invalid_attempt_count,
+		unsupported_attempt_count=unsupported_attempt_count,
+		preflight_feedback=preflight_feedback,
 	)
 
 
@@ -591,6 +600,62 @@ def _complete_governor_goal_plan(
 		governor_meta["lastRuntimeSource"] = runtime_source
 		governor_meta["lastUsedAt"] = utc_now()
 		reply = str(continuation.get("user_visible_reply") or "")
+		if continuation.get("decision") == "extend":
+			unsupported_steps = executor_capabilities.unsupported_real_project_steps(
+				continuation.get("steps") if isinstance(continuation.get("steps"), list) else []
+			)
+			if unsupported_steps:
+				unsupported_summary = executor_capabilities.unsupported_steps_summary(unsupported_steps)
+				feedback = (
+					"Orchestration could not map these proposed continuation steps to the patch-app-server "
+					f"Executor capability set: {unsupported_summary}. Use only the listed supported "
+					"executor_capability values."
+				)
+				unsupported_attempt_count = int(pending.get("unsupportedAttemptCount") or 0)
+				if unsupported_attempt_count < 1:
+					_prepare_governor_goal_continuation_runtime_request(
+						session,
+						goal_ref,
+						now,
+						repo_root=repo_root,
+						request_id=pending.get("requestId"),
+						continuation_request_ref=pending.get("continuationRequestRef"),
+						auto_consume_executor_after_plan=bool(pending.get("autoConsumeExecutorAfterPlan")),
+						auto_governor_runtime_after_plan=str(pending.get("autoGovernorRuntimeAfterPlan") or "exec"),
+						invalid_attempt_count=int(pending.get("invalidAttemptCount") or 0),
+						unsupported_attempt_count=unsupported_attempt_count + 1,
+						preflight_feedback=feedback,
+					)
+					return False
+				session_goal_lifecycle.mark_goal_blocked(
+					session,
+					goal_ref,
+					now,
+					"goal_continuation_unsupported",
+					repo_root=repo_root,
+				)
+				_append_error(
+					model,
+					"Goal continuation unsupported",
+					"Corgi could not map the Governor continuation steps to the available Executor capabilities.",
+					now,
+					in_response_to_request_id=pending.get("requestId"),
+					presentation_key="goal.blocked",
+					presentation_args={
+						"reason": "goal_continuation_unsupported",
+						"unsupportedSteps": unsupported_steps,
+					},
+				)
+				_refresh_snapshot(
+					model,
+					now,
+					currentActor="orchestration",
+					currentStage="goal_blocked",
+					runState="idle",
+					transportState="connected",
+				)
+				model["activeForegroundRequestId"] = None
+				return False
 		try:
 			outcome = session_goal_lifecycle.apply_goal_continuation_decision(
 				session,
@@ -717,6 +782,58 @@ def _complete_governor_goal_plan(
 			in_response_to_request_id=pending.get("requestId"),
 			presentation_key="goal.blocked",
 			presentation_args={"reason": "invalid_goal_plan", "detail": str(exc)},
+		)
+		_refresh_snapshot(
+			model,
+			now,
+			currentActor="orchestration",
+			currentStage="goal_blocked",
+			runState="idle",
+			transportState="connected",
+		)
+		model["activeForegroundRequestId"] = None
+		return False
+	unsupported_steps = executor_capabilities.unsupported_real_project_steps(steps)
+	if unsupported_steps:
+		unsupported_summary = executor_capabilities.unsupported_steps_summary(unsupported_steps)
+		feedback = (
+			"Orchestration could not map these proposed steps to the patch-app-server Executor "
+			f"capability set: {unsupported_summary}. Use only the listed supported executor_capability values."
+		)
+		unsupported_attempt_count = int(pending.get("unsupportedAttemptCount") or 0)
+		if pending.get("turnType") != "goal_revision" and unsupported_attempt_count < 1:
+			_prepare_governor_goal_plan_runtime_request(
+				session,
+				str(pending.get("prompt") or ""),
+				now,
+				repo_root=repo_root,
+				request_id=pending.get("requestId"),
+				auto_consume_executor_after_plan=bool(pending.get("autoConsumeExecutorAfterPlan")),
+				auto_governor_runtime_after_plan=str(pending.get("autoGovernorRuntimeAfterPlan") or "exec"),
+				unsupported_attempt_count=unsupported_attempt_count + 1,
+				preflight_feedback=feedback,
+			)
+			return False
+		goal_ref = pending.get("goalRef") if pending.get("turnType") == "goal_revision" else None
+		if isinstance(goal_ref, str) and goal_ref.strip():
+			session_goal_lifecycle.mark_goal_blocked(
+				session,
+				goal_ref,
+				now,
+				"goal_plan_unsupported",
+				repo_root=repo_root,
+			)
+		_append_error(
+			model,
+			"Goal plan unsupported",
+			"Corgi could not map the Governor goal plan to the validated patch-app-server Executor capabilities.",
+			now,
+			in_response_to_request_id=pending.get("requestId"),
+			presentation_key="goal.blocked",
+			presentation_args={
+				"reason": "goal_plan_unsupported",
+				"unsupportedSteps": unsupported_steps,
+			},
 		)
 		_refresh_snapshot(
 			model,

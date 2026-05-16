@@ -37,6 +37,7 @@ ACCEPTED_ALLOWED = ACCEPTED_REQUIRED | {
 	"goal_ref",
 	"goal_step_ref",
 	"goal_step_index",
+	"executor_capability",
 }
 FORBIDDEN_OVERREACH_KEYS = {
 	"request_ref",

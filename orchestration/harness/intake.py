@@ -275,6 +275,7 @@ def accept_intake(
 	goal_ref: str | None = None,
 	goal_step_ref: str | None = None,
 	goal_step_index: int | None = None,
+	executor_capability: str | None = None,
 ) -> dict[str, Any]:
 	draft = json.loads(
 		request_draft_path(intake_ref, repo_root=repo_root).read_text(encoding="utf-8")
@@ -302,6 +303,9 @@ def accept_intake(
 		accepted["goal_step_ref"] = trim_text(goal_step_ref)
 	if goal_step_index is not None:
 		accepted["goal_step_index"] = int(goal_step_index)
+	capability = trim_text(executor_capability)
+	if capability:
+		accepted["executor_capability"] = capability
 	validate_accepted_intake(accepted)
 	write_json(accepted_intake_path(intake_ref, repo_root=repo_root), accepted)
 	return {

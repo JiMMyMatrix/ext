@@ -18,6 +18,7 @@ from orchestration.harness import (
     dispatch,
     dispatch_contracts,
     dispatch_guards,
+    executor_capabilities,
     executor_runtime,
     governor_runtime,
     intake,
@@ -984,6 +985,467 @@ class HarnessPackageTests(unittest.TestCase):
                 self.assertNotIn("executor_write_readout.py", command_text)
                 self.assertNotEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
                 self.assertNotIn("executorRuntimeUnavailable", model)
+
+    def test_real_project_patch_executor_allows_baseline_inspection_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            (repo_root / "README.md").write_text("# Scratch app\n", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                intake_ref = "real-project-baseline-step"
+                objective = (
+                    "Identify the current project structure, framework, scripts, existing files, "
+                    "and runnable/testable surfaces without making product changes."
+                )
+                write_json(
+                    intake.accepted_intake_path(intake_ref, repo_root=repo_root),
+                    {
+                        "intake_ref": intake_ref,
+                        "goal_ref": "goal-real-project",
+                        "goal_step_ref": "step-01",
+                        "goal_step_index": 1,
+                        "goal": f"{objective} Keep this as one bounded goal step.",
+                        "task": "Inspect project baseline",
+                        "accepted_summary": "Identify the current project structure.",
+                    },
+                )
+                state = session.load_session(repo_root)
+                state["meta"]["activeIntakeRef"] = intake_ref
+                state["model"]["acceptedIntakeSummary"] = {
+                    "title": "Accepted intake summary",
+                    "body": objective,
+                }
+                state["model"]["planReadyRequest"] = {
+                    "id": "plan-ready-real-project-baseline",
+                    "foregroundRequestId": "corgi-request:plan",
+                    "contextRef": "plan-context-real-project",
+                    "planContextRef": "plan-context-real-project",
+                    "workRef": "work-real-project",
+                    "planRef": ".agent/work/work-real-project/plans/plan-v1.md",
+                    "planVersion": 1,
+                    "acceptedIntakeSummary": {"body": objective},
+                    "allowedActions": ["execute_plan", "revise_plan"],
+                }
+                state["model"]["snapshot"]["task"] = "Inspect project baseline"
+                state["model"]["snapshot"]["currentStage"] = "plan_ready"
+                state["model"]["snapshot"]["permissionScope"] = "plan"
+                session.save_session(state, repo_root=repo_root)
+
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:execute-real-project-baseline",
+                    context_ref="plan-context-real-project",
+                    repo_root=repo_root,
+                )
+
+                request_paths = list(repo_root.glob(".agent/dispatches/**/request.json"))
+                self.assertEqual(len(request_paths), 1)
+                request = load_json(request_paths[0])
+                command_text = " ".join(
+                    " ".join(command.get("argv", []))
+                    for command in request.get("execution_payload", {}).get("commands", [])
+                    if isinstance(command, dict)
+                )
+                self.assertIn("executor_inspect_scratch_project.py", command_text)
+                self.assertNotIn("codex exec", command_text)
+                self.assertNotIn("executor_write_readout.py", command_text)
+                self.assertIn(
+                    "scratch_real_project_baseline_inspection",
+                    request.get("execution_payload", {}).get("notes", []),
+                )
+                self.assertTrue(
+                    any(
+                        output.endswith("project_baseline.md")
+                        for output in request.get("required_outputs", [])
+                    )
+                )
+                self.assertNotEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
+                self.assertNotIn("executorRuntimeUnavailable", model)
+
+    def test_real_project_goal_prompt_includes_patch_executor_capabilities(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+            },
+            clear=True,
+        ):
+            prompt = governor_runtime.initial_governor_goal_plan_prompt(
+                "Build a practical Pet Life Diary app."
+            )
+
+        self.assertIn("Patch-app-server Executor capabilities", prompt)
+        self.assertIn("baseline_inspection", prompt)
+        self.assertIn("product_app_foundation", prompt)
+        self.assertIn("executor_capability", prompt)
+        self.assertNotIn(".agent/", prompt)
+
+    def test_real_project_capability_ids_are_dispatch_classifiable(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+            },
+            clear=True,
+        ):
+            for capability in executor_capabilities.REAL_PROJECT_PATCH_CAPABILITIES:
+                payload = {
+                    "goal_ref": "goal-real-project",
+                    "goal_step_ref": "step-02",
+                    "goal_step_index": 2,
+                    "task": capability["title"],
+                    "accepted_summary": capability["purpose"],
+                    "executor_capability": capability["id"],
+                }
+                self.assertEqual(
+                    session_execution.real_project_patch_executor_capability(
+                        payload,
+                        capability["purpose"],
+                        ".agent/intakes/test/accepted_intake.json",
+                    ),
+                    capability["id"],
+                )
+
+    def test_real_project_patch_executor_allows_capability_tagged_foundation_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                intake_ref = "real-project-foundation-step"
+                objective = "Create the product-scale Pet Life Diary app foundation."
+                write_json(
+                    intake.accepted_intake_path(intake_ref, repo_root=repo_root),
+                    {
+                        "intake_ref": intake_ref,
+                        "goal_ref": "goal-real-project",
+                        "goal_step_ref": "step-02",
+                        "goal_step_index": 2,
+                        "goal": objective,
+                        "task": "Create product app foundation",
+                        "accepted_summary": objective,
+                        "executor_capability": "product_app_foundation",
+                    },
+                )
+                state = session.load_session(repo_root)
+                state["meta"]["activeIntakeRef"] = intake_ref
+                state["model"]["acceptedIntakeSummary"] = {
+                    "title": "Accepted intake summary",
+                    "body": objective,
+                }
+                state["model"]["planReadyRequest"] = {
+                    "id": "plan-ready-real-project-foundation",
+                    "foregroundRequestId": "corgi-request:plan",
+                    "contextRef": "plan-context-real-project",
+                    "planContextRef": "plan-context-real-project",
+                    "workRef": "work-real-project",
+                    "planRef": ".agent/work/work-real-project/plans/plan-v1.md",
+                    "planVersion": 1,
+                    "acceptedIntakeSummary": {"body": objective},
+                    "allowedActions": ["execute_plan", "revise_plan"],
+                }
+                state["model"]["snapshot"]["task"] = "Create product app foundation"
+                state["model"]["snapshot"]["currentStage"] = "plan_ready"
+                state["model"]["snapshot"]["permissionScope"] = "plan"
+                session.save_session(state, repo_root=repo_root)
+
+                model = session.dispatch_session_action(
+                    "execute_plan",
+                    request_id="corgi-request:execute-real-project-foundation",
+                    context_ref="plan-context-real-project",
+                    repo_root=repo_root,
+                )
+
+                request_paths = list(repo_root.glob(".agent/dispatches/**/request.json"))
+                self.assertEqual(len(request_paths), 1)
+                request = load_json(request_paths[0])
+                command_text = " ".join(
+                    " ".join(command.get("argv", []))
+                    for command in request.get("execution_payload", {}).get("commands", [])
+                    if isinstance(command, dict)
+                )
+                self.assertIn("executor_create_product_pet_diary.py", command_text)
+                self.assertNotIn("codex exec", command_text)
+                self.assertNotIn("executor_write_readout.py", command_text)
+                self.assertNotEqual(model["snapshot"]["currentStage"], "executor_runtime_unavailable")
+
+    def test_real_project_unsupported_goal_plan_reprompts_with_capability_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                state = session.load_session(repo_root)
+                pending = {
+                    "turnType": "goal_program",
+                    "requestId": "corgi-request:goal-plan",
+                    "prompt": "Build a practical Pet Life Diary app.",
+                    "autoConsumeExecutorAfterPlan": True,
+                    "autoGovernorRuntimeAfterPlan": "external",
+                    "unsupportedAttemptCount": 0,
+                }
+                body = json.dumps(
+                    {
+                        "user_visible_reply": "I will add a calendar first.",
+                        "steps": [
+                            {
+                                "title": "Build medication calendar",
+                                "objective": "Add a medication calendar module to the app.",
+                                "expected_output": "Medication calendar UI and validation.",
+                            }
+                        ],
+                    }
+                )
+
+                completed = session._complete_governor_goal_plan(  # noqa: SLF001 - orchestration edge test.
+                    state,
+                    pending,
+                    body,
+                    "2026-05-15T00:00:00Z",
+                    repo_root=repo_root,
+                )
+
+                self.assertFalse(completed)
+                next_pending = state["meta"].get("pendingGovernorRuntimeRequest")
+                self.assertIsInstance(next_pending, dict)
+                self.assertEqual(next_pending.get("unsupportedAttemptCount"), 1)
+                self.assertIn("patch-app-server Executor capability", next_pending.get("initialPrompt", ""))
+                self.assertIn("Build medication calendar", next_pending.get("preflightFeedback", ""))
+                self.assertFalse((repo_root / ".agent" / "goals").exists())
+
+    def test_real_project_unsupported_goal_plan_blocks_after_preflight_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                state = session.load_session(repo_root)
+                pending = {
+                    "turnType": "goal_program",
+                    "requestId": "corgi-request:goal-plan",
+                    "prompt": "Build a practical Pet Life Diary app.",
+                    "autoConsumeExecutorAfterPlan": True,
+                    "autoGovernorRuntimeAfterPlan": "external",
+                    "unsupportedAttemptCount": 1,
+                }
+                body = json.dumps(
+                    {
+                        "user_visible_reply": "I will add a calendar first.",
+                        "steps": [
+                            {
+                                "title": "Build medication calendar",
+                                "objective": "Add a medication calendar module to the app.",
+                                "expected_output": "Medication calendar UI and validation.",
+                            }
+                        ],
+                    }
+                )
+
+                completed = session._complete_governor_goal_plan(  # noqa: SLF001 - orchestration edge test.
+                    state,
+                    pending,
+                    body,
+                    "2026-05-15T00:00:00Z",
+                    repo_root=repo_root,
+                )
+
+                self.assertFalse(completed)
+                self.assertEqual(state["model"]["snapshot"]["currentStage"], "goal_blocked")
+                self.assertEqual(state["model"]["snapshot"]["runState"], "idle")
+                self.assertEqual(state["model"]["feed"][-1]["title"], "Goal plan unsupported")
+                self.assertEqual(
+                    state["model"]["feed"][-1].get("presentation_args", {}).get("reason"),
+                    "goal_plan_unsupported",
+                )
+
+    def test_real_project_unsupported_goal_continuation_reprompts_with_capability_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                state = session.load_session(repo_root)
+                goal = session_goal_lifecycle.create_goal_program(
+                    state,
+                    "2026-05-15T00:00:00Z",
+                    "Build a practical Pet Life Diary app.",
+                    next_id=session._next_id,  # noqa: SLF001 - orchestration edge test.
+                    repo_root=repo_root,
+                    steps=[
+                        {
+                            "title": "Build app foundation",
+                            "objective": "Create the product app foundation.",
+                            "expected_output": "Working static app foundation.",
+                            "executor_capability": "product_app_foundation",
+                        }
+                    ],
+                    plan_source="governor",
+                )
+                continuation_ref = session_goal_lifecycle.mark_goal_continuation_pending(
+                    state,
+                    goal["goal_ref"],
+                    "2026-05-15T00:01:00Z",
+                    next_id=session._next_id,  # noqa: SLF001 - orchestration edge test.
+                    feed_item=session._feed_item,  # noqa: SLF001 - orchestration edge test.
+                    repo_root=repo_root,
+                )
+                pending = {
+                    "turnType": "goal_continuation",
+                    "requestId": "corgi-request:goal-continuation",
+                    "goalRef": goal["goal_ref"],
+                    "continuationRequestRef": continuation_ref,
+                    "autoConsumeExecutorAfterPlan": True,
+                    "autoGovernorRuntimeAfterPlan": "external",
+                    "unsupportedAttemptCount": 0,
+                }
+                body = json.dumps(
+                    {
+                        "decision": "extend",
+                        "user_visible_reply": "I will add a medication calendar next.",
+                        "reason": "The app needs a richer care feature.",
+                        "steps": [
+                            {
+                                "title": "Build medication calendar",
+                                "objective": "Add a medication calendar module to the app.",
+                                "expected_output": "Medication calendar UI and validation.",
+                            }
+                        ],
+                    }
+                )
+
+                completed = session._complete_governor_goal_plan(  # noqa: SLF001 - orchestration edge test.
+                    state,
+                    pending,
+                    body,
+                    "2026-05-15T00:02:00Z",
+                    repo_root=repo_root,
+                )
+
+                self.assertFalse(completed)
+                next_pending = state["meta"].get("pendingGovernorRuntimeRequest")
+                self.assertIsInstance(next_pending, dict)
+                self.assertEqual(next_pending.get("turnType"), "goal_continuation")
+                self.assertEqual(next_pending.get("unsupportedAttemptCount"), 1)
+                self.assertEqual(next_pending.get("continuationRequestRef"), continuation_ref)
+                self.assertIn("patch-app-server Executor capability", next_pending.get("initialPrompt", ""))
+                self.assertIn("Build medication calendar", next_pending.get("preflightFeedback", ""))
+                self.assertEqual(state["model"]["snapshot"]["goalStatus"], "active")
+                self.assertEqual(state["model"]["snapshot"]["goalContinuationState"], "pending")
+
+    def test_real_project_unsupported_goal_continuation_blocks_after_preflight_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir).resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "ORCHESTRATION_REPO_ROOT": str(repo_root),
+                    "ORCHESTRATION_TARGET_WORKSPACE_MODE": "scratch",
+                    "ORCHESTRATION_TEST_PROMPT_PRESET": "pet-life-diary-real-project",
+                    "CORGI_EXECUTOR_RUNTIME": "patch-app-server",
+                },
+            ):
+                state = session.load_session(repo_root)
+                goal = session_goal_lifecycle.create_goal_program(
+                    state,
+                    "2026-05-15T00:00:00Z",
+                    "Build a practical Pet Life Diary app.",
+                    next_id=session._next_id,  # noqa: SLF001 - orchestration edge test.
+                    repo_root=repo_root,
+                    steps=[
+                        {
+                            "title": "Build app foundation",
+                            "objective": "Create the product app foundation.",
+                            "expected_output": "Working static app foundation.",
+                            "executor_capability": "product_app_foundation",
+                        }
+                    ],
+                    plan_source="governor",
+                )
+                continuation_ref = session_goal_lifecycle.mark_goal_continuation_pending(
+                    state,
+                    goal["goal_ref"],
+                    "2026-05-15T00:01:00Z",
+                    next_id=session._next_id,  # noqa: SLF001 - orchestration edge test.
+                    feed_item=session._feed_item,  # noqa: SLF001 - orchestration edge test.
+                    repo_root=repo_root,
+                )
+                pending = {
+                    "turnType": "goal_continuation",
+                    "requestId": "corgi-request:goal-continuation",
+                    "goalRef": goal["goal_ref"],
+                    "continuationRequestRef": continuation_ref,
+                    "autoConsumeExecutorAfterPlan": True,
+                    "autoGovernorRuntimeAfterPlan": "external",
+                    "unsupportedAttemptCount": 1,
+                }
+                body = json.dumps(
+                    {
+                        "decision": "extend",
+                        "user_visible_reply": "I will add a medication calendar next.",
+                        "reason": "The app needs a richer care feature.",
+                        "steps": [
+                            {
+                                "title": "Build medication calendar",
+                                "objective": "Add a medication calendar module to the app.",
+                                "expected_output": "Medication calendar UI and validation.",
+                            }
+                        ],
+                    }
+                )
+
+                completed = session._complete_governor_goal_plan(  # noqa: SLF001 - orchestration edge test.
+                    state,
+                    pending,
+                    body,
+                    "2026-05-15T00:02:00Z",
+                    repo_root=repo_root,
+                )
+
+                self.assertFalse(completed)
+                self.assertEqual(state["model"]["snapshot"]["currentStage"], "goal_blocked")
+                self.assertEqual(state["model"]["snapshot"]["runState"], "idle")
+                self.assertEqual(state["model"]["snapshot"]["goalStatus"], "blocked")
+                self.assertEqual(state["model"]["feed"][-1]["title"], "Goal continuation unsupported")
+                self.assertEqual(
+                    state["model"]["feed"][-1].get("presentation_args", {}).get("reason"),
+                    "goal_continuation_unsupported",
+                )
+                self.assertFalse((repo_root / ".agent" / "dispatches").exists())
 
     def test_real_project_patch_executor_blocks_unknown_goal_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

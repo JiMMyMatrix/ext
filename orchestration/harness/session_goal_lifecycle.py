@@ -379,6 +379,7 @@ def normalize_steps(steps: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
 				"expected_output": expected_output,
 				"depends_on_step_ref": raw_step.get("depends_on_step_ref"),
 				"prompt_preset": trim_text(raw_step.get("prompt_preset")) or None,
+				"executor_capability": trim_text(raw_step.get("executor_capability")) or None,
 				"status": "pending",
 				"work_ref": None,
 			}
@@ -414,6 +415,7 @@ def _normalize_steps_from_index(
 				"expected_output": trim_text(raw_step.get("expected_output")) or "Bounded step output is produced.",
 				"depends_on_step_ref": depends_on or None,
 				"prompt_preset": trim_text(raw_step.get("prompt_preset")) or None,
+				"executor_capability": trim_text(raw_step.get("executor_capability")) or None,
 				"status": "pending",
 				"work_ref": None,
 			}
@@ -487,6 +489,7 @@ def validate_goal_steps(steps: list[Any]) -> list[dict[str, Any]]:
 				"expected_output": expected_output,
 				"depends_on_step_ref": depends_on or None,
 				"prompt_preset": trim_text(raw_step.get("prompt_preset")) or None,
+				"executor_capability": trim_text(raw_step.get("executor_capability")) or None,
 			}
 		)
 		seen_refs.add(step_ref)
@@ -796,6 +799,7 @@ def begin_goal_step(
 		goal_ref=goal_ref,
 		goal_step_ref=step["step_ref"],
 		goal_step_index=int(step["step_index"]),
+		executor_capability=trim_text(step.get("executor_capability")) or None,
 	)
 	session["meta"]["activeIntakeRef"] = intake_ref
 	model["acceptedIntakeSummary"] = {

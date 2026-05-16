@@ -7,6 +7,7 @@ import shlex
 from pathlib import Path
 from typing import Any, Callable
 
+from orchestration.harness import executor_capabilities
 from orchestration.harness import dispatch as dispatch_harness
 from orchestration.harness.accepted_dispatch import accepted_dispatch_blockers
 from orchestration.harness.intake import accepted_intake_path
@@ -116,18 +117,15 @@ PET_DIARY_PRODUCT_PORTFOLIO_OUTPUTS = [
     "docs/product-spec.md",
     "tests/product-validation.js",
 ]
-PET_DIARY_REAL_PROJECT_PRESET = "pet-life-diary-real-project"
-PATCH_APP_SERVER_EXECUTOR_RUNTIME = "patch-app-server"
+PET_DIARY_REAL_PROJECT_PRESET = executor_capabilities.PET_DIARY_REAL_PROJECT_PRESET
+PATCH_APP_SERVER_EXECUTOR_RUNTIME = executor_capabilities.PATCH_APP_SERVER_EXECUTOR_RUNTIME
 
 def is_real_project_practical_exercise() -> bool:
-    return (
-        os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
-        and os.environ.get("ORCHESTRATION_TEST_PROMPT_PRESET") == PET_DIARY_REAL_PROJECT_PRESET
-    )
+    return executor_capabilities.is_real_project_practical_exercise()
 
 
 def selected_executor_runtime() -> str:
-    return trim_text(os.environ.get("CORGI_EXECUTOR_RUNTIME")) or "unset"
+    return executor_capabilities.selected_executor_runtime()
 
 
 def real_project_executor_runtime_unavailable_message() -> str:
@@ -239,6 +237,14 @@ def matches_pet_diary_readme_request(objective: str, accepted_ref: str | None) -
     )
 
 
+def matches_real_project_baseline_request(objective: str, accepted_ref: str | None) -> bool:
+    combined = f"{objective} {accepted_ref or ''}".lower()
+    return (
+        ("project structure" in combined or "baseline" in combined or "runnable/testable" in combined)
+        and ("without making product changes" in combined or "inspect" in combined)
+    )
+
+
 def is_pet_diary_filter_test_dispatch(objective: str, accepted_ref: str | None) -> bool:
     return (
         os.environ.get("ORCHESTRATION_TARGET_WORKSPACE_MODE") == "scratch"
@@ -279,8 +285,45 @@ def is_pet_diary_goal_readme_dispatch(accepted_payload: dict[str, Any]) -> bool:
 	)
 
 
+def is_real_project_baseline_inspection_dispatch(
+    accepted_payload: dict[str, Any],
+    objective: str,
+    accepted_ref: str | None,
+) -> bool:
+    return (
+        is_real_project_practical_exercise()
+        and accepted_goal_step(accepted_payload, "step-01")
+        and matches_real_project_baseline_request(objective, accepted_ref)
+    )
+
+
+def real_project_patch_executor_capability(
+    accepted_payload: dict[str, Any],
+    objective: str,
+    accepted_ref: str | None,
+) -> str | None:
+    if not is_real_project_practical_exercise():
+        return None
+    step = {
+        "title": accepted_payload.get("task"),
+        "objective": objective,
+        "expected_output": accepted_payload.get("accepted_summary"),
+        "accepted_summary": accepted_payload.get("accepted_summary"),
+        "executor_capability": accepted_payload.get("executor_capability"),
+    }
+    step_index = accepted_payload.get("goal_step_index")
+    if not isinstance(step_index, int):
+        step_index = None
+    return executor_capabilities.classify_real_project_step(
+        step,
+        step_index=step_index,
+        accepted_ref=accepted_ref,
+    )
+
+
 def real_project_patch_executor_can_handle(
     *,
+    is_real_project_baseline: bool,
     is_product_goal_routines: bool,
     is_product_goal_portfolio: bool,
     is_product_pet_diary: bool,
@@ -295,6 +338,7 @@ def real_project_patch_executor_can_handle(
 ) -> bool:
     return any(
         [
+            is_real_project_baseline,
             is_product_goal_routines,
             is_product_goal_portfolio,
             is_product_pet_diary,
@@ -359,6 +403,57 @@ def extend_goal_pet_diary_base_dispatch_args(
 			"Reviewer should verify the baseline app files before Corgi advances to the next goal step.",
 		]
 	)
+
+
+def extend_real_project_baseline_inspection_dispatch_args(
+    args: list[str],
+    paths: Any,
+    *,
+    dispatch_ref: str,
+    objective: str,
+    accepted_ref: str,
+) -> None:
+    baseline_ref = repo_relative(
+        paths.agent_root / "baselines" / Path(dispatch_ref) / "project_baseline.md",
+        paths.repo_root,
+    )
+    args.extend(
+        [
+            "--run-produce",
+            baseline_ref,
+            "--required-output",
+            baseline_ref,
+            "--command",
+            " ".join(
+                [
+                    command_arg(os.environ.get("ORCHESTRATION_APPROVED_PYTHON") or "python3"),
+                    command_arg(script_ref("executor_inspect_scratch_project.py", paths.repo_root)),
+                    "--repo-root",
+                    command_arg(str(paths.repo_root)),
+                    "--dispatch-ref",
+                    command_arg(dispatch_ref),
+                    "--objective",
+                    command_arg(objective),
+                    "--accepted-intake",
+                    command_arg(accepted_ref),
+                    "--output",
+                    command_arg(baseline_ref),
+                ]
+            ),
+            "--execution-summary",
+            "Executor inspected the scratch project baseline for the active real-project goal.",
+            "--execution-claim",
+            "Executor produced a bounded baseline note without mutating product files.",
+            "--execution-claim",
+            "This dispatch completed the initial inspection step of the practical exercise.",
+            "--execution-evidence",
+            baseline_ref,
+            "--execution-note",
+            "scratch_real_project_baseline_inspection",
+            "--execution-next-action",
+            "Reviewer should verify the baseline note, then Governor should continue to the first file-producing step.",
+        ]
+    )
 
 
 def extend_static_pet_diary_dispatch_args(
@@ -1042,6 +1137,16 @@ def emit_plan_execution_dispatch(
     is_goal_filter = is_pet_diary_goal_filter_dispatch(accepted_payload)
     is_goal_filter_retry = is_pet_diary_goal_filter_retry_dispatch(accepted_payload)
     is_goal_readme = is_pet_diary_goal_readme_dispatch(accepted_payload)
+    is_real_project_baseline = is_real_project_baseline_inspection_dispatch(
+        accepted_payload,
+        objective,
+        accepted_ref,
+    )
+    real_project_capability = real_project_patch_executor_capability(
+        accepted_payload,
+        objective,
+        accepted_ref,
+    )
     if is_real_project_practical_exercise():
         runtime = selected_executor_runtime()
         reason = "executor_runtime_unavailable"
@@ -1050,7 +1155,8 @@ def emit_plan_execution_dispatch(
             real_project_goal_base = is_goal_base and "pet life diary" in objective.lower()
             real_project_goal_filter = is_goal_filter and matches_pet_diary_filter_request(objective, accepted_ref)
             real_project_goal_readme = is_goal_readme and matches_pet_diary_readme_request(objective, accepted_ref)
-            if real_project_patch_executor_can_handle(
+            if real_project_capability or real_project_patch_executor_can_handle(
+                is_real_project_baseline=is_real_project_baseline,
                 is_product_goal_routines=is_product_goal_routines,
                 is_product_goal_portfolio=is_product_goal_portfolio,
                 is_product_pet_diary=is_product_pet_diary,
@@ -1117,7 +1223,37 @@ def emit_plan_execution_dispatch(
         "--root",
         str(paths.repo_root),
     ]
-    if is_product_goal_routines:
+    if real_project_capability == "baseline_inspection" or is_real_project_baseline:
+        extend_real_project_baseline_inspection_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+            accepted_ref=accepted_ref,
+        )
+    elif real_project_capability == "product_app_foundation":
+        extend_product_pet_diary_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+            accepted_ref=accepted_ref,
+        )
+    elif real_project_capability == "care_routines":
+        extend_product_pet_diary_routines_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+        )
+    elif real_project_capability == "portfolio_handoff":
+        extend_product_pet_diary_portfolio_dispatch_args(
+            args,
+            paths,
+            dispatch_ref=dispatch_ref,
+            objective=objective,
+        )
+    elif is_product_goal_routines:
         extend_product_pet_diary_routines_dispatch_args(
             args,
             paths,
