@@ -93,7 +93,7 @@ def main() -> None:
     js_markers = {
         "src/app.js": ["loadState", "renderAll", "bindNavigation"],
         "src/state.js": ["localStorage", "exportState", "resetState"],
-        "src/entries.js": ["createEntryFromForm", "visibleEntries", "entryMatchesFilters"],
+        "src/entries.js": ["createEntryFromForm", "visibleEntries", "entryMatchesFilters", "userEntryRank"],
         "src/ui.js": ["renderTimeline", "renderComposer", "bindActions", "renderInsights"],
         "src/analytics.js": ["calculateMetrics", "insightsForState"],
         "src/storage.js": ["copyText", "downloadJson"],

@@ -93,6 +93,7 @@
     "test:process:goal": "node scripts/corgi-process-test.cjs --module scratch-goal-program",
     "test:process:goal-retry": "node scripts/corgi-process-test.cjs --module scratch-goal-review-retry",
     "test:process:completion": "node scripts/corgi-process-test.cjs --module completion",
+    "test:demo:pet-diary": "node scripts/corgi-demo-behavior-test.cjs --generate",
     "test:prompts": "node scripts/corgi-test-prompt.cjs validate",
     "test:prompts:list": "node scripts/corgi-test-prompt.cjs list",
     "test:window": "CORGI_TEST_WINDOW_WORKSPACE_MODE=scratch CORGI_TEST_WINDOW_PROMPT_PRESET=pet-life-diary-static bash scripts/launch-corgi-test-window.sh",

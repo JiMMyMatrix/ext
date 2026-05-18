@@ -311,6 +311,7 @@ export function createEntryFromForm(form, pets, entries) {
 \t\tpetName: pet.name,
 \t\tspecies: pet.species,
 \t\tdate: new Date().toISOString().slice(0, 10),
+\t\tcreatedAt: new Date().toISOString(),
 \t\tmood,
 \t\ttags: tags.length ? tags : ['memory'],
 \t\ttitle,
@@ -332,10 +333,19 @@ export function entryMatchesFilters(entry, filters) {
 \treturn matchesSpecies && matchesTag && matchesQuery;
 }
 
+function userEntryRank(entry) {
+\treturn String(entry.id || '').startsWith('entry-user-') ? 1 : 0;
+}
+
 export function visibleEntries(state) {
 \treturn state.entries
 \t\t.filter((entry) => entryMatchesFilters(entry, state.filters))
-\t\t.sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+\t\t.sort(
+\t\t\t(a, b) =>
+\t\t\t\tuserEntryRank(b) - userEntryRank(a) ||
+\t\t\t\tString(b.createdAt || b.date || '').localeCompare(String(a.createdAt || a.date || '')) ||
+\t\t\t\tString(b.id || '').localeCompare(String(a.id || ''))
+\t\t);
 }
 
 export function uniqueTags(entries) {
